@@ -1,0 +1,16 @@
+assignBarcodes
+filterfastq
+test_output/
+test*
+*.sh
+atac*
+ATAC
+*test
+*.txt
+outputs
+log*
+*.fastq
+*.gz
+features/
+msk*
+sc_test*

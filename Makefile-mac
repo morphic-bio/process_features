@@ -1,0 +1,25 @@
+#add library for openmp
+#add library for math functions
+
+CC=gcc-14 
+CFLAGS=-Ofast -Wall $(INCLUDES) -arch arm64 `pkg-config --cflags glib-2.0 --libs glib-2.0` -L/usr/local/lib  -lz -fopenmp -lm 
+#gcc-14  -Ofast -Wall  -arch arm64 `pkg-config --cflags glib-2.0 --libs glib-2.0` -L/usr/local/lib  -lz -fopenmp -lm  -o assignBarcodes assignBarcodes.c queue.c
+ifdef DEBUG
+	#CFLAGS=-ggdb -Wunused-function -fsanitize=thread $(INCLUDES)
+	CFLAGS=-ggdb -Wunused-function -fsanitize=address $(INCLUDES)
+endif
+#LDFLAGS=-lz -lglib-2.0 -fopenmp -lm
+#LDFLAGS=-lz -fopenmp -lm
+#INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include 
+#INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include 
+
+default: clean assignBarcodes
+all: clean filterfastq assignBarcodes
+
+assignBarcodes: assignBarcodes.c queue.c
+	$(CC) $(CFLAGS) -o assignBarcodes assignBarcodes.c queue.c $(LDFLAGS) $(INCLUDES)
+filterfastq: filterfastq.c
+	$(CC) $(CFLAGS) -o filterfastq filterfastq.c $(LDFLAGS) $(INCLUDES)
+clean:
+	rm -f filterfastq assignBarcodes
+
