@@ -854,7 +854,7 @@ int print_feature_sequences(feature_arrays *features, int *total_counts, char *d
         array[i++] = value;
     }
     qsort(array, count, sizeof(gpointer), compare_feature_sequences);
-    fprintf(feature_sequencesfp, "Feature Index Sequence Hamming Distance Counts Feature Name\n");   
+    fprintf(feature_sequencesfp, "Feature Index Sequence Hamming_distance Counts Feature_name\n");   
     for (i = 0; i < count; i++) {
         char annotated_sequence[LINE_LENGTH];
         const int mapped_index=((feature_sequences*)array[i])->feature_index-1;
@@ -1649,7 +1649,7 @@ int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxH
     }
     if (bestFeatureDistance <= maxHammingDistance){
         *bestScore=bestFeatureDistance;
-        *matching_sequence=lineR2+best_i+best_code_offset*4;
+        *matching_sequence=lineR2+best_i+best_code_offset*4+1;
         if (!multiAmbiguous){
             return best_feature;
         }
