@@ -10,20 +10,20 @@ endif
 ifdef NO_HEATMAP
 	CFLAGS+=-DNO_HEATMAP
 else
-	LDFLAGS+=-lcairo
+	LDFLAGS+=$(shell pkg-config --libs cairo)
 	CFLAGS+=$(shell pkg-config --cflags cairo)
 endif
 
-INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include 
+INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include -I/usr/include/hdf5/serial
 #INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include 
 
 default: clean assignBarcodes
-all: clean filterfastq assignBarcodes
+all: clean heatmap assignBarcodes
 
 assignBarcodes: assignBarcodes.c queue.c
 	$(CC) $(CFLAGS) -o assignBarcodes assignBarcodes.c queue.c $(LDFLAGS) $(INCLUDES)
-filterfastq: filterfastq.c
-	$(CC) $(CFLAGS) -o filterfastq filterfastq.c $(LDFLAGS) $(INCLUDES)
+heatmap: heatmap.c
+	$(CC) $(CFLAGS) -o heatmap heatmap.c $(LDFLAGS) $(INCLUDES)
 clean:
-	rm -f filterfastq assignBarcodes
+	rm -f heatmap assignBarcodes
 
