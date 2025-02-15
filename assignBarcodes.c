@@ -2839,10 +2839,32 @@ void process_feature_sequence(char *sequence, feature_arrays *features, int maxH
                 *hamming_distance = bestHammingDistance;
                 return;
             }
-
         }
-    }
+        //repeat with feature_constant_offset - 1 and +1 tried higher changes but seem worse
+        int minusOne_feature_constant_offset = feature_constant_offset - 1;
+        int minusOneFeatureIndex = simpleCorrectFeature(sequence + minusOne_feature_constant_offset, features, max_feature_n, maxHammingDistance, &constantHammingDistance);
+        if (minusOneFeatureIndex && constantHammingDistance == 0) {
+            *feature_index = minusOneFeatureIndex;
+            *hamming_distance = bestHammingDistance;
+            return;
+        }
+        if (minusOneFeatureIndex && constantHammingDistance < bestHammingDistance) {
+            bestHammingDistance=constantHammingDistance;
+            myFeatureIndex=minusOneFeatureIndex;
+        }
+        int plusOne_feature_constant_offset = feature_constant_offset + 1;
+        int plusOneFeatureIndex = simpleCorrectFeature(sequence + plusOne_feature_constant_offset, features, max_feature_n, maxHammingDistance, &constantHammingDistance);
+        if (plusOneFeatureIndex && constantHammingDistance == 0) {
+            *feature_index = plusOneFeatureIndex;
+            *hamming_distance = bestHammingDistance;
+            return;
+        }
+        if (plusOneFeatureIndex && constantHammingDistance < bestHammingDistance) {
+            bestHammingDistance=constantHammingDistance;
+            myFeatureIndex=plusOneFeatureIndex;
+        }
 
+    }
     if (myFeatureIndex && bestHammingDistance) {
         char ambiguous = 0;
         char new_matching_sequence[LINE_LENGTH];
