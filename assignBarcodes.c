@@ -873,7 +873,6 @@ int print_feature_sequences(feature_arrays *features, int *total_counts, char *d
         lowerCaseDifferences(features->feature_sequences[entry->feature_index-1],annotated_sequence,feature_length);
         fprintf(feature_sequencesfp, "%3d %s %2d %7d %s\n", entry->feature_index,annotated_sequence, entry->hamming_distance,entry->counts,features->feature_names[entry->feature_index-1]);
     }
-    exit(0);
     return 0;
 }
 
