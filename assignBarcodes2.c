@@ -1,4 +1,4 @@
-#include <ctype.h>
+cp #include <ctype.h>
 #include <getopt.h>  // For command line parsing
 #include <glib.h>
 #include <pthread.h>
@@ -493,7 +493,7 @@ static unit_sizes dynamic_struct_sizes;
 
 
 //global variables for the program
-static long long max_reads=0;
+
 static int debug;
 
 //valid barcode list and hash
@@ -2473,18 +2473,12 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
 
 void read_fastq_chunks(gzFile barcode_fastqgz, gzFile forward_fastqgz, gzFile reverse_fastqgz, char *barcode_lines[], char *forward_lines[], char *reverse_lines[], char *buffer, char *done) {
     char *bufferptr = buffer;
-    long long number_of_reads=0;
     gzFile gzfps[3] = {barcode_fastqgz, forward_fastqgz, reverse_fastqgz};  
     char **lines[3] = {barcode_lines, forward_lines, reverse_lines};
     for (int i=0; i<3; i++){
         gzFile gzfp=gzfps[i];
         if(!gzfp){
             continue;
-        }
-        fprintf(stderr, "Reading file %d %lld\n", i, number_of_reads);
-        if (max_reads && number_of_reads >= max_reads){
-            *done = 1;
-            break;
         }
         for (int j = 0; j < 4; j++) {
             lines[i][j] = bufferptr;
@@ -2517,8 +2511,6 @@ void read_fastq_chunks(gzFile barcode_fastqgz, gzFile forward_fastqgz, gzFile re
                 }
             }
         }
-        number_of_reads++;
-
     }    
 }
 void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz) {
@@ -2612,8 +2604,7 @@ void initialize_reader_args(fastq_readers_args *reader_args, int thread_id, int 
 void *read_fastqs_by_set(void *arg) {
     //one set at a time
     fastq_readers_args *reader_args = (fastq_readers_args *)arg;
-    const int thread_id = reader_args->thread_id;
-    long long number_of_reads=0;
+    const int thread_id = reader_args->thread_id;    
     fastq_reader_set **reader_sets = reader_args->reader_sets;
     const int number_of_readers = (reader_sets[0]->forward_reader != NULL) + (reader_sets[0]->reverse_reader != NULL) + 1;
     fprintf(stderr, "Thread %d reading %d files\n", thread_id, number_of_readers);
@@ -2654,13 +2645,12 @@ void *read_fastqs_by_set(void *arg) {
                 } 
 
             }
-            if ((max_reads && number_of_reads >= max_reads) || gzgets(reader->gz_pointer, line1[j], LINE_LENGTH) == Z_NULL){
+            if (gzgets(reader->gz_pointer, line1[j], LINE_LENGTH) == Z_NULL){
                 if(file_index>=reader->nfiles){
                     done=1;
                 }
                 else{
                     open_next_file=1;
-                    number_of_reads=0;
                     fprintf(stderr, "2 Opening file %d %s\n", j,reader->filenames[file_index]);
                     reader->gz_pointer = gzopen(reader->filenames[file_index], "rb");
                     if (gzgets(reader->gz_pointer, line1[j], LINE_LENGTH) == Z_NULL){
@@ -2682,9 +2672,7 @@ void *read_fastqs_by_set(void *arg) {
                 perror("3 Error: Incomplete record in the FASTQ file\n");
                 exit (EXIT_FAILURE);    
             }
-            
         }
-        number_of_reads++;
         if (open_next_file){
             file_index++;
         }
@@ -2720,7 +2708,6 @@ void *read_fastqs_by_set(void *arg) {
     pthread_exit(NULL);
 }
 void *read_fastqs(void *arg) {
-    long long number_of_reads=0;
     fastq_readers_args *reader_args = (fastq_readers_args *)arg;
     const int thread_id = reader_args->thread_id;
     const int set_index = reader_args->set_index;
@@ -2754,10 +2741,7 @@ void *read_fastqs(void *arg) {
 
         
         while(!done){
-            if (max_reads && number_of_reads >= max_reads){
-                done=1;
-            }
-            if (!done && gzgets(reader->gz_pointer, line1, LINE_LENGTH) == Z_NULL){
+            if (gzgets(reader->gz_pointer, line1, LINE_LENGTH) == Z_NULL){
                 fprintf(stderr,"Finished reading file %s\n", reader->filenames[i]); 
                 gzclose(reader->gz_pointer);
                 reader->gz_pointer = NULL;
@@ -2794,7 +2778,7 @@ void *read_fastqs(void *arg) {
             strcpy(reader->buffer[(reader->produce_index+1)%read_buffer_lines], line2); 
             reader->produce_index = (reader->produce_index+ 2) % read_buffer_lines;
             reader->filled+=2;
-            number_of_reads++;
+            
         // Signal consumer that data is available
             pthread_cond_signal(&reader->can_consume);
             pthread_mutex_unlock(&reader->mutex);
@@ -3136,7 +3120,7 @@ void *consume_reads(void *arg) {
 void free_fastq_reader(fastq_reader *reader) {
     for (int i = 0; i < reader->nfiles; i++) {
         //test if any are open
-        if (reader->gz_pointer != NULL ) {
+        if (reader->gz_pointer != NULL) {
             gzclose(reader->gz_pointer);
             reader->gz_pointer = NULL;
         }
@@ -4076,11 +4060,12 @@ int main(int argc, char *argv[])
     uint16_t stringency=1;
     uint16_t min_counts=1;
     int read_buffer_lines=READ_BUFFER_LINES;
-    int average_read_length=AVERAGE_READ_LENGTH;
+    int average_read_length=AVERAGE_read_LENGTH;
     int feature_constant_offset=0;
     int barcode_constant_offset=0;
     int parallel_by_file=0; //parallelize by attempting to read all fastq files at the same time - default is to use a thread per set of files i.e. R1/R2 or R1/R2/R3
     double min_posterior=MIN_POSTERIOR;
+    int max_reads=0;
 
     int max_available_threads=8;
     int max_concurrent_processes=8;
@@ -4112,6 +4097,7 @@ int main(int argc, char *argv[])
         {"average_read_length", required_argument, 0, 'L'},
         {"min_posterior", required_argument, 0, 'M'},
         {"consumer_threads_per_set", required_argument, 0, 'c'},
+        {"max_reads", required_argument, 0, 9},
         {"barcode_fastqs", required_argument, 0, 0},
         {"forward_fastqs", required_argument, 0, 1},
         {"reverse_fastqs,", required_argument, 0, 2},
@@ -4121,7 +4107,6 @@ int main(int argc, char *argv[])
         {"barcode_fastq_pattern", required_argument, 0, 6},
         {"forward_fastq_pattern", required_argument, 0, 7},
         {"reverse_fastq_pattern", required_argument, 0, 8},
-        {"max_reads", required_argument, 0, 9},
         {0, 0, 0, 0}
     };
 
@@ -4248,11 +4233,11 @@ int main(int argc, char *argv[])
                 strcpy(reverse_pattern, optarg);
                 break;
             case 9:
-                max_reads=atoll(optarg);
+                max_reads=atoi(optarg);
                 break;
             default:
                 // print usage
- fprintf(stderr, "Usage: %s \n\
+                fprintf(stderr, "Usage: %s \n\
   -w, --whitelist [filename]         Specify the whitelist file\n\
   -f, --featurelist [filename]       Specify the feature list file\n\
   -m, --maxHammingDistance [int]     Set the maximum Hamming distance for barcodes\n\
@@ -4275,6 +4260,7 @@ int main(int argc, char *argv[])
   -L, --average_read_length [int]    Specify the average read length\n\
   -M, --min_posterior [float]        Set the minimum posterior threshold\n\
   -c, --consumer_threads_per_set [int] Set the number of consumer threads per set\n\
+  --max_reads [int]                  Set the maximum number of reads\n\
   --barcode_fastqs [string]          Specify the barcode FASTQ files\n\
   --forward_fastqs [string]          Specify the forward FASTQ files\n\
   --reverse_fastqs [string]          Specify the reverse FASTQ files\n\
