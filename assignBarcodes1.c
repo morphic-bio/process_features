@@ -57,8 +57,7 @@ typedef struct _feature_counts {
 typedef struct _feature_sequences {
     uint32_t counts;
     char hamming_distance;
-    uint32_t feature_index;
-    uint16_t match_position;
+    unsigned char feature_index;
     char sequence[];
 } feature_sequences;
 
@@ -90,13 +89,12 @@ typedef struct _storage_block {
 
 typedef struct _unmatched_barcodes_features {
     struct _unmatched_barcodes_features_block *next;
-    uint32_t feature_index;
+    unsigned char feature_index;
     unsigned char *barcode;
     unsigned char *umi;
     unsigned char number_of_closest_barcodes;
     unsigned char *closest_barcodes;
     unsigned char *Qscores;
-    uint16_t match_position;
 } unmatched_barcodes_features;
 
 typedef struct _unmatched_barcodes_features_block {
@@ -422,11 +420,11 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
 
 //function prototypes sorted alphabetically
 void add_deduped_count(feature_counts *s, uint32_t *counts, uint16_t stringency, uint16_t min_counts);
-unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, char *umi, unsigned char *qscores, uint32_t feature_index, int number_of_variants, uint16_t match_position, memory_pool_collection *pools, statistics *stats);
+unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, char *umi, unsigned char *qscores, unsigned char feature_index, int number_of_variants, memory_pool_collection *pools, statistics *stats);
 storage_block* allocate_storage_block(size_t block_size);
 char check_neighbor(uint64_t code64, uint32_t *counts, data_structures *hashes);
-int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools, statistics *stats, int barcode_constant_offset);
-int checkAndCorrectFeature(char *line, feature_arrays *features, int maxHammingDistance, int nThreads, int *hamming_distance, char *matching_sequence, int maxN, char *ambiguous, uint16_t *match_position);
+int checkAndCorrectBarcode(char **lines, int maxN, unsigned char feature_index, data_structures *hashes, memory_pool_collection *pools, statistics *stats, int barcode_constant_offset);
+int checkAndCorrectFeature(char *line, feature_arrays *features, int maxHammingDistance, int nThreads, int *hamming_distance, char *matching_sequence, int maxN, char *ambiguous);
 char check_sequence(char *sequence, int sequence_length);
 void code2string(unsigned char *code, char *string, int length);
 int compare_feature_sequences(const void *a, const void *b);
@@ -439,8 +437,8 @@ unsigned char* find_best_posterior_match (unmatched_barcodes_features_block *ent
 int find_closest_barcodes(unsigned char* code, unsigned char *corrected_codes, unsigned char *indices);
 void find_connected_component(gpointer start_key, uint32_t *counts, data_structures *hashes);
 void find_deduped_counts(data_structures *hashes, uint16_t stringency, uint16_t min_counts);
-int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxHammingDistance, int nThreads, int *bestScore, char **matching_sequence, uint16_t *match_position);
-int find_feature_match_single(feature_arrays *features, char *lineR2, int maxHammingDistance,int *bestScore, char **matching_sequence, uint16_t *match_position);
+int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxHammingDistance, int nThreads, int *bestScore, char **matching_sequence);
+int find_feature_match_single(feature_arrays *features, char *lineR2, int maxHammingDistance,int *bestScore, char **matching_sequence);
 int find_neighbors(uint64_t key64, uint64_t *neighbors, uint32_t *counts, data_structures *hashes);
 int find_matching_codes(unsigned char *sequence_code, unsigned char *feature_code, size_t feature_code_length, size_t feature_length);
 int find_variant_match(unsigned char *code, int sequence_index, unsigned char *corrected_codes);
@@ -452,14 +450,14 @@ void initseq2Code();
 void initialize_statistics(statistics *stats);
 memory_pool* initialize_storage_pool(size_t block_size, size_t blocks_per_pool);
 void initialize_unit_sizes();
-int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned char hamming_distance, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools);
+int insert_feature_sequence(char *sequence, unsigned char feature_index, unsigned char hamming_distance, data_structures *hashes, memory_pool_collection *pools);
 int is_directory(const char *path);
 int mkdir_p(const char *path);
 void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz);
 void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts, int **coexpression_counts, int **coexpression_histograms, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts);
 int print_feature_sequences(feature_arrays *features, int *total_counts, char *directory, data_structures *hashes);
-void process_multiple_feature_sequences(int nsequences, char **sequences, int *orientations, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position);
-void process_feature_sequence(char *sequence, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position); 
+void process_multiple_feature_sequences(int nsequences, char **sequences, int *orientations, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, unsigned char *feature_index, int *hamming_distance, char *matching_sequence);
+void process_feature_sequence(char *sequence, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, unsigned char *feature_index, int *hamming_distance, char *matching_sequence); 
 void process_pending_barcodes(data_structures *hashes, memory_pool_collection *pools, statistics *stats,double min_posterior);
 void read_unmatched_features_block(unmatched_barcodes_features_block *entry_block, unmatched_barcodes_features *entry);
 unsigned char* read_whiteList(char *whitelist_filename, GHashTable *hash, int reverse_complement_flag);
@@ -615,7 +613,7 @@ int compare_feature_sequences(const void *a, const void *b) {
 
     // First sort by feature_index
     if (fa->feature_index != fb->feature_index)
-        return (fa->feature_index > fb->feature_index) - (fa->feature_index < fb->feature_index);
+        return fa->feature_index - fb->feature_index;
 
     // Then sort by hamming_distance
     if (fa->hamming_distance != fb->hamming_distance)
@@ -783,14 +781,12 @@ void initialize_unit_sizes(){
 
     // Size of unmatched_barcodes_features_block (rounded up to alignment of unsigned char)
     size_t unmatched_barcodes_features_block_size = sizeof(unmatched_barcodes_features_block)
-            + sizeof(uint32_t) // For feature_index
-            + sizeof(uint16_t) // For match_position
             + barcode_code_length 
             + umi_code_length
-            + 1 // For number_of_closest_barcodes
+            + 2
             + (max_barcode_mismatches + 1) * barcode_code_length
             + (max_barcode_mismatches + 1);
-    size_t unmatched_barcodes_features_block_alignment = __alignof__(uint32_t);  // Use __alignof__ instead of alignof
+    size_t unmatched_barcodes_features_block_alignment = __alignof__(unsigned char);  // Use __alignof__ instead of alignof
     dynamic_struct_sizes.unmatched_barcodes_features_block = (unmatched_barcodes_features_block_size + unmatched_barcodes_features_block_alignment - 1) & ~(unmatched_barcodes_features_block_alignment - 1);
 }
 int is_directory(const char *path) {
@@ -818,18 +814,14 @@ int is_directory(const char *path) {
 }
 void read_unmatched_features_block(unmatched_barcodes_features_block *entry_block, unmatched_barcodes_features *entry){
     entry->next=entry_block->next;
-    unsigned char *storage = entry_block->storage;
-    memcpy(&entry->feature_index, storage, sizeof(uint32_t));
-    storage += sizeof(uint32_t);
-    memcpy(&entry->match_position, storage, sizeof(uint16_t));
-    storage += sizeof(uint16_t);
-    entry->barcode=storage;
+    entry->feature_index=entry_block->storage[0];
+    entry->barcode=entry_block->storage+1;
     entry->umi=entry->barcode+barcode_code_length;
     entry->number_of_closest_barcodes=entry->umi[umi_code_length];
     entry->closest_barcodes=entry->umi+umi_code_length+1;
     entry->Qscores=entry->closest_barcodes+(barcode_code_length)*(max_barcode_mismatches+1);
 }
-int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned char hamming_distance, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools){
+int insert_feature_sequence(char *sequence, unsigned char feature_index, unsigned char hamming_distance, data_structures *hashes, memory_pool_collection *pools){
     gpointer *value=g_hash_table_lookup(hashes->unique_features_match, sequence);
     if (value){
         feature_sequences *entry = (feature_sequences*)value;
@@ -841,7 +833,6 @@ int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned cha
         strcpy(new_entry->sequence, sequence);
         new_entry->feature_index=feature_index;
         new_entry->hamming_distance=hamming_distance;
-        new_entry->match_position=match_position;
         new_entry->counts=1;
         g_hash_table_insert(hashes->unique_features_match, new_entry->sequence, new_entry);
         return 1;
@@ -871,7 +862,7 @@ int print_feature_sequences(feature_arrays *features, int *total_counts, char *d
         array[i++] = value;
     }
     qsort(array, count, sizeof(gpointer), compare_feature_sequences);
-    fprintf(feature_sequencesfp, "Feature Index Sequence Hamming Distance Counts Match Position Feature Name\n");   
+    fprintf(feature_sequencesfp, "Feature Index Sequence Hamming Distance Counts Feature Name\n");   
     for (i = 0; i < count; i++) {
         char annotated_sequence[LINE_LENGTH];
         const int mapped_index=((feature_sequences*)array[i])->feature_index-1;
@@ -880,8 +871,9 @@ int print_feature_sequences(feature_arrays *features, int *total_counts, char *d
         strcpy(annotated_sequence, entry->sequence);
         int feature_length=features->feature_lengths[entry->feature_index-1];
         lowerCaseDifferences(features->feature_sequences[entry->feature_index-1],annotated_sequence,feature_length);
-        fprintf(feature_sequencesfp, "%7u %s %2d %7d %5u %s\n", entry->feature_index,annotated_sequence, entry->hamming_distance,entry->counts, entry->match_position, features->feature_names[entry->feature_index-1]);
+        fprintf(feature_sequencesfp, "%3d %s %2d %7d %s\n", entry->feature_index,annotated_sequence, entry->hamming_distance,entry->counts,features->feature_names[entry->feature_index-1]);
     }
+    exit(0);
     return 0;
 }
 
@@ -913,7 +905,7 @@ int string2code_debug(char *string, int sequence_length, unsigned char *code){
     return last_element+1;
 }
 
-unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, char *umi, unsigned char *qscores, uint32_t feature_index,int number_of_variants, uint16_t match_position, memory_pool_collection *pools, statistics *stats){
+unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, char *umi, unsigned char *qscores, unsigned char feature_index,int number_of_variants, memory_pool_collection *pools, statistics *stats){
     unmatched_barcodes_features_block *new_entry = (unmatched_barcodes_features_block*)allocate_memory_from_pool(pools->unmatched_barcodes_features_block_pool); 
 
     if (stats->unmatched_list.first_entry== NULL){
@@ -925,12 +917,9 @@ unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned 
         stats->unmatched_list.last_entry=new_entry;
     }
     unsigned char *storage = new_entry->storage; 
-    memcpy(storage, &feature_index, sizeof(uint32_t));
-    storage += sizeof(uint32_t);
-    memcpy(storage, &match_position, sizeof(uint16_t));
-    storage += sizeof(uint16_t);
-    memcpy(storage, barcodes, barcode_code_length);
-    storage+=barcode_code_length;
+    storage[0]=feature_index;
+    memcpy(storage+1, barcodes, barcode_code_length);
+    storage+=1+barcode_code_length;
     string2code(umi, umi_length, storage);
     storage+=umi_code_length;    
     storage[0]=number_of_variants;
@@ -1544,7 +1533,7 @@ int simple_hamming_search(feature_arrays *features, char *line, int maxHammingDi
     }
     return 0;
 }
-int find_feature_match_single(feature_arrays *features, char *lineR2, int maxHammingDistance,int *bestScore, char **matching_sequence, uint16_t *match_position){
+int find_feature_match_single(feature_arrays *features, char *lineR2, int maxHammingDistance,int *bestScore, char **matching_sequence){
     // convert lineR2 to 4 codes
     // do a quick check to see if there is a perfect match the constant feature
     //int best_feature=simple_search_code(features, lineR2, constant_offset);
@@ -1563,7 +1552,6 @@ int find_feature_match_single(feature_arrays *features, char *lineR2, int maxHam
                 *bestScore=0;
                 best_feature=j+1;
                 *matching_sequence=lineR2+i+code_offset*4;
-                *match_position = i+code_offset*4;
                 return best_feature;
             }
             if (hammingDistance < bestHammingDistance){
@@ -1587,14 +1575,14 @@ int find_feature_match_single(feature_arrays *features, char *lineR2, int maxHam
     }
     return 0;
 }
-int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxHammingDistance, int nThreads, int *bestScore, char **matching_sequence, uint16_t *match_position){
+int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxHammingDistance, int nThreads, int *bestScore, char **matching_sequence){
     // convert lineR2 to 4 codes
     // do a quick check to see if there is a perfect match the constant feature
     //int best_feature=simple_search_code(features, lineR2, constant_offset);
     nThreads=(nThreads > 4) ? 4 : nThreads;
     nThreads=(nThreads < 1) ? 1 : nThreads;
     if (nThreads==1){
-        return find_feature_match_single(features, lineR2, maxHammingDistance, bestScore, matching_sequence, match_position);
+        return find_feature_match_single(features, lineR2, maxHammingDistance, bestScore, matching_sequence);
     }
     unsigned char codes[4][LINE_LENGTH/2+1];
     int code_lengths[4];
@@ -1621,7 +1609,6 @@ int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxH
                 exact_match_found=1;
                 best_feature=j+1;
                 *matching_sequence=lineR2+i+code_offset*4;
-                *match_position = i+code_offset*4;
                 best_matching_indices[thread_num]=i;
                 break;
             }
@@ -1677,7 +1664,6 @@ int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxH
     if (bestFeatureDistance <= maxHammingDistance){
         *bestScore=bestFeatureDistance;
         *matching_sequence=lineR2+best_i+best_code_offset*4;
-        *match_position=best_i+best_code_offset*4;
         int offset=best_i+best_code_offset*4;
         if (!multiAmbiguous){
             return best_feature;
@@ -2109,7 +2095,7 @@ int simpleCorrectFeature(char *line, feature_arrays *features, int maxN, int max
     }
     return best_feature;
 }
-int checkAndCorrectFeature(char *line, feature_arrays *features,int maxHammingDistance, int nThreads, int *hamming_distance, char *matching_sequence, int maxN,char *ambiguous, uint16_t *match_position){
+int checkAndCorrectFeature(char *line, feature_arrays *features,int maxHammingDistance, int nThreads, int *hamming_distance, char *matching_sequence, int maxN,char *ambiguous){
     const size_t length=strlen(line)-1;
     char buffer[(length+1) * (4 << ((maxN-1)*2))];
     char *corrected_seqs[ 4 << ((maxN-1)*2)];
@@ -2124,14 +2110,12 @@ int checkAndCorrectFeature(char *line, feature_arrays *features,int maxHammingDi
     }
     if (nAlts == 1){
         char *myMatchingSequence;
-        uint16_t myMatchPosition;
         //no Ns and the barcode is good in terms of ACGT 
-        int feature_index=find_feature_match_parallel(features, line, maxHammingDistance,nThreads,&hamming,&myMatchingSequence, &myMatchPosition);
+        int feature_index=find_feature_match_parallel(features, line, maxHammingDistance,nThreads,&hamming,&myMatchingSequence);
         *hamming_distance=hamming;
         if (feature_index){
             memcpy(matching_sequence, myMatchingSequence, features->feature_lengths[feature_index-1]);
             matching_sequence[features->feature_lengths[feature_index-1]]='\0';
-            *match_position = myMatchPosition;
         }
         else if (hamming <= maxHammingDistance){
             *ambiguous=1;
@@ -2145,21 +2129,18 @@ int checkAndCorrectFeature(char *line, feature_arrays *features,int maxHammingDi
         int bestfeature_index=0;
         int bestHammingDistance=maxHammingDistance;
         char *bestMatchingSequence=0; 
-        uint16_t bestMatchPosition=0;
         //int bestAlt=0;
 
         for (int i=0; i<nAlts; i++){
             //DEBUG_PRINT( "Checking %s\n", corrected_seqs[i]);
             char *myMatchingSequence;
-            uint16_t myMatchPosition;
-            int feature_index=find_feature_match_parallel(features, corrected_seqs[i], maxHammingDistance,nThreads,&hamming,&myMatchingSequence, &myMatchPosition);
+            int feature_index=find_feature_match_parallel(features, corrected_seqs[i], maxHammingDistance,nThreads,&hamming,&myMatchingSequence);
             //DEBUG_PRINT( "Feature index %d %d\n", feature_index,hamming);
             
             if (feature_index && !hamming){
                 memcpy(matching_sequence, myMatchingSequence, features->feature_lengths[feature_index-1]);
                 matching_sequence[features->feature_lengths[feature_index-1]]='\0';
                 *hamming_distance=hamming;
-                *match_position = myMatchPosition;
                 return feature_index;
             }
             else if (hamming < bestHammingDistance){
@@ -2167,7 +2148,6 @@ int checkAndCorrectFeature(char *line, feature_arrays *features,int maxHammingDi
                     bestfeature_index=feature_index;
                     bestMatchingSequence=myMatchingSequence;
                     myAmbiguous=0;
-                    bestMatchPosition=myMatchPosition;
             }
             else if (hamming == bestHammingDistance){
                 if( bestfeature_index){
@@ -2181,7 +2161,6 @@ int checkAndCorrectFeature(char *line, feature_arrays *features,int maxHammingDi
             if (!myAmbiguous && bestfeature_index){
                 memcpy(matching_sequence, bestMatchingSequence, features->feature_lengths[bestfeature_index-1]);
                 matching_sequence[features->feature_lengths[bestfeature_index-1]]='\0';
-                *match_position = bestMatchPosition;
                 return bestfeature_index;
             }
             return 0;
@@ -2196,7 +2175,7 @@ size_t barcode_code2number(unsigned char *code){
     }
     return (key-whitelist)/barcode_code_length+1;
 }
-int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools, statistics *stats, int barcode_constant_offset){
+int checkAndCorrectBarcode(char **lines, int maxN, unsigned char feature_index, data_structures *hashes, memory_pool_collection *pools, statistics *stats, int barcode_constant_offset){
     char *sequence=lines[0]+barcode_constant_offset;
     //DEBUG_PRINT( "Checking barcode %s\n", lines[1]);
     if (strlen(sequence) < barcode_length + umi_length){
@@ -2256,7 +2235,7 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
                 for (int i=0; i<nMatches; i++){
                     qscores[i]=lines[1][indices[i]];
                 }
-                add_unmatched_barcode_store_feature(corrected_codes,sequence+barcode_length, qscores,feature_index,nMatches, match_position, pools,stats);
+                add_unmatched_barcode_store_feature(corrected_codes,sequence+barcode_length, qscores,feature_index,nMatches,pools,stats);
                 stats->pending++;
             }
             return 0;
@@ -2788,23 +2767,21 @@ void *read_fastqs(void *arg) {
     fprintf(stderr, "Thread %d done reading\n", thread_id);
     pthread_exit(NULL);
 }
-void process_multiple_feature_sequences(int nsequences, char **sequences, int *orientations, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position) {
+void process_multiple_feature_sequences(int nsequences, char **sequences, int *orientations, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, unsigned char *feature_index, int *hamming_distance, char *matching_sequence) {
     //check if the sequences are the same
 
     int best_hamming_distance = maxHammingDistance;
-    uint32_t best_feature_index = 0;
+    int best_feature_index = 0;
     char best_matching_sequence[LINE_LENGTH];
-    uint16_t best_match_position=0;
     char ambiguous = 0;
     int myHammingDistance=maxHammingDistance;
     for (int i=0; i<nsequences; i++){
         DEBUG_PRINT( "Sequence %s\n", sequences[i]);
         if(sequences[i]){
-            uint32_t myFeatureIndex=0;
+            unsigned char myFeatureIndex=0;
             char my_matching_sequence[LINE_LENGTH];
-            uint16_t my_match_position=0;
             if (orientations[i] != 1){
-                process_feature_sequence(sequences[i], features, maxHammingDistance, nThreads, feature_constant_offset, max_feature_n, &myFeatureIndex, &myHammingDistance, my_matching_sequence, &my_match_position);
+                process_feature_sequence(sequences[i], features, maxHammingDistance, nThreads, feature_constant_offset, max_feature_n, &myFeatureIndex, &myHammingDistance, my_matching_sequence);
                 if (myFeatureIndex && myHammingDistance == best_hamming_distance) {
                     if (best_feature_index) {
                         ambiguous = 1;
@@ -2814,7 +2791,6 @@ void process_multiple_feature_sequences(int nsequences, char **sequences, int *o
                         ambiguous = 0;
                         best_hamming_distance = myHammingDistance;
                         best_feature_index = myFeatureIndex;
-                        best_match_position=my_match_position;
                         strcpy(best_matching_sequence, my_matching_sequence);
                     }
                 }
@@ -2822,7 +2798,6 @@ void process_multiple_feature_sequences(int nsequences, char **sequences, int *o
                     ambiguous = 0;
                     best_hamming_distance = myHammingDistance;
                     best_feature_index = myFeatureIndex;
-                    best_match_position=my_match_position;
                     strcpy(best_matching_sequence, my_matching_sequence);
                 }
             }
@@ -2830,7 +2805,7 @@ void process_multiple_feature_sequences(int nsequences, char **sequences, int *o
                 char reverse_sequence[LINE_LENGTH];
                 strcpy(reverse_sequence, sequences[i]);
                 reverse_complement_in_place(reverse_sequence);
-                process_feature_sequence(reverse_sequence, features, maxHammingDistance, nThreads, feature_constant_offset, max_feature_n, &myFeatureIndex, &myHammingDistance, my_matching_sequence, &my_match_position);
+                process_feature_sequence(reverse_sequence, features, maxHammingDistance, nThreads, feature_constant_offset, max_feature_n, &myFeatureIndex, &myHammingDistance, my_matching_sequence);
             }
         }
     }
@@ -2840,16 +2815,15 @@ void process_multiple_feature_sequences(int nsequences, char **sequences, int *o
     } else {
         *feature_index = best_feature_index;
         *hamming_distance = best_hamming_distance;
-        *match_position = best_match_position;
         if (best_feature_index) {
             strcpy(matching_sequence, best_matching_sequence);
         }
     }
 }
-void process_feature_sequence(char *sequence, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position) {
+void process_feature_sequence(char *sequence, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, unsigned char *feature_index, int *hamming_distance, char *matching_sequence) {
     int bestHammingDistance=0;
     int variableMaxHammingDistance=maxHammingDistance;
-    uint32_t myFeatureIndex=0;
+    unsigned char myFeatureIndex=0;
     if (feature_constant_offset > 0) {
         int constantHammingDistance=0;
         myFeatureIndex = simpleCorrectFeature(sequence + feature_constant_offset, features, max_feature_n, maxHammingDistance, &constantHammingDistance);
@@ -2857,7 +2831,6 @@ void process_feature_sequence(char *sequence, feature_arrays *features, int maxH
             // need to have feature_index -1 because the feature index is 1 based but array in struct is 0 based
             memcpy(matching_sequence, sequence + feature_constant_offset, features->feature_lengths[myFeatureIndex - 1]);
             matching_sequence[features->feature_lengths[myFeatureIndex - 1]] = '\0';
-            *match_position = feature_constant_offset;
             bestHammingDistance=constantHammingDistance;
             variableMaxHammingDistance=constantHammingDistance;
             //return immediately if we have a match with distance 0 (no need to check the variable hamming distance because it is the best if it also matches the offset)
@@ -2873,52 +2846,44 @@ void process_feature_sequence(char *sequence, feature_arrays *features, int maxH
         if (minusOneFeatureIndex && constantHammingDistance == 0) {
             *feature_index = minusOneFeatureIndex;
             *hamming_distance = bestHammingDistance;
-            *match_position = minusOne_feature_constant_offset;
             return;
         }
         if (minusOneFeatureIndex && constantHammingDistance < bestHammingDistance) {
             bestHammingDistance=constantHammingDistance;
             myFeatureIndex=minusOneFeatureIndex;
-            *match_position = minusOne_feature_constant_offset;
         }
         int plusOne_feature_constant_offset = feature_constant_offset + 1;
         int plusOneFeatureIndex = simpleCorrectFeature(sequence + plusOne_feature_constant_offset, features, max_feature_n, maxHammingDistance, &constantHammingDistance);
         if (plusOneFeatureIndex && constantHammingDistance == 0) {
             *feature_index = plusOneFeatureIndex;
             *hamming_distance = bestHammingDistance;
-            *match_position = plusOne_feature_constant_offset;
             return;
         }
         if (plusOneFeatureIndex && constantHammingDistance < bestHammingDistance) {
             bestHammingDistance=constantHammingDistance;
             myFeatureIndex=plusOneFeatureIndex;
-            *match_position = plusOne_feature_constant_offset;
         }
 
     }
     if (myFeatureIndex && bestHammingDistance) {
         char ambiguous = 0;
         char new_matching_sequence[LINE_LENGTH];
-        uint16_t new_match_position;
         int variableHammingDistance=variableMaxHammingDistance;
-        int new_feature_index = checkAndCorrectFeature(sequence, features, variableMaxHammingDistance, nThreads, &variableHammingDistance, new_matching_sequence, max_feature_n, &ambiguous, &new_match_position);
+        int new_feature_index = checkAndCorrectFeature(sequence, features, variableMaxHammingDistance, nThreads, &variableHammingDistance, new_matching_sequence, max_feature_n, &ambiguous);
         if (variableHammingDistance < variableMaxHammingDistance) {
             myFeatureIndex = new_feature_index; // even if zero keep the new feature index because that would mean ambiguity
             strcpy(matching_sequence, new_matching_sequence);
             bestHammingDistance=variableHammingDistance;
-            *match_position=new_match_position;
         }
     } else if (!myFeatureIndex) {
         char ambiguous = 0;
         char new_matching_sequence[LINE_LENGTH];
-        uint16_t new_match_position;
         int variableHammingDistance=maxHammingDistance;
-        int newFeatureIndex = checkAndCorrectFeature(sequence, features, variableMaxHammingDistance, nThreads, &variableHammingDistance, new_matching_sequence, max_feature_n, &ambiguous, &new_match_position);
+        int newFeatureIndex = checkAndCorrectFeature(sequence, features, variableMaxHammingDistance, nThreads, &variableHammingDistance, new_matching_sequence, max_feature_n, &ambiguous);
         if (!ambiguous && newFeatureIndex && variableHammingDistance < maxHammingDistance) {
             bestHammingDistance=variableHammingDistance;
             strcpy(matching_sequence, new_matching_sequence);
             myFeatureIndex = newFeatureIndex;
-            *match_position=new_match_position;
         }
     }
     if (bestHammingDistance > maxHammingDistance) {
@@ -3064,8 +3029,7 @@ void *consume_reads(void *arg) {
             //process the data
             char matching_sequence[LINE_LENGTH];
             int hamming_distance = 0;
-            uint32_t feature_index = 0;
-            uint16_t match_position = 0;
+            unsigned char feature_index = 0;
             int missing_flag=0;
             if (forward_reader && reverse_reader) {
                 char *sequences[2]={0,0};
@@ -3074,18 +3038,18 @@ void *consume_reads(void *arg) {
                 sequences[1] = reverse_lines[0];
                 orientations[0] = 1;
                 orientations[1] = 0;
-                process_multiple_feature_sequences(2, sequences, orientations, features, maxHammingDistance, nThreads, feature_constant_offset, max_feature_n, &feature_index, &hamming_distance, matching_sequence, &match_position);
+                process_multiple_feature_sequences(2, sequences, orientations, features, maxHammingDistance, nThreads, feature_constant_offset, max_feature_n, &feature_index, &hamming_distance, matching_sequence);
             }
             else {
                 char *sequence=(forward_lines)?forward_lines[0]:reverse_lines[0];
-                process_feature_sequence(sequence, features, maxHammingDistance, nThreads, feature_constant_offset, max_feature_n, &feature_index, &hamming_distance, matching_sequence, &match_position);
+                process_feature_sequence(sequence, features, maxHammingDistance, nThreads, feature_constant_offset, max_feature_n, &feature_index, &hamming_distance, matching_sequence);
             }
             pthread_mutex_lock(&processor_args->process_mutex);
             if (feature_index){
                 // need to have feature_index -1 because the feature index is 1 based but array in struct is 0 based
                 matching_sequence[features->feature_lengths[feature_index - 1]] = '\0';               
-                insert_feature_sequence(matching_sequence, feature_index, hamming_distance, match_position, sample_args->hashes, sample_args->pools);
-                checkAndCorrectBarcode(barcode_lines, max_barcode_n, feature_index, match_position, sample_args->hashes, sample_args->pools, sample_args->stats, barcode_constant_offset);
+                insert_feature_sequence(matching_sequence, feature_index, hamming_distance, sample_args->hashes, sample_args->pools);
+                checkAndCorrectBarcode(barcode_lines, max_barcode_n, feature_index, sample_args->hashes, sample_args->pools, sample_args->stats, barcode_constant_offset);
             }
             else{
                 missing_flag=1;
