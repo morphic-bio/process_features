@@ -30,7 +30,7 @@ void enqueue(Queue *queue, uint64_t value) {
     // Check if the queue needs to be resized
     if (queue->size == queue->capacity) {
         queue->capacity *= 2;
-        queue->data = (uint64_t *)realloc(queue->data, queue->capacity * sizeof(int));
+        queue->data = (uint64_t *)realloc(queue->data, queue->capacity * sizeof(uint64_t));
 
         // Adjust the front and back indices if the queue is wrapped around
         if (queue->front > queue->back) {

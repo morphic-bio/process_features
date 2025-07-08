@@ -455,7 +455,44 @@ int is_directory(const char *path);
 int mkdir_p(const char *path);
 void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz);
 void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts, int **coexpression_counts, int **coexpression_histograms, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts);
-int print_feature_sequences(feature_arrays *features, int *total_counts, char *directory, data_structures *hashes);
+int print_feature_sequences(feature_arrays *features, int *total_counts, char *directory, data_structures *hashes){
+    //remember that 1 is the first feature
+    memset(total_counts, 0, features->number_of_features * sizeof(int));
+    char feature_sequences_filename[FILENAME_LENGTH];
+    sprintf(feature_sequences_filename, "%s/feature_sequences.txt", directory);
+    FILE *feature_sequencesfp = fopen(feature_sequences_filename, "w");
+    if (feature_sequencesfp == NULL) {
+        fprintf(stderr, "Failed to open feature sequences file\n");
+        exit(EXIT_FAILURE);
+    }   
+    GHashTableIter iter;
+    gpointer key, value;
+    int i=0;
+    g_hash_table_iter_init(&iter, hashes->unique_features_match);
+    int count = g_hash_table_size(hashes->unique_features_match);
+    gpointer *array = g_new(gpointer, count);
+    if(!array){
+        fprintf(stderr, "Failed to allocate memory for array\n");
+        exit(EXIT_FAILURE);
+    }   
+    while (g_hash_table_iter_next(&iter, &key, &value)) { 
+        array[i++] = value;
+    }
+    qsort(array, count, sizeof(gpointer), compare_feature_sequences);
+    fprintf(feature_sequencesfp, "Feature Index Sequence Hamming Distance Counts Feature Name\n");   
+    for (i = 0; i < count; i++) {
+        char annotated_sequence[LINE_LENGTH];
+        const int mapped_index=((feature_sequences*)array[i])->feature_index-1;
+        feature_sequences *entry = (feature_sequences*)array[i];
+        total_counts[mapped_index]+=entry->counts;
+        strcpy(annotated_sequence, entry->sequence);
+        int feature_length=features->feature_lengths[entry->feature_index-1];
+        lowerCaseDifferences(features->feature_sequences[entry->feature_index-1],annotated_sequence,feature_length);
+        fprintf(feature_sequencesfp, "%3d %s %2d %7d %s\n", entry->feature_index,annotated_sequence, entry->hamming_distance,entry->counts,features->feature_names[entry->feature_index-1]);
+    }
+    exit(0);
+    return 0;
+}
 void process_multiple_feature_sequences(int nsequences, char **sequences, int *orientations, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, unsigned char *feature_index, int *hamming_distance, char *matching_sequence);
 void process_feature_sequence(char *sequence, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, unsigned char *feature_index, int *hamming_distance, char *matching_sequence); 
 void process_pending_barcodes(data_structures *hashes, memory_pool_collection *pools, statistics *stats,double min_posterior);
@@ -838,45 +875,6 @@ int insert_feature_sequence(char *sequence, unsigned char feature_index, unsigne
         return 1;
     }   
 }
-int print_feature_sequences(feature_arrays *features, int *total_counts, char *directory, data_structures *hashes){
-    //remember that 1 is the first feature
-    memset(total_counts, 0, features->number_of_features * sizeof(int));
-    char feature_sequences_filename[FILENAME_LENGTH];
-    sprintf(feature_sequences_filename, "%s/feature_sequences.txt", directory);
-    FILE *feature_sequencesfp = fopen(feature_sequences_filename, "w");
-    if (feature_sequencesfp == NULL) {
-        fprintf(stderr, "Failed to open feature sequences file\n");
-        exit(EXIT_FAILURE);
-    }   
-    GHashTableIter iter;
-    gpointer key, value;
-    int i=0;
-    g_hash_table_iter_init(&iter, hashes->unique_features_match);
-    int count = g_hash_table_size(hashes->unique_features_match);
-    gpointer *array = g_new(gpointer, count);
-    if(!array){
-        fprintf(stderr, "Failed to allocate memory for array\n");
-        exit(EXIT_FAILURE);
-    }   
-    while (g_hash_table_iter_next(&iter, &key, &value)) { 
-        array[i++] = value;
-    }
-    qsort(array, count, sizeof(gpointer), compare_feature_sequences);
-    fprintf(feature_sequencesfp, "Feature Index Sequence Hamming Distance Counts Feature Name\n");   
-    for (i = 0; i < count; i++) {
-        char annotated_sequence[LINE_LENGTH];
-        const int mapped_index=((feature_sequences*)array[i])->feature_index-1;
-        feature_sequences *entry = (feature_sequences*)array[i];
-        total_counts[mapped_index]+=entry->counts;
-        strcpy(annotated_sequence, entry->sequence);
-        int feature_length=features->feature_lengths[entry->feature_index-1];
-        lowerCaseDifferences(features->feature_sequences[entry->feature_index-1],annotated_sequence,feature_length);
-        fprintf(feature_sequencesfp, "%3d %s %2d %7d %s\n", entry->feature_index,annotated_sequence, entry->hamming_distance,entry->counts,features->feature_names[entry->feature_index-1]);
-    }
-    exit(0);
-    return 0;
-}
-
 int string2code_debug(char *string, int sequence_length, unsigned char *code){
     const int last_element=sequence_length/4;
     for (int i=0; i<last_element; i++){

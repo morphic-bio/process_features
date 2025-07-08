@@ -422,7 +422,7 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
 
 //function prototypes sorted alphabetically
 void add_deduped_count(feature_counts *s, uint32_t *counts, uint16_t stringency, uint16_t min_counts);
-unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, char *umi, unsigned char *qscores, uint32_t feature_index, int number_of_variants, uint16_t match_position, memory_pool_collection *pools, statistics *stats);
+unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, unsigned char* corrected_barcodes, char *umi, unsigned char *qscores, uint32_t feature_index, int number_of_variants, uint16_t match_position, memory_pool_collection *pools, statistics *stats);
 storage_block* allocate_storage_block(size_t block_size);
 char check_neighbor(uint64_t code64, uint32_t *counts, data_structures *hashes);
 int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools, statistics *stats, int barcode_constant_offset);
@@ -435,7 +435,7 @@ void initialize_data_structures(data_structures *hashes);
 int existing_output_skip(char keep_existing, char *directory);
 void expand_memory_pool(memory_pool *pool);
 void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts,double min_posterior);
-unsigned char* find_best_posterior_match (unmatched_barcodes_features_block *entry_block, int number_of_features, double min_posterior,statistics *stats);
+unsigned char* find_best_posterior_match (unmatched_barcodes_features_block *entry_block, int number_of_features, double min_posterior, statistics *stats, data_structures *hashes);
 int find_closest_barcodes(unsigned char* code, unsigned char *corrected_codes, unsigned char *indices);
 void find_connected_component(gpointer start_key, uint32_t *counts, data_structures *hashes);
 void find_deduped_counts(data_structures *hashes, uint16_t stringency, uint16_t min_counts);
@@ -514,6 +514,7 @@ static int max_barcode_n=MAX_BARCODE_N;
 static int max_barcode_mismatches=MAX_BARCODE_MISMATCHES;
 static int umi_length=UMI_LENGTH;
 static int umi_code_length=UMI_CODE_LENGTH;
+static int limit_search = -1;
 
 
 
@@ -882,6 +883,7 @@ int print_feature_sequences(feature_arrays *features, int *total_counts, char *d
         lowerCaseDifferences(features->feature_sequences[entry->feature_index-1],annotated_sequence,feature_length);
         fprintf(feature_sequencesfp, "%7u %s %2d %7d %5u %s\n", entry->feature_index,annotated_sequence, entry->hamming_distance,entry->counts, entry->match_position, features->feature_names[entry->feature_index-1]);
     }
+    g_free(array);
     return 0;
 }
 
@@ -913,7 +915,7 @@ int string2code_debug(char *string, int sequence_length, unsigned char *code){
     return last_element+1;
 }
 
-unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, char *umi, unsigned char *qscores, uint32_t feature_index,int number_of_variants, uint16_t match_position, memory_pool_collection *pools, statistics *stats){
+unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, unsigned char* corrected_barcodes, char *umi, unsigned char *qscores, uint32_t feature_index, int number_of_variants, uint16_t match_position, memory_pool_collection *pools, statistics *stats){
     unmatched_barcodes_features_block *new_entry = (unmatched_barcodes_features_block*)allocate_memory_from_pool(pools->unmatched_barcodes_features_block_pool); 
 
     if (stats->unmatched_list.first_entry== NULL){
@@ -936,8 +938,9 @@ unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned 
     storage[0]=number_of_variants;
     storage++;
     //leave empty space for the closest barcodes    
-    storage+=(barcode_code_length)*(max_barcode_mismatches+1);
-    memcpy(storage, qscores, max_barcode_mismatches+1);
+    unsigned char* qscores_storage = storage + (barcode_code_length)*(max_barcode_mismatches+1);
+    memcpy(storage, corrected_barcodes, number_of_variants * barcode_code_length);
+    memcpy(qscores_storage, qscores, number_of_variants);
     new_entry->next=NULL;
     return new_entry;
 }
@@ -1976,7 +1979,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
 }
 int find_closest_barcodes(unsigned char* code,unsigned char *corrected_codes, unsigned char *indices){
     int number_of_variants=0;
-    for (int i=0; i<barcode_code_length; i++){
+    for (int i=0; i<barcode_length; i++){
         unsigned char corrected_bases[3];
         //check whitelist for variant match
         int nmatches=find_variant_match(code, i, corrected_bases);
@@ -1986,7 +1989,8 @@ int find_closest_barcodes(unsigned char* code,unsigned char *corrected_codes, un
             }
             for (int j=0; j<nmatches && number_of_variants+j < max_barcode_mismatches; j++){
                 memcpy(corrected_codes+(number_of_variants+j)*barcode_code_length, code, barcode_code_length);
-                corrected_codes[(number_of_variants+j)*barcode_code_length+i]=corrected_bases[j];
+                const int code_index = i / 4;
+                corrected_codes[(number_of_variants+j)*barcode_code_length + code_index] = corrected_bases[j];
                 indices[number_of_variants+j]=i;
             }
             number_of_variants+=nmatches;
@@ -2015,7 +2019,7 @@ int find_variant_match(unsigned char *code, int sequence_index, unsigned char *c
 void process_pending_barcodes( data_structures *hashes, memory_pool_collection *pools, statistics *stats, double min_posterior){
     unmatched_barcodes_features_block *current_entry_block=stats->unmatched_list.first_entry;
     while (current_entry_block != NULL){
-        unsigned char *retcode=find_best_posterior_match(current_entry_block, number_of_features, min_posterior,stats);
+        unsigned char *retcode=find_best_posterior_match(current_entry_block, number_of_features, min_posterior,stats, hashes);
         if (retcode != 0){
             unmatched_barcodes_features current_entry;
             read_unmatched_features_block(current_entry_block, &current_entry);
@@ -2026,7 +2030,7 @@ void process_pending_barcodes( data_structures *hashes, memory_pool_collection *
         current_entry_block=current_entry_block->next;
     }
 }
-unsigned char* find_best_posterior_match (unmatched_barcodes_features_block *entry_block, int number_of_features, double min_posterior,statistics *stats){
+unsigned char* find_best_posterior_match (unmatched_barcodes_features_block *entry_block, int number_of_features, double min_posterior, statistics *stats, data_structures *hashes){
     unmatched_barcodes_features entry_struct;
     unmatched_barcodes_features *entry=&entry_struct;
     read_unmatched_features_block(entry_block, entry);
@@ -2040,8 +2044,8 @@ unsigned char* find_best_posterior_match (unmatched_barcodes_features_block *ent
         //find counts for the barcode
         int total_counts=1;
         unsigned char* barcode =(entry->closest_barcodes) + i*barcode_code_length;
-        feature_counts *counts=g_hash_table_lookup(whitelist_hash, barcode);
-        if (counts != NULL){
+        feature_counts *counts=g_hash_table_lookup(hashes->filtered_hash, barcode);
+    if (counts != NULL){
             for (int j=1; j<=number_of_features; j++){
                 total_counts+=counts->counts[j];
             }
@@ -2256,7 +2260,7 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
                 for (int i=0; i<nMatches; i++){
                     qscores[i]=lines[1][indices[i]];
                 }
-                add_unmatched_barcode_store_feature(corrected_codes,sequence+barcode_length, qscores,feature_index,nMatches, match_position, pools,stats);
+                add_unmatched_barcode_store_feature(code, corrected_codes, sequence+barcode_length, qscores,feature_index,nMatches, match_position, pools,stats);
                 stats->pending++;
             }
             return 0;
@@ -2560,10 +2564,7 @@ fastq_reader* allocate_fastq_reader( char **filenames, int nfiles, int filetype,
     for (int i = 0; i < nfiles; i++) {
         strcpy(this_filename, filenames[i]);
         reader->filenames[i] = this_filename;
-        //do no increment the last time to avoid overun of the buffer
-        if (i < nfiles - 1) {
-            this_filename += strlen(filenames[i]) + 1;
-        }
+        this_filename += strlen(filenames[i]) + 1;
     }
     reader->gz_pointer = NULL;            // Initialize gz_pointer as needed
     reader->filetype = filetype;          // Set the filetype
@@ -2863,6 +2864,61 @@ void process_multiple_feature_sequences(int nsequences, char **sequences, int *o
     }
 }
 void process_feature_sequence(char *sequence, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position) {
+    if (limit_search != -1 && feature_constant_offset > 0) {
+        int bestHammingDistance = maxHammingDistance + 1;
+        uint32_t bestFeatureIndex = 0;
+        uint16_t bestMatchPosition = 0;
+        char ambiguous = 0;
+
+        for (int i = 0; i <= limit_search; i++) {
+            // For i=0, this checks offset 0. For i>0, it checks +i and -i.
+            for (int sign = 1; sign >= -1; sign -= 2) {
+                if (i == 0 && sign == -1) continue; // Only check offset 0 once
+
+                int offset_delta = i * sign;
+                int current_offset = feature_constant_offset + offset_delta;
+                if (current_offset < 0) continue;
+
+                int currentHammingDistance = 0;
+                uint32_t currentFeatureIndex = simpleCorrectFeature(sequence + current_offset, features, max_feature_n, maxHammingDistance, &currentHammingDistance);
+
+                if (currentFeatureIndex) {
+                    // If a perfect match is found, we can exit immediately.
+                    if (currentHammingDistance == 0) {
+                        *feature_index = currentFeatureIndex;
+                        *hamming_distance = 0;
+                        *match_position = current_offset;
+                        memcpy(matching_sequence, sequence + current_offset, features->feature_lengths[currentFeatureIndex - 1]);
+                        matching_sequence[features->feature_lengths[currentFeatureIndex - 1]] = '\0';
+                        return;
+                    }
+
+                    if (currentHammingDistance < bestHammingDistance) {
+                        bestHammingDistance = currentHammingDistance;
+                        bestFeatureIndex = currentFeatureIndex;
+                        bestMatchPosition = current_offset;
+                        ambiguous = 0;
+                    } else if (currentHammingDistance == bestHammingDistance) {
+                        if (bestFeatureIndex != currentFeatureIndex) {
+                            ambiguous = 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!ambiguous && bestFeatureIndex) {
+            *feature_index = bestFeatureIndex;
+            *hamming_distance = bestHammingDistance;
+            *match_position = bestMatchPosition;
+            memcpy(matching_sequence, sequence + bestMatchPosition, features->feature_lengths[bestFeatureIndex - 1]);
+            matching_sequence[features->feature_lengths[bestFeatureIndex - 1]] = '\0';
+        } else {
+            *feature_index = 0;
+            *hamming_distance = bestHammingDistance;
+        }
+        return;
+    }
     int bestHammingDistance=0;
     int variableMaxHammingDistance=maxHammingDistance;
     uint32_t myFeatureIndex=0;
@@ -3143,18 +3199,24 @@ void free_fastq_reader(fastq_reader *reader) {
     }
     free(reader->buffer);
     free(reader->buffer_storage);
+    free(reader->concatenated_filenames);
+    free(reader->filenames);
     pthread_mutex_destroy(&reader->mutex);
     pthread_cond_destroy(&reader->can_produce);
     pthread_cond_destroy(&reader->can_consume);
 }
 void free_fastq_reader_set(fastq_reader_set *reader_set) {
     free_fastq_reader(reader_set->barcode_reader);
+    free(reader_set->barcode_reader);
     if (reader_set->forward_reader) {
         free_fastq_reader(reader_set->forward_reader);
+        free(reader_set->forward_reader);
     }
     if (reader_set->reverse_reader) {
         free_fastq_reader(reader_set->reverse_reader);
+        free(reader_set->reverse_reader);
     }
+    free(reader_set);
 }
 void free_fastq_processor(fastq_processor *processor_args) {
     for (int i = 0; i < processor_args->nsets; i++) {
@@ -3381,9 +3443,9 @@ void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order
     // Free the allocated memory for sizes
     free(sizes);
 }
-void cleanup_sample(memory_pool_collection *pools, data_structures *hashes){        
-    free_memory_pool_collection(pools);
-    destroy_data_structures(hashes);
+void cleanup_sample(memory_pool_collection *pools, data_structures *hashes){
+    destroy_data_structures(hashes);      /* first: walk and free hash nodes */
+    free_memory_pool_collection(pools);   /* then: free the underlying pools */
 }
 int calculate_threads(fastq_files_collection *fastq_files, int parallel_by_file, int index, int threads_used, int available_threads, int *consumer_threads_per_set, int *search_threads_per_consumer, int *max_concurrent_processes, int set_consumer_threads_per_set, int set_search_threads_per_consumer){
     //assume that all concurrent processes will eventually become available for calculations
@@ -3832,9 +3894,9 @@ void organize_fastq_files_by_directory(int positional_arg_count, int argc, char 
                 }
             }
             
-
             fastq_files->sample_names[i]=(char*)get_basename(directory);
             fprintf(stderr, "directory %s Sample name %s\n", directory,fastq_files->sample_names[i]);
+            free(directory);
         }
     }    
     sort_samples_by_size(fastq_files, fastq_files->sorted_index);
@@ -4122,6 +4184,7 @@ int main(int argc, char *argv[])
         {"forward_fastq_pattern", required_argument, 0, 7},
         {"reverse_fastq_pattern", required_argument, 0, 8},
         {"max_reads", required_argument, 0, 9},
+        {"limit_search", required_argument, 0, 10},
         {0, 0, 0, 0}
     };
 
@@ -4250,6 +4313,9 @@ int main(int argc, char *argv[])
             case 9:
                 max_reads=atoll(optarg);
                 break;
+            case 10:
+                limit_search = atoi(optarg);
+                break;
             default:
                 // print usage
  fprintf(stderr, "Usage: %s \n\
@@ -4283,7 +4349,9 @@ int main(int argc, char *argv[])
   --barcode_n [int]                  Set the maximum barcode count\n\
   --barcode_fastq_pattern [string]   Set the pattern for barcode FASTQ files\n\
   --forward_fastq_pattern [string]   Set the pattern for forward FASTQ files\n\
-  --reverse_fastq_pattern [string]   Set the pattern for reverse FASTQ files\n", argv[0]);
+  --reverse_fastq_pattern [string]   Set the pattern for reverse FASTQ files\n\
+  --max_reads [int]                  Set the maximum number of reads to process\n\
+  --limit_search [int]               Limit the search to +/- this value from the feature constant offset\n", argv[0]);
                 return 1;
         }
     }
@@ -4360,6 +4428,8 @@ int main(int argc, char *argv[])
             atomic_fetch_add(thread_counter, threads_per_set);
             
             char sample_directory[FILENAME_LENGTH];
+            fprintf(stderr, "DEBUG: sample_flag=%d, sample index i=%d, sample_name='%s'\n", 
+                    sample_flag, i, fastq_files.sample_names[i]);
             if (sample_flag){
                 strcpy(sample_directory, directory);
                 strcat(sample_directory, fastq_files.sample_names[i]);
@@ -4367,8 +4437,10 @@ int main(int argc, char *argv[])
             }
             else{
                 strcpy(sample_directory, directory);
-                strcat(sample_directory, fastq_files.sample_names[0]);
-                strcat(sample_directory, "/");
+                // Create unique directory for each sample even when not using sample names
+                char sample_suffix[64];
+                snprintf(sample_suffix, sizeof(sample_suffix), "sample_%d/", i);
+                strcat(sample_directory, sample_suffix);
             }
             memory_pool_collection *pools=initialize_memory_pool_collection();
             statistics stats;
@@ -4376,7 +4448,7 @@ int main(int argc, char *argv[])
             initialize_data_structures(&hashes);
             initialize_statistics(&stats);
             fprintf(stderr, "Processing sample directory %s\n", sample_directory);
-            if (existing_output_skip(keep_existing, sample_directory)) continue;
+            if (existing_output_skip(keep_existing, sample_directory)) exit(0);
             sample_args args;
             populate_sample_args(&args,i, sample_directory, &fastq_files, features, maxHammingDistance, search_threads_per_consumer, pools, &stats, &hashes, stringency, min_counts, barcode_constant_offset, feature_constant_offset, read_buffer_lines, average_read_length,parallel_by_file,min_posterior,consumer_threads_per_set);
             process_files_in_sample(&args);
@@ -4393,6 +4465,10 @@ int main(int argc, char *argv[])
         concurrent_processes--;
     }
     g_hash_table_destroy(whitelist_hash);
+    free(whitelist);
+    if (barcodeFastqFilesString) free(barcodeFastqFilesString);
+    if (forwardFastqFilesString) free(forwardFastqFilesString);
+    if (reverseFastqFilesString) free(reverseFastqFilesString);
     free_feature_arrays(features);
     return 0;
 }
