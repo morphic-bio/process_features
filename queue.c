@@ -5,6 +5,10 @@
 void init_queue(Queue *queue) {
     queue->capacity = INITIAL_CAPACITY;
     queue->data = (uint64_t *)malloc(queue->capacity * sizeof(uint64_t));
+    if (!queue->data) {
+        fprintf(stderr, "Failed to allocate memory for queue\n");
+        exit(EXIT_FAILURE);
+    }
     queue->front = 0;
     queue->back = 0;
     queue->size = 0;

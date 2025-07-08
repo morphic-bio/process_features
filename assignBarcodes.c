@@ -20,6 +20,7 @@
 #include <dirent.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
+#include <errno.h>  // Missing for EEXIST in mkdir_p()
 
 //code for feature sequences stats - exclude if not needed
 #ifndef NO_HEATMAP
@@ -36,7 +37,7 @@
 //will  print if DEBUG is set or debug=1
 //code for feature sequences stats
 
-typedef struct _feature_arrays {
+typedef struct feature_arrays {
     int number_of_features;
     int max_length;
     char **feature_names;
@@ -49,12 +50,12 @@ typedef struct _feature_arrays {
     unsigned char *feature_codes_storage; 
 } feature_arrays;
 
-typedef struct _feature_counts {
+typedef struct feature_counts {
     unsigned char sequence_code[4]; // need to hardcode to 4 for 32 bit hash - if BARCODE_CODE_LENGTH > 4 then need to change this
     uint16_t counts[];
 } feature_counts;
 
-typedef struct _feature_sequences {
+typedef struct feature_sequences {
     uint32_t counts;
     char hamming_distance;
     uint32_t feature_index;
@@ -62,34 +63,34 @@ typedef struct _feature_sequences {
     char sequence[];
 } feature_sequences;
 
-typedef struct _feature_umi_counts {
+typedef struct feature_umi_counts {
     unsigned char sequence_umi_code[8]; // hard coded to 8 for 64 bit
     uint16_t counts[];
 } feature_umi_counts;
 
-typedef struct _memory_pool {
+typedef struct memory_pool {
     size_t block_size;       // Size of each block (size of features_block)
     size_t blocks_per_pool;  // Number of blocks per pool
     size_t free_blocks;      // Number of free blocks
     void *next_free;         // Pointer to the next free block
-    struct _storage_block *first_block;   // Pointer to the first memory block
-    struct _storage_block *current_block; // Pointer to the current memory block
+    struct storage_block *first_block;   // Pointer to the first memory block
+    struct storage_block *current_block; // Pointer to the current memory block
 } memory_pool;
 
-typedef struct _memory_pool_collection {
+typedef struct memory_pool_collection {
     memory_pool *feature_counts_pool;
     memory_pool *feature_umi_counts_pool;
     memory_pool *feature_sequences_pool;
     memory_pool *unmatched_barcodes_features_block_pool;
 } memory_pool_collection;
 
-typedef struct _storage_block {
-    struct _storage_block *next;
+typedef struct storage_block {
+    struct storage_block *next;
     unsigned char *storage;
 } storage_block;
 
-typedef struct _unmatched_barcodes_features {
-    struct _unmatched_barcodes_features_block *next;
+typedef struct unmatched_barcodes_features {
+    struct unmatched_barcodes_features_block *next;
     uint32_t feature_index;
     unsigned char *barcode;
     unsigned char *umi;
@@ -99,17 +100,17 @@ typedef struct _unmatched_barcodes_features {
     uint16_t match_position;
 } unmatched_barcodes_features;
 
-typedef struct _unmatched_barcodes_features_block {
-    struct _unmatched_barcodes_features_block *next;
+typedef struct unmatched_barcodes_features_block {
+    struct unmatched_barcodes_features_block *next;
     unsigned char storage[];
 } unmatched_barcodes_features_block;
 
-typedef struct _unmatched_barcodes_features_block_list {
+typedef struct unmatched_barcodes_features_block_list {
     unmatched_barcodes_features_block *first_entry;
     unmatched_barcodes_features_block *last_entry;
 } unmatched_barcodes_features_block_list;
 
-typedef struct _unit_sizes {
+typedef struct unit_sizes {
     // stores unit sizes for dynamically allocated structs
     size_t feature_counts;
     size_t feature_umi_counts;
@@ -117,7 +118,7 @@ typedef struct _unit_sizes {
     size_t unmatched_barcodes_features_block;
 } unit_sizes;
 
-typedef struct _statistics {//keep track of stats
+typedef struct statistics {//keep track of stats
     double start_time;
     size_t nMismatches;
     size_t recovered;
@@ -129,14 +130,14 @@ typedef struct _statistics {//keep track of stats
     unmatched_barcodes_features_block_list unmatched_list;
 } statistics;
 
-typedef struct _data_structures {
+typedef struct data_structures {
     GHashTable *filtered_hash;
     GHashTable *sequence_umi_hash;
     GHashTable *unique_features_match;
     Queue *neighbors_queue;
 } data_structures;
 
-typedef struct _fastq_files_collection {
+typedef struct fastq_files_collection {
     char **barcode_fastq;//list of pointers to concatenated strings
     char **forward_fastq;
     char **reverse_fastq;
@@ -153,7 +154,7 @@ typedef struct _fastq_files_collection {
     int *sorted_index;
 } fastq_files_collection; 
 
-typedef struct _sample_args {
+typedef struct sample_args {
     int sample_index;
     char *directory;
     fastq_files_collection *fastq_files;
@@ -174,16 +175,16 @@ typedef struct _sample_args {
     int consumer_threads_per_set;
 } sample_args;
 
-typedef struct _fastq_processor {
+typedef struct fastq_processor {
     int nsets;
     int nreaders; //2 or 3 depending on whether forward and or reverse are present  
-    struct _fastq_reader_set **reader_sets;
-    struct _sample_args *sample_args;
+    struct fastq_reader_set **reader_sets;
+    struct sample_args *sample_args;
     pthread_mutex_t process_mutex;
     pthread_cond_t can_process;
 } fastq_processor;
 // Struct to hold filename and related data
-typedef struct _fastq_reader {
+typedef struct fastq_reader {
     char *concatenated_filenames;       // Pointer to the filenames joined together by \0
     char **filenames;                   // Array of pointers to the start of each filename
     int nfiles;                         // Number of files
@@ -204,12 +205,12 @@ typedef struct _fastq_reader {
     int done;               // Flag to indicate end of file
 } fastq_reader;
 
-typedef struct _fastq_reader_set {
-    struct _fastq_reader *barcode_reader; //must be read together
-    struct _fastq_reader *forward_reader;
-    struct _fastq_reader *reverse_reader;
+typedef struct fastq_reader_set {
+    struct fastq_reader *barcode_reader; //must be read together
+    struct fastq_reader *forward_reader;
+    struct fastq_reader *reverse_reader;
 } fastq_reader_set;
-typedef struct _fastq_readers_args {
+typedef struct fastq_readers_args {
     int thread_id;
     int set_index;
     int reader_type;
@@ -471,7 +472,6 @@ void reverse_complement_in_place(char *seq);
 void reverse_in_place(char *str);
 int split_line(char *line, char *fields[], const char *split_string);
 int string2code(char *string, int sequence_length, unsigned char *code);
-int string2code_debug(char *string, int sequence_length, unsigned char *code);
 void string2all_codes(char *string, unsigned char codes[][LINE_LENGTH/2+1], int *lengths);
 void update_feature_counts(char *barcode_string, char *umi, uint32_t feature_index, data_structures *hashes,memory_pool_collection *pools);
 void update_feature_counts_from_code(unsigned char *code, char *umi, uint32_t feature_index, data_structures *hashes, memory_pool_collection *pools);
@@ -479,6 +479,7 @@ void update_umi_counts(unsigned char *code, char *umi, uint32_t feature_index, d
 void process_files_in_sample(sample_args *args);
 void free_memory_pool_collection(memory_pool_collection *pools);
 void free_memory_pool_storage(memory_pool *pool);
+void free_fastq_files_collection(fastq_files_collection *fastq_files);
 
 
 
@@ -678,6 +679,7 @@ void free_memory_pool_collection(memory_pool_collection *pools) {
     free_memory_pool_storage(pools->feature_umi_counts_pool);
     free_memory_pool_storage(pools->feature_sequences_pool);
     free_memory_pool_storage(pools->unmatched_barcodes_features_block_pool);
+    free(pools);
 }
 void free_feature_arrays(feature_arrays *features) {
     free(features->feature_names_storage);
@@ -887,33 +889,7 @@ int print_feature_sequences(feature_arrays *features, int *total_counts, char *d
     return 0;
 }
 
-int string2code_debug(char *string, int sequence_length, unsigned char *code){
-    const int last_element=sequence_length/4;
-    for (int i=0; i<last_element; i++){
-        DEBUG_PRINT( "Converting %c %c %c %c\n", string[4*i], string[4*i+1], string[4*i+2], string[4*i+3]    );
-        code[i]=seq2code[(unsigned char)string[4*i]]<<6 | seq2code[(unsigned char)string[4*i+1]]<<4 | seq2code[(unsigned char)string[4*i+2]]<<2 | seq2code[(unsigned char)string[4*i+3]];
-    }
-    //check if there are any remaining characters and pad with 0
-    char leftover=sequence_length%4;
-    if (!leftover){
-        return last_element;
-    }
-    switch (leftover){
-        case 1:
-            DEBUG_PRINT( "Converting %c \n", string[4*last_element]);
-            code[last_element]=seq2code[(unsigned char)string[4*last_element]]<<6;
-            break;
-        case 2:
-            DEBUG_PRINT( "Converting %c %c\n", string[4*last_element], string[4*last_element+1]);
-            code[last_element]=seq2code[(unsigned char)string[4*last_element]]<<6 | seq2code[(unsigned char)string[4*last_element+1]]<<4;
-            break;
-        case 3:
-            DEBUG_PRINT( "Converting %c %c %c\n", string[4*last_element], string[4*last_element+1], string[4*last_element+2]);
-            code[last_element]=seq2code[(unsigned char)string[4*last_element]]<<6 | seq2code[(unsigned char)string[4*last_element+1]]<<4 | seq2code[(unsigned char)string[4*last_element+2]]<<2;
-            break;
-    }
-    return last_element+1;
-}
+
 
 unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, unsigned char* corrected_barcodes, char *umi, unsigned char *qscores, uint32_t feature_index, int number_of_variants, uint16_t match_position, memory_pool_collection *pools, statistics *stats){
     unmatched_barcodes_features_block *new_entry = (unmatched_barcodes_features_block*)allocate_memory_from_pool(pools->unmatched_barcodes_features_block_pool); 
@@ -3894,9 +3870,9 @@ void organize_fastq_files_by_directory(int positional_arg_count, int argc, char 
                 }
             }
             
-            fastq_files->sample_names[i]=(char*)get_basename(directory);
+            fastq_files->sample_names[i] = strdup(get_basename(directory));
             fprintf(stderr, "directory %s Sample name %s\n", directory,fastq_files->sample_names[i]);
-            // Remove this line: free(directory);
+            free(directory);
         }
     }    
     sort_samples_by_size(fastq_files, fastq_files->sorted_index);
@@ -4007,7 +3983,10 @@ void organize_fastq_files_by_type(int positional_arg_count, int argc, char *argv
             }
         }
         //find concatenated string length
-        int concatenated_length = strlen(barcodeFastqFilesString) + strlen(forwardFastqFilesString) + strlen(reverseFastqFilesString) + 3;
+        size_t fwd_len = forwardFastqFilesString ? strlen(forwardFastqFilesString) : 0;
+        size_t rev_len = reverseFastqFilesString ? strlen(reverseFastqFilesString) : 0;
+        size_t bar_len = barcodeFastqFilesString ? strlen(barcodeFastqFilesString) : 0;
+        int concatenated_length = bar_len + fwd_len + rev_len + 3;
         fastq_files->concatenated_files = malloc(concatenated_length);
         if (fastq_files->concatenated_files == NULL) {
             perror("Failed to allocate memory for concatenated fastq files");
@@ -4176,7 +4155,7 @@ int main(int argc, char *argv[])
         {"consumer_threads_per_set", required_argument, 0, 'c'},
         {"barcode_fastqs", required_argument, 0, 0},
         {"forward_fastqs", required_argument, 0, 1},
-        {"reverse_fastqs,", required_argument, 0, 2},
+        {"reverse_fastqs", required_argument, 0, 2},
         {"max_barcode_mismatches", required_argument, 0, 3},
         {"feature_n", required_argument, 0, 4},
         {"barcode_n", required_argument, 0, 5},
@@ -4466,6 +4445,28 @@ int main(int argc, char *argv[])
     if (forwardFastqFilesString) free(forwardFastqFilesString);
     if (reverseFastqFilesString) free(reverseFastqFilesString);
     free_feature_arrays(features);
+    free_fastq_files_collection(&fastq_files);
     return 0;
+}
+
+void free_fastq_files_collection(fastq_files_collection *fastq_files){
+    //TODO make memory management consistent between organize by directory and type
+    //for now just freeing what is obviously allocated
+    free(fastq_files->concatenated_files);
+    free(fastq_files->concatenated_sample_names);
+    if(fastq_files->barcode_fastq)
+        free(fastq_files->barcode_fastq);
+    if(fastq_files->forward_fastq)
+        free(fastq_files->forward_fastq);
+    if(fastq_files->reverse_fastq)
+        free(fastq_files->reverse_fastq);
+    if(fastq_files->sample_names)
+        free(fastq_files->sample_names);
+    if(fastq_files->sample_sizes)
+        free(fastq_files->sample_sizes);
+    if(fastq_files->sample_offsets)
+        free(fastq_files->sample_offsets);
+    if(fastq_files->sorted_index)
+        free(fastq_files->sorted_index);
 }
 
