@@ -3896,7 +3896,7 @@ void organize_fastq_files_by_directory(int positional_arg_count, int argc, char 
             
             fastq_files->sample_names[i]=(char*)get_basename(directory);
             fprintf(stderr, "directory %s Sample name %s\n", directory,fastq_files->sample_names[i]);
-            free(directory);
+            // Remove this line: free(directory);
         }
     }    
     sort_samples_by_size(fastq_files, fastq_files->sorted_index);
@@ -4428,8 +4428,6 @@ int main(int argc, char *argv[])
             atomic_fetch_add(thread_counter, threads_per_set);
             
             char sample_directory[FILENAME_LENGTH];
-            fprintf(stderr, "DEBUG: sample_flag=%d, sample index i=%d, sample_name='%s'\n", 
-                    sample_flag, i, fastq_files.sample_names[i]);
             if (sample_flag){
                 strcpy(sample_directory, directory);
                 strcat(sample_directory, fastq_files.sample_names[i]);
@@ -4437,10 +4435,8 @@ int main(int argc, char *argv[])
             }
             else{
                 strcpy(sample_directory, directory);
-                // Create unique directory for each sample even when not using sample names
-                char sample_suffix[64];
-                snprintf(sample_suffix, sizeof(sample_suffix), "sample_%d/", i);
-                strcat(sample_directory, sample_suffix);
+                strcat(sample_directory, fastq_files.sample_names[0]);
+                strcat(sample_directory, "/");
             }
             memory_pool_collection *pools=initialize_memory_pool_collection();
             statistics stats;
