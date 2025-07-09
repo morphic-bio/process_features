@@ -1869,7 +1869,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
         memset(coCounts, 0, (features->number_of_features+1)*sizeof(int));
         int number_of_coexpressors=0;
         for (int i=1; i<= features->number_of_features; i++){
-            if (entry_deduped_counts[i] > 0){
+            if (entry->counts[i] > 0 && entry_deduped_counts[i] > 0){
                 coCounts[number_of_coexpressors]=entry_deduped_counts[i];
                 coExpressorsIndices[number_of_coexpressors++]=i;
                 number_of_features_seen++;
