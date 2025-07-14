@@ -9,10 +9,10 @@
 //code for heatmap generation
 #ifndef NO_HEATMAP
 #include <cairo.h>
-#include "plasma_colormap_16.h"
-#include "plasma_colormap_64.h"
-#include "plasma_colormap_256.h"
-#include "plasma_colormap_1024.h"
+#include "../include/plasma_colormap_16.h"
+#include "../include/plasma_colormap_64.h"
+#include "../include/plasma_colormap_256.h"
+#include "../include/plasma_colormap_1024.h"
 
 const double (*select_colormap(int dynamic_range, int *colormap_size))[3] {
     if (dynamic_range < 20) {
@@ -1303,7 +1303,6 @@ int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxH
         *bestScore=bestFeatureDistance;
         *matching_sequence=lineR2+best_i+best_code_offset*4;
         *match_position=best_i+best_code_offset*4;
-        int offset=best_i+best_code_offset*4;
         if (!multiAmbiguous){
             return best_feature;
         }
