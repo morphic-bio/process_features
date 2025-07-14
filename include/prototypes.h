@@ -24,8 +24,6 @@ memory_pool_collection* initialize_memory_pool_collection();
 int is_directory(const char *path);
 int existing_output_skip(char keep_existing, char *directory);
 double get_time_in_seconds();
-memory_pool* initialize_storage_pool(size_t block_size, size_t blocks_per_pool);
-void expand_memory_pool(memory_pool *pool);
 int string2code(char *string, int sequence_length, unsigned char *code);
 char check_sequence(char *sequence, int sequence_length);
 void reverse_complement_sequence(char *sequence,  char *reverse, int length);

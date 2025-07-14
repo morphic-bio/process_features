@@ -1,0 +1,1494 @@
+--- a/src/assignBarcodes.c
++++ b/src/assignBarcodes.c
+@@ -4,20 +4,8 @@
+ #include "../include/globals.h"
+ #include "../include/prototypes.h"
+ #include "../include/utils.h"
++#include "../include/fastq_io.h"
+ 
+-//will  print if DEBUG is set or debug=1
+-//code for feature sequences stats
+-
+-//code for heatmap generation
+-#ifndef NO_HEATMAP
+-#include <cairo.h>
+-#include "../include/plasma_colormap_16.h"
+-#include "../include/plasma_colormap_64.h"
+-#include "../include/plasma_colormap_256.h"
+-#include "../include/plasma_colormap_1024.h"
+-
+-const double (*select_colormap(int dynamic_range, int *colormap_size))[3] {
+-    if (dynamic_range < 20) {
+-        *colormap_size = 16;
+-        return plasma_colormap_16;
+-    } else if (dynamic_range < 100) {
+-        *colormap_size = 64;
+-        return plasma_colormap_64;
+-    } else if (dynamic_range < 1000) {
+-        *colormap_size = 256;
+-        return plasma_colormap_256;
+-    } else {
+-        *colormap_size = 1024;
+-        return plasma_colormap_1024;
+-    }
+-}
+-
+-// Function to map a normalized value (0–1) to an RGB color using a colormap
+-void value_to_color(double normalized_value, double *r, double *g, double *b, const double colormap[][3], int colormap_size) {
+-    if (normalized_value < 0.0) normalized_value = 0.0;
+-    if (normalized_value > 1.0) normalized_value = 1.0;
+-    int index = (int)(normalized_value * (colormap_size - 1));
+-    *r = colormap[index][0];
+-    *g = colormap[index][1];
+-    *b = colormap[index][2];
+-}
+-
+-// Function to normalize values for coloring
+-double normalize(int value, int max_value) {
+-    return (double)value / max_value;
+-}
+-
+-// Function to generate heatmap with dynamic padding
+-void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms) {
+-    char output_file[1024];
+-    if (directory[strlen(directory) - 1] == '/') {
+-        snprintf(output_file, sizeof(output_file), "%sheatmap.png", directory);
+-    } else {
+-        snprintf(output_file, sizeof(output_file), "%s/heatmap.png", directory);
+-    }
+-    int max_name_length=0;
+-    const int num_rows = features->number_of_features;
+-    int column_sums[num_rows];
+-    memset(column_sums,0,num_rows*sizeof(int));
+-    for (int i=0; i<num_rows; i++){
+-        if (strlen(features->feature_names[i])>max_name_length){
+-            max_name_length=strlen(features->feature_names[i]);
+-        }
+-    }
+-
+-    int left_padding = BASE_PADDING + max_name_length * 7;
+-    int right_padding = BASE_PADDING + 50;
+-    int filtered_rows = 0;
+-    int filter_mask[num_rows];
+-    int num_cols = 0;
+-    
+-    for (int i = 0; i < num_rows; i++) {
+-       filter_mask[i]=coexpression_histograms[i+1][0]>0;
+-         if (filter_mask[i]){
+-              filtered_rows++;
+-         }
+-       if (coexpression_histograms[i+1][0]> num_cols){
+-           num_cols=coexpression_histograms[i+1][0];
+-       }
+-    }
+-    for (int i = 0; i < num_rows; i++) {
+-        for (int j = 0; j < num_cols; j++) {
+-            column_sums[j] += coexpression_histograms[i+1][j+1];
+-        }
+-    }
+-    for (int j = 0; j < num_cols; j++) {
+-        column_sums[j] /= j+1;
+-    }
+-    int max_column_sum = 0;
+-    for (int j = 0; j < num_cols; j++) {
+-        if (column_sums[j] > max_column_sum) {
+-            max_column_sum = column_sums[j];
+-        }
+-    }
+-    int width = left_padding + num_cols * CELL_SIZE + BAR_WIDTH + right_padding;
+-    int height = BASE_PADDING + BAR_GRAPH_HEIGHT + BASE_PADDING + 20 + filtered_rows * CELL_SIZE + BASE_PADDING;
+-
+-    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+-    cairo_t *cr = cairo_create(surface);
+-
+-    for (int j = 0; j < num_cols; j++) {
+-        double bar_height = (double)column_sums[j] / max_column_sum * BAR_GRAPH_HEIGHT;
+-        cairo_set_source_rgb(cr, 0.2, 0.4, 0.8);
+-        cairo_rectangle(cr, left_padding + j * CELL_SIZE, BASE_PADDING + BAR_GRAPH_HEIGHT - bar_height, CELL_SIZE, bar_height);
+-        cairo_fill(cr);
+-    }
+-    cairo_set_font_size(cr, 10);
+-    cairo_set_source_rgb(cr, 0, 0, 0);
+-
+-    char max_label[20];
+-    snprintf(max_label, sizeof(max_label), "%-d", max_column_sum);
+-    cairo_move_to(cr, left_padding - 30 - 10, BASE_PADDING + 5);
+-    cairo_show_text(cr, max_label);
+-
+-    char midpoint_label[20];
+-    int midpoint_value = max_column_sum / 2;
+-    snprintf(midpoint_label, sizeof(midpoint_label), "%d", midpoint_value);
+-    cairo_move_to(cr, left_padding - 30 - 10, BASE_PADDING + BAR_GRAPH_HEIGHT / 2 + 5);
+-    cairo_show_text(cr, midpoint_label);
+-    
+-    cairo_set_font_size(cr, 10);
+-    cairo_set_source_rgb(cr, 0, 0, 0);
+-    for (int j = 0; j < num_cols; j++) {
+-        if ((j+1) % 5 == 0) {
+-            char label[10];
+-            snprintf(label, sizeof(label), "%d", j+1);
+-            cairo_move_to(cr, left_padding + j * CELL_SIZE + CELL_SIZE / 4, BASE_PADDING + BAR_GRAPH_HEIGHT + 15);
+-            cairo_show_text(cr, label);
+-        }
+-    }
+-
+-    int max_value = 0;
+-    for (int i = 0; i < num_rows; i++) {
+-        if (!filter_mask[i]) continue;
+-        for (int j = 0; j < num_cols; j++) {
+-            if (coexpression_histograms[i+1][j+1] > max_value) {
+-                max_value = coexpression_histograms[i+1][j+1];
+-            }
+-        }
+-    }
+-    int draw_row = 0;
+-    const double (*plasma_colormap)[3];
+-    int colormap_size;
+-    plasma_colormap = select_colormap(max_value, &colormap_size);
+-
+-    for (int i = 0; i < num_rows; i++) {
+-        if (!filter_mask[i]) continue;
+-        for (int j = 0; j < num_cols; j++) {
+-            double intensity = normalize(coexpression_histograms[i+1][j+1], max_value);
+-            double r, g, b;
+-            value_to_color(intensity, &r, &g, &b, plasma_colormap, colormap_size);
+-            cairo_set_source_rgb(cr, r, g, b);
+-            cairo_rectangle(cr, left_padding + j * CELL_SIZE, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + draw_row * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+-            cairo_fill(cr);
+-        }
+-        cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+-        cairo_set_font_size(cr, 10);
+-        cairo_move_to(cr, BASE_PADDING, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + draw_row * CELL_SIZE + CELL_SIZE / 2);
+-        cairo_show_text(cr, features->feature_names[i]);
+-        draw_row++;
+-    }
+-    for (int i = 0; i < height - BAR_GRAPH_HEIGHT - 20 - BASE_PADDING*3 ; i++) {
+-        double normalized_value = 1.0 - (double)i / (height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20);
+-        double r, g, b;
+-        value_to_color(normalized_value, &r, &g, &b, plasma_colormap, colormap_size);
+-        cairo_set_source_rgb(cr, r, g, b);
+-        cairo_rectangle(cr, width - right_padding - BAR_WIDTH, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + i, BAR_WIDTH, 1);
+-        cairo_fill(cr);
+-    }
+-
+-    cairo_set_font_size(cr, 10);
+-    for (int i = 0; i <= height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20; i += 10 * CELL_SIZE) {
+-        double normalized_value = 1.0 - (double)i / (height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20 );
+-        int value = (int)(normalized_value * max_value);
+-        char label[20];
+-        snprintf(label, sizeof(label), "%d", value);
+-        cairo_move_to(cr, width - right_padding + 5, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + i + 4);
+-        cairo_show_text(cr, label);
+-    }
+-
+-    cairo_surface_write_to_png(surface, output_file);
+-
+-    cairo_destroy(cr);
+-    cairo_surface_destroy(surface);
+-}
+-#endif
+-
+-//function proto
+-
+-
+-
+-
+-
+-void initialize_complement(){
+-    match['A']='T';
+-    match['T']='A';
+@@ -107,29 +95,6 @@
+     gettimeofday(&time, NULL);
+     return time.tv_sec + (time.tv_usec / 1000000.0);
+ }
+-int mkdir_p(const char *path) {
+-    char temp[1024];
+-    char *p = NULL;
+-    size_t len;
+-
+-    // Copy path and ensure it ends with '/'
+-    snprintf(temp, sizeof(temp), "%s", path);
+-    len = strlen(temp);
+-    if (temp[len - 1] == '/')
+-        temp[len - 1] = 0;
+-
+-    // Iterate through each directory in the path
+-    for (p = temp + 1; *p; p++) {
+-        if (*p == '/') {
+-            *p = 0;
+-
+-            // Create directory if it doesn't exist
+-            if (mkdir(temp, S_IRWXU) != 0 && errno != EEXIST) {
+-                perror("mkdir");
+-                return -1;
+-            }
+-            *p = '/';
+-        }
+-    }
+-    // Create the final directory
+-    if (mkdir(temp, S_IRWXU) != 0 && errno != EEXIST) {
+-        perror("mkdir");
+-        return -1;
+-    }
+-    return 0;
+-}
+ 
+ void lowerCaseDifferences(char *ref, char *query, int length){
+     for (int i=0; i<length; i++){
+@@ -330,175 +295,6 @@
+     return new_entry;
+ }
+ 
+-
+-unsigned char* read_whiteList(char *whitelist_filename,GHashTable *hash, int reverse_complement_flag){
+-    FILE *whitelist_file = fopen(whitelist_filename, "r");
+-    if (whitelist_file == NULL) {
+-        fprintf(stderr, "Failed to open whitelist file %s\n", whitelist_filename);
+-        exit(EXIT_FAILURE);
+-    }
+-    char line[LINE_LENGTH];
+-    //just in case the file is corrupted - calculate the sizes by counting lines
+-    //find the number of lines in the file by counting the number of newlines
+-    char ch=0,lastChar=0;
+-    size_t line_count=0;
+-    //from the first line calculate the barcode length and check if the sequence is valid
+-    int sequence_count=0;
+-    while((ch = fgetc(whitelist_file)) != EOF) {
+-        if(ch == 'A' || ch == 'C' || ch == 'G' || ch == 'T' || ch == 'N'){
+-            sequence_count++;
+-        }
+-        else if (ch == '\n') {
+-            if(sequence_count){
+-                if (barcode_length==0){
+-                    barcode_length=sequence_count;
+-                    barcode_code_length=(barcode_length+3)/4;
+-                }
+-                else if (sequence_count != barcode_length){
+-                    fprintf(stderr, "Error: Invalid barcode length %d\n", sequence_count);
+-                    exit(EXIT_FAILURE);
+-                }
+-                sequence_count=0;
+-                line_count++;
+-            }
+-        }
+-        else{
+-            fprintf(stderr, "Error: Invalid character %c in whitelist file\n", ch);
+-            exit(EXIT_FAILURE);
+-        }
+-    }
+-    // If the last character isn't a newline, increment the count
+-    if (lastChar != '\n') {
+-        line_count++;
+-    }
+-    
+-    whitelist = malloc(line_count * barcode_code_length);
+-    if (whitelist == NULL) {
+-        fprintf(stderr, "Failed to allocate memory for whitelist storage\n");
+-        exit(EXIT_FAILURE);
+-    }
+-    memset(whitelist, 0, line_count * barcode_code_length);
+-    //reset the file pointer to the beginning of the file
+-    fseek(whitelist_file, 0, SEEK_SET);
+-    size_t nBarcodes=0;
+-    //set line to zero
+-    memset(line, 0, LINE_LENGTH);
+-    char barcode_sequence[LINE_LENGTH];
+-    while ( fgets(line, LINE_LENGTH, whitelist_file) != NULL) {
+-        if (!check_sequence(line, barcode_length)){
+-            fprintf(stderr, "Error: Invalid barcode sequence of expected length %d %s\n",barcode_length,line);
+-            exit(EXIT_FAILURE);
+-        }
+-        //up to 16 characters will be stored in uint32_t
+-        memset(line+barcode_length, 0, LINE_LENGTH-barcode_length);
+-        if (reverse_complement_flag){
+-            reverse_complement_sequence(line, barcode_sequence, barcode_length);
+-        }
+-        else{
+-            memcpy(barcode_sequence, line, barcode_length+1);
+-        }
+-        int j=0;
+-        int i=0;
+-        const size_t offset=nBarcodes*barcode_code_length;
+-        memset(whitelist+offset, 0, barcode_code_length);
+-        while(j<barcode_length){
+-            unsigned char char_value=seq2code[(unsigned char)barcode_sequence[j]]<<6 | seq2code[(unsigned char)barcode_sequence[j+1]]<<4 | seq2code[(unsigned char)barcode_sequence[j+2]]<<2 | seq2code[(unsigned char)barcode_sequence[j+3]];
+-            whitelist[offset+i]=char_value;
+-            i++;
+-            j+=4;
+-        }
+-        if(!g_hash_table_insert(hash,  (uint32_t*)(whitelist+offset) , whitelist+offset)){
+-            fprintf(stderr, "Error: Failed to insert barcode %s into the hash table %ld\n", line, nBarcodes);
+-            exit(EXIT_FAILURE); 
+-        }
+-        nBarcodes++;
+-    }
+-    fprintf(stderr, "Read %ld barcodes\n", nBarcodes);
+-    fclose(whitelist_file);
+-    return whitelist;
+-}
+-int split_line(char *line, char *fields[], const char *split_string) {
+-    int count = 0;
+-    char *token;
+-
+-    // Use strtok to split the line by split_string
+-    token = strtok(line, split_string);
+-    while (token != NULL) {
+-        fields[count++] = token;  // Store pointer to the split string
+-        token = strtok(NULL, split_string);  // Get next token
+-    }
+-    return count;  // Return the number of fields
+-}
+-void get_feature_line_sizes(char *line, int nameIndex, int seqIndex, int *name_size, int *seq_size, int *code_size, int *maxFeatureLength) {
+-    line[strcspn(line, "\r\n")] = '\0';
+-    char *fields[LINE_LENGTH];
+-    int nFields = split_line(line, fields, ",");
+-    if (seqIndex >= nFields || nameIndex >= nFields) {
+-        fprintf(stderr, "Error: Invalid line - too few fields %d \n",nFields);
+-        exit(EXIT_FAILURE);
+-    }
+-    char *tmpSeq = fields[seqIndex];
+-            // Remove possible newline character from the sequence
+-    if (!check_sequence(tmpSeq, strlen(tmpSeq))){
+-        //fprintf(stderr, "Error: Invalid sequence %s\n", tmpSeq);
+-        exit(EXIT_FAILURE);
+-    }
+-    const int string_length = strlen(tmpSeq);
+-    *seq_size += strlen(tmpSeq) + 1; 
+-    *code_size += string_length / 4;
+-    if (string_length % 4){
+-        (*code_size)++;
+-    } 
+-    if (strlen(tmpSeq) > *maxFeatureLength){
+-        *maxFeatureLength = strlen(tmpSeq);
+-    }
+-    *name_size += strlen(fields[nameIndex]) + 1;
+-}
+-void process_feature_line(char *line, int nameIndex, int seqIndex, feature_arrays *myfeatures, int count) {
+-    // Split the line by spaces and read the 3rd and 6th columns
+-    char *fields[LINE_LENGTH];
+-    line[strcspn(line, "\r\n")] = 0;
+-    int nFields = split_line(line, fields, ",");
+-    if (seqIndex >= nFields || nameIndex >= nFields) {
+-        fprintf(stderr, "Error: Invalid line - two few fields %d \n",nFields);
+-        exit(EXIT_FAILURE);
+-    }
+-    //copy the name and sequence into the feature arrays
+-    char *tmpName = fields[nameIndex];
+-    strcpy(myfeatures->feature_names[count], fields[nameIndex]);
+-    if (count + 1 < myfeatures->number_of_features) {
+-        myfeatures->feature_names[count + 1] = myfeatures->feature_names[count] + strlen(tmpName) + 1;
+-    }
+-    char *tmpSeq = fields[seqIndex];
+-    strcpy(myfeatures->feature_sequences[count], tmpSeq);
+-    myfeatures->feature_lengths[count] = strlen(tmpSeq);
+-    myfeatures->feature_code_lengths[count] = string2code(tmpSeq, strlen(tmpSeq), myfeatures->feature_codes[count]);
+-    if (count + 1 < myfeatures->number_of_features) {
+-        myfeatures->feature_sequences[count + 1] = myfeatures->feature_sequences[count] + strlen(tmpSeq) + 1;
+-        myfeatures->feature_codes[count + 1] = myfeatures->feature_codes[count] + myfeatures->feature_code_lengths[count];
+-    }
+-}
+-feature_arrays* allocate_feature_arrays(int name_size, int seq_size, int code_size, int count, int maxFeatureLength) {
+-        feature_arrays *myfeatures = malloc(sizeof(feature_arrays));
+-        if (myfeatures == NULL) {
+-            fprintf(stderr, "Failed to allocate memory for feature arrays\n");
+-            exit(EXIT_FAILURE);
+-        }
+-        memset(myfeatures, 0, sizeof(feature_arrays));
+-        myfeatures->max_length = maxFeatureLength;
+-        myfeatures->feature_names_storage = malloc(name_size);
+-        myfeatures->feature_sequences_storage = malloc(seq_size);
+-        myfeatures->feature_codes_storage = malloc(code_size);
+-        myfeatures->feature_names = malloc(count * sizeof(char*));
+-        myfeatures->feature_lengths = malloc(count * sizeof(unsigned int));
+-        myfeatures->feature_code_lengths = malloc(count * sizeof(unsigned char));
+-        myfeatures->feature_codes = malloc(count * sizeof(unsigned char*));
+-        myfeatures->feature_sequences = malloc(count * sizeof(char*));
+-        myfeatures->number_of_features = count;
+-
+-        // Check if any of the mallocs failed by checking for NULL pointers
+-        if (myfeatures->feature_names_storage == NULL || myfeatures->feature_sequences_storage == NULL || myfeatures->feature_codes_storage == NULL || myfeatures->feature_names == NULL || myfeatures->feature_lengths == NULL || myfeatures->feature_code_lengths == NULL || myfeatures->feature_codes == NULL) {
+-            fprintf(stderr, "Failed to allocate memory for feature arrays\n");
+-            exit(EXIT_FAILURE);
+-        }
+-        memset(myfeatures->feature_names_storage, 0, name_size);
+-        memset(myfeatures->feature_sequences_storage, 0, seq_size);
+-        memset(myfeatures->feature_codes_storage, 0, code_size);
+-        myfeatures->feature_names[0] = myfeatures->feature_names_storage;
+-        myfeatures->feature_sequences[0] = myfeatures->feature_sequences_storage;
+-        myfeatures->feature_codes[0] = myfeatures->feature_codes_storage;
+-
+-        return myfeatures;
+-    }
+-void find_name_and_sequence_fields(char *line, int *nameIndex, int *seqIndex) {
+-    char *fields[LINE_LENGTH];
+-    //make sure that the line does not have a line feed
+-    line[strcspn(line, "\r\n")] = 0;
+-    int nFields = split_line(line, fields, ",");
+-    if (nFields < 2) {
+-        fprintf(stderr, "Error: Invalid header in tags file - there must be at least a name and sequence field \n");
+-        exit(EXIT_FAILURE);
+-    } else {
+-        for (int i = 0; i < nFields; i++) {
+-            if (strcmp(fields[i], "sequence") == 0) {
+-                *seqIndex = i;
+-            } else if (strcmp(fields[i], "name") == 0) {
+-                *nameIndex = i;
+-            }
+-            if (*seqIndex >= 0 && *nameIndex >= 0) {
+-                break;
+-            }
+-        }
+-    }
+-    if (*seqIndex < 0 || *nameIndex < 0) {
+-        fprintf(stderr, "Error: Invalid header in tags file - there must be at least a name and sequence field \n");
+-        exit(EXIT_FAILURE);
+-    }
+-}
+-feature_arrays* read_features_file(const char* filename) {
+-    //expext a comma separated file with column names at least one with name and sequence fields
+-    int seq_size=0;
+-    int name_size=0;
+-    int code_size=0;
+-    FILE *file = fopen(filename, "r");
+-    if (!file) {
+-        perror("Failed to open tags file");
+-        exit(EXIT_FAILURE);
+-    }
+-    char line[LINE_LENGTH];
+-    int count = 0;
+-    //skip the header
+-    //count the lines and check that the sequences are valid
+-    int maxFeatureLength=0;
+-    int seqIndex=-1;
+-    int nameIndex=-1;
+-    if (!fgets(line, LINE_LENGTH, file)) {
+-        perror("Failed to read tags header");
+-        exit(EXIT_FAILURE);
+-    }
+-    find_name_and_sequence_fields(line, &nameIndex, &seqIndex);
+-    
+-    while (fgets(line, LINE_LENGTH, file) != NULL) {
+-        get_feature_line_sizes(line, nameIndex, seqIndex, &name_size, &seq_size, &code_size, &maxFeatureLength);
+-        count++;
+-    }
+-    fprintf(stderr, "Read %d tags with max length %d\n", count, maxFeatureLength);
+-    feature_arrays *myfeatures = allocate_feature_arrays(name_size, seq_size, code_size, count, maxFeatureLength);
+-    //rewind the file and read the sequences
+-    fseek(file, 0, SEEK_SET);
+-    if (!fgets(line, LINE_LENGTH, file)) {
+-        perror("Failed to headers file");
+-        exit(EXIT_FAILURE);
+-    }
+-    count=0;
+-    while (fgets(line, LINE_LENGTH, file) != NULL) {
+-        process_feature_line(line, nameIndex, seqIndex, myfeatures, count);
+-        count++;
+-    }
+-    fprintf(stderr, "Read %d tags\n", count);
+-    fclose(file);
+-    return myfeatures;
+-}
+ char check_sequence(char *sequence, int sequence_length){
+     for (int i=0; i<sequence_length; i++){
+         if (sequence[i] == 'A' || sequence[i] == 'C' || sequence[i] == 'G' || sequence[i] == 'T'){
+@@ -1071,200 +901,6 @@
+     return 0;
+ }
+ 
+-void read_fastq_chunks(gzFile barcode_fastqgz, gzFile forward_fastqgz, gzFile reverse_fastqgz, char *barcode_lines[], char *forward_lines[], char *reverse_lines[], char *buffer, char *done) {
+-    char *bufferptr = buffer;
+-    long long number_of_reads=0;
+-    gzFile gzfps[3] = {barcode_fastqgz, forward_fastqgz, reverse_fastqgz};  
+-    char **lines[3] = {barcode_lines, forward_lines, reverse_lines};
+-    for (int i=0; i<3; i++){
+-        gzFile gzfp=gzfps[i];
+-        if(!gzfp){
+-            continue;
+-        }
+-        fprintf(stderr, "Reading file %d %lld\n", i, number_of_reads);
+-        if (max_reads && number_of_reads >= max_reads){
+-            *done = 1;
+-            break;
+-        }
+-        for (int j = 0; j < 4; j++) {
+-            lines[i][j] = bufferptr;
+-            if (gzgets(gzfp, lines[i][j], LINE_LENGTH) != Z_NULL) {
+-            // Overwrite the newline character with null terminator
+-                const int length = strlen(lines[i][j]);
+-                if (lines[i][j][length - 1] != '\n') {
+-                    fprintf(stderr, "Error: Incomplete record in the FASTQ file\n");
+-                    exit(EXIT_FAILURE);
+-                }
+-                lines[i][j][length - 1] = '\0';
+-                if(i==2 && j==1){
+-                    if (j == 1) {
+-                        reverse_complement_in_place(bufferptr);
+-                    }
+-                    if (j == 3) {
+-                        reverse_in_place(bufferptr);
+-                    }
+-                }
+-                //DEBUG_PRINT( "Read %s\n", lines[i][j]);
+-                bufferptr += length;
+-            } 
+-            else {
+-                if (j == 0) {
+-                    *done = 1;
+-                    break;
+-                } else {
+-                 fprintf(stderr, "Error: Incomplete record in the FASTQ file\n");
+-                 exit(EXIT_FAILURE);
+-                }
+-            }
+-        }
+-        number_of_reads++;
+-
+-    }    
+-}
+-void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz) {
+-    *barcode_fastqgz = gzopen(barcode_fastq, "r");
+-    if (*barcode_fastqgz == NULL) {
+-        fprintf(stderr, "Error: Unable to open R1 FASTQ file %s\n", barcode_fastq);
+-        exit(EXIT_FAILURE);
+-    }
+-    if (forward_fastq != NULL) {
+-        *forward_fastqgz = gzopen(forward_fastq, "r");
+-        if (*forward_fastqgz == NULL) {
+-            fprintf(stderr, "Error: Unable to open R2 FASTQ file %s\n", forward_fastq);
+-            exit(EXIT_FAILURE);
+-        }
+-    }
+-    if (reverse_fastq != NULL) {
+-        *reverse_fastqgz = gzopen(reverse_fastq, "r");
+-        if (*reverse_fastqgz == NULL) {
+-            fprintf(stderr, "Error: Unable to open R3 FASTQ file %s\n", reverse_fastq);
+-            exit(EXIT_FAILURE);
+-        }
+-    }
+-}
+-fastq_reader* allocate_fastq_reader( char **filenames, int nfiles, int filetype, size_t read_size, size_t read_buffer_lines) {
+-    fastq_reader *reader = malloc(sizeof(fastq_reader));
+-    int total_filename_length = 0;
+-    for (int i = 0; i < nfiles; i++) {
+-        total_filename_length += strlen(filenames[i])+1; 
+-    }
+-    reader->filenames = malloc(nfiles * sizeof(char *));
+-    reader->concatenated_filenames=malloc(total_filename_length);
+-
+-    char *this_filename = reader->concatenated_filenames;
+-    for (int i = 0; i < nfiles; i++) {
+-        fprintf (stderr, "Filename %s\n", filenames[i]);
+-        //do no increment the last time to avoid overun of the buffe
+-    }
+-
+-    for (int i = 0; i < nfiles; i++) {
+-        strcpy(this_filename, filenames[i]);
+-        reader->filenames[i] = this_filename;
+-        this_filename += strlen(filenames[i]) + 1;
+-    }
+-    reader->gz_pointer = NULL;            // Initialize gz_pointer as needed
+-    reader->filetype = filetype;          // Set the filetype
+-    reader->read_buffer_lines = read_buffer_lines;    // Buffer size is dynamic
+-    reader->buffer = malloc(read_buffer_lines * sizeof(char *));
+-    reader->buffer_storage = malloc(read_buffer_lines*read_size+read_buffer_lines);
+-    //check mallocs
+-    for (int i=0; i< read_buffer_lines; i++){
+-        reader->buffer[i] = reader->buffer_storage + i*(read_size+1);
+-    }
+-    reader->nfiles = nfiles;              // Set the number of files}
+-    reader->filled = 0;                   // Initialize filled buffer slots
+-    // Initialize pthread mutex and condition variables
+-    pthread_mutex_init(&reader->mutex, NULL);
+-    pthread_cond_init(&reader->can_produce, NULL);
+-    pthread_cond_init(&reader->can_consume, NULL);
+- 
+-    reader->produce_index = 0;
+-    reader->consume_index = 0;
+-    reader->done = 0;
+-    return reader;
+-}
+-fastq_reader_set * allocate_fastq_reader_set( char **barcode_filenames, char **forward_filenames, char **reverse_filenames, int nfiles, size_t read_size, size_t read_buffer_lines) {
+-    fastq_reader_set *reader_set=malloc(sizeof(fastq_reader_set));
+-    fprintf(stderr, "allocating barcode reader\n");
+-    reader_set->barcode_reader=allocate_fastq_reader(barcode_filenames, nfiles, 1, read_size, read_buffer_lines);
+-    reader_set->forward_reader=NULL;
+-    reader_set->reverse_reader=NULL;
+-    if (forward_filenames != NULL ) {
+-        fprintf(stderr, "allocating forward reader\n");
+-        reader_set->forward_reader=allocate_fastq_reader(forward_filenames, nfiles, 2, read_size, read_buffer_lines);
+-    }
+-    if (reverse_filenames != NULL) {
+-        fprintf(stderr, "allocating reverse reader\n");
+-        reader_set->reverse_reader=allocate_fastq_reader(reverse_filenames, nfiles, 3, read_size, read_buffer_lines);
+-    }
+-    return reader_set;
+-}
+-void initialize_reader_args(fastq_readers_args *reader_args, int thread_id, int set_index, int reader_type, fastq_reader_set **reader_sets) {
+-    reader_args->thread_id = thread_id;
+-    reader_args->set_index = set_index;
+-    reader_args->reader_type = reader_type;
+-    reader_args->reader_sets = reader_sets;
+-}
+-// Producer thread function
+-void *read_fastqs_by_set(void *arg) {
+-    //one set at a time
+-    fastq_readers_args *reader_args = (fastq_readers_args *)arg;
+-    const int thread_id = reader_args->thread_id;
+-    long long number_of_reads=0;
+-    fastq_reader_set **reader_sets = reader_args->reader_sets;
+-    const int number_of_readers = (reader_sets[0]->forward_reader != NULL) + (reader_sets[0]->reverse_reader != NULL) + 1;
+-    fprintf(stderr, "Thread %d reading %d files\n", thread_id, number_of_readers);
+-    fastq_reader *readers[number_of_readers];
+-    readers[0] = reader_sets[0]->barcode_reader;
+-    const int read_buffer_lines = readers[0]->read_buffer_lines;
+-    if (reader_sets[0]->forward_reader != NULL) {
+-        readers[1] = reader_sets[0]->forward_reader;
+-    }
+-    if (reader_sets[0]->reverse_reader != NULL) {
+-        readers[number_of_readers - 1] = reader_sets[0]->reverse_reader;
+-    }
+-
+-    char line1[number_of_readers][LINE_LENGTH];
+-    char line2[number_of_readers][LINE_LENGTH];
+-    int done = 0;
+-    // Open the files
+-    for (int j=0; j<number_of_readers; j++){
+-        fprintf(stderr, "Opening file %s\n", readers[j]->filenames[0]);
+-        readers[j]->gz_pointer = gzopen(readers[j]->filenames[0], "rb");
+-        if (readers[j]->gz_pointer == NULL) {
+-            fprintf(stderr, "Error: Unable to open file %s\n", readers[j]->filenames[0]);
+-            exit(EXIT_FAILURE);
+-        }
+-    }
+-    int file_index=1;
+-    while(!done){
+-        int open_next_file=0;
+-        //read the lines into the given buffer
+-        for (int j=0; j<number_of_readers; j++){
+-            fastq_reader *reader=readers[j];
+-            if (open_next_file){
+-                fprintf(stderr, "1 Opening file %d %s\n", j,reader->filenames[file_index]);
+-                reader->gz_pointer = gzopen(reader->filenames[file_index], "rb");
+-                if (reader->gz_pointer == NULL) {
+-                    fprintf(stderr, "Error: Unable to open file %s\n", reader->filenames[file_index]);
+-                    exit(EXIT_FAILURE);
+-                } 
+-
+-            }
+-            if ((max_reads && number_of_reads >= max_reads) || gzgets(reader->gz_pointer, line1[j], LINE_LENGTH) == Z_NULL){
+-                if(file_index>=reader->nfiles){
+-                    done=1;
+-                }
+-                else{
+-                    open_next_file=1;
+-                    number_of_reads=0;
+-                    fprintf(stderr, "2 Opening file %d %s\n", j,reader->filenames[file_index]);
+-                    reader->gz_pointer = gzopen(reader->filenames[file_index], "rb");
+-                    if (gzgets(reader->gz_pointer, line1[j], LINE_LENGTH) == Z_NULL){
+-                        perror("Error: empty FASTQ file\n");
+-                        exit (EXIT_FAILURE);
+-                    }
+-                }
+-            }
+-            if (!done && gzgets(reader->gz_pointer, line1[j], LINE_LENGTH) == Z_NULL){
+-                perror("1 Error: Incomplete record in the FASTQ file\n");
+-                exit (EXIT_FAILURE);
+-            }
+-            if (!done && gzgets(reader->gz_pointer, line2[j], LINE_LENGTH) == Z_NULL){
+-                perror("2 Error: Incomplete record in the FASTQ file\n");
+-                exit (EXIT_FAILURE);
+-            }
+-            if (!done && gzgets(reader->gz_pointer, line2[j], LINE_LENGTH) == Z_NULL){
+-                fprintf(stderr, "index %d done %d\n",j, done);
+-                perror("3 Error: Incomplete record in the FASTQ file\n");
+-                exit (EXIT_FAILURE);    
+-            }
+-            
+-        }
+-        number_of_reads++;
+-        if (open_next_file){
+-            file_index++;
+-        }
+-        // write the lines
+-    
+-        for (int j=0; j<number_of_readers; j++){
+-            fastq_reader *reader=readers[j];
+-            pthread_mutex_lock(&reader->mutex);
+-            if (done){
+-                reader->buffer[reader->produce_index][0]='\0';
+-                reader->buffer[(reader->produce_index+1)%read_buffer_lines][0]='\0';
+-                pthread_cond_signal(&reader->can_consume);
+-                reader->filled+=2;
+-                pthread_mutex_unlock(&reader->mutex);
+-                continue;
+-            }
+-            // Wait until there is space in the buffer
+-            if (reader->filled > read_buffer_lines-2) {
+-                pthread_cond_wait(&reader->can_produce, &reader->mutex);
+-            }
+-            // Produce lines (add it to buffer)
+-            strcpy(reader->buffer[reader->produce_index], line1[j]);
+-            strcpy(reader->buffer[(reader->produce_index+1)%read_buffer_lines], line2[j]); 
+-            reader->produce_index = (reader->produce_index+ 2) % read_buffer_lines;
+-            reader->filled+=2;
+-            // Signal consumer that data is available
+-            pthread_cond_signal(&reader->can_consume);
+-            pthread_mutex_unlock(&reader->mutex);
+-        }
+-    }
+-    
+-    fprintf(stderr, "Thread %d done reading\n", thread_id);
+-    pthread_exit(NULL);
+-}
+-void *read_fastqs(void *arg) {
+-    long long number_of_reads=0;
+-    fastq_readers_args *reader_args = (fastq_readers_args *)arg;
+-    const int thread_id = reader_args->thread_id;
+-    const int set_index = reader_args->set_index;
+-    const int reader_type = reader_args->reader_type;
+-    fastq_reader_set **reader_sets = reader_args->reader_sets;
+-    fastq_reader *reader=0;
+-    if (reader_type == 1){
+-        reader = reader_sets[set_index]->barcode_reader;
+-        DEBUG_PRINT( "Barcode reader\n");
+-    }
+-    else if (reader_type == 2){
+-        reader = reader_sets[set_index]->forward_reader;
+-        DEBUG_PRINT( "Forward reader\n");
+-    }
+-    else if (reader_type == 3){
+-        reader = reader_sets[set_index]->reverse_reader;
+-    }
+-    const int read_buffer_lines = reader->read_buffer_lines;
+-
+-    // Open the file
+-    for (int i=0; i<reader->nfiles; i++){
+-        DEBUG_PRINT( "Opening file %s\n", reader->filenames[i]);
+-        reader->gz_pointer = gzopen(reader->filenames[i], "rb");
+-        if (reader->gz_pointer == NULL) {
+-            fprintf(stderr, "Error: Unable to open file %s\n", reader->filenames[i]);
+-            exit(EXIT_FAILURE);
+-        }
+-        char line1[LINE_LENGTH];
+-        char line2[LINE_LENGTH];
+-        int done = 0;
+-
+-        
+-        while(!done){
+-            if (max_reads && number_of_reads >= max_reads){
+-                done=1;
+-            }
+-            if (!done && gzgets(reader->gz_pointer, line1, LINE_LENGTH) == Z_NULL){
+-                fprintf(stderr,"Finished reading file %s\n", reader->filenames[i]); 
+-                gzclose(reader->gz_pointer);
+-                reader->gz_pointer = NULL;
+-                done=1;
+-            }
+-            if (!done && gzgets(reader->gz_pointer, line1, LINE_LENGTH) == Z_NULL){
+-                perror("Error: Incomplete record in the FASTQ file\n");
+-                exit (EXIT_FAILURE);
+-            }
+-            if (!done && gzgets(reader->gz_pointer, line2, LINE_LENGTH) == Z_NULL){
+-                perror("Error: Incomplete record in the FASTQ file\n");
+-                exit (EXIT_FAILURE);
+-            }
+-            if (!done && gzgets(reader->gz_pointer, line2, LINE_LENGTH) == Z_NULL){
+-                perror("Error: Incomplete record in the FASTQ file\n");
+-                exit (EXIT_FAILURE);    
+-            }
+-            // write the lines
+-            pthread_mutex_lock(&reader->mutex);
+-            if (done){
+-                reader->buffer[reader->produce_index][0]='\0';
+-                reader->buffer[(reader->produce_index+1)%read_buffer_lines][0]='\0';
+-                pthread_cond_signal(&reader->can_consume);
+-                reader->filled+=2;
+-                pthread_mutex_unlock(&reader->mutex);
+-                break;
+-            }
+-            // Wait until there is space in the buffer
+-            if (reader->filled > read_buffer_lines-2) {
+-                pthread_cond_wait(&reader->can_produce, &reader->mutex);
+-            }
+-            // Produce lines (add it to buffer)
+-            strcpy(reader->buffer[reader->produce_index], line1);
+-            strcpy(reader->buffer[(reader->produce_index+1)%read_buffer_lines], line2); 
+-            reader->produce_index = (reader->produce_index+ 2) % read_buffer_lines;
+-            reader->filled+=2;
+-            number_of_reads++;
+-        // Signal consumer that data is available
+-            pthread_cond_signal(&reader->can_consume);
+-            pthread_mutex_unlock(&reader->mutex);
+-        }
+-    }
+-    reader->done = 1;
+-    fprintf(stderr, "Thread %d done reading\n", thread_id);
+-    pthread_exit(NULL);
+-}
+ void process_multiple_feature_sequences(int nsequences, char **sequences, int *orientations, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position) {
+     //check if the sequences are the same
+ 
+@@ -1711,26 +1176,6 @@
+     //free the lines buffer
+     free(lines_buffer);
+     pthread_exit(NULL);
+-}
+-void free_fastq_reader(fastq_reader *reader) {
+-    for (int i = 0; i < reader->nfiles; i++) {
+-        //test if any are open
+-        if (reader->gz_pointer != NULL ) {
+-            gzclose(reader->gz_pointer);
+-            reader->gz_pointer = NULL;
+-        }
+-    }
+-    free(reader->buffer);
+-    free(reader->buffer_storage);
+-    free(reader->concatenated_filenames);
+-    free(reader->filenames);
+-    pthread_mutex_destroy(&reader->mutex);
+-    pthread_cond_destroy(&reader->can_produce);
+-    pthread_cond_destroy(&reader->can_consume);
+-}
+-void free_fastq_reader_set(fastq_reader_set *reader_set) {
+-    free_fastq_reader(reader_set->barcode_reader);
+-    free(reader_set->barcode_reader);
+-    if (reader_set->forward_reader) {
+-        free_fastq_reader(reader_set->forward_reader);
+-        free(reader_set->forward_reader);
+-    }
+-    if (reader_set->reverse_reader) {
+-        free_fastq_reader(reader_set->reverse_reader);
+-        free(reader_set->reverse_reader);
+-    }
+-    free(reader_set);
+-}
+-void free_fastq_processor(fastq_processor *processor_args) {
+-    for (int i = 0; i < processor_args->nsets; i++) {
+-        if (processor_args->reader_sets[i]) {
+-            free_fastq_reader_set(processor_args->reader_sets[i]);
+-        }
+-    }
+-    pthread_mutex_destroy(&processor_args->process_mutex);
+-}
+-void initiate_processor_args(fastq_processor *processor_args, sample_args *args, fastq_reader_set **reader_sets, int nsets){
+-    processor_args->sample_args=args;
+-    processor_args->reader_sets=reader_sets;
+-    processor_args->nsets=nsets;
+-    processor_args->nreaders=(reader_sets[0]->forward_reader && reader_sets[0]->reverse_reader)?3:2;
+-    pthread_mutex_init(&processor_args->process_mutex, NULL);
+ }
+ void process_files_in_sample(sample_args *args) {
+     //allocate buffers here
+@@ -1838,34 +1189,6 @@
+     free_queue(hashes->neighbors_queue);
+     free(hashes->neighbors_queue);
+ }
+-
+-
+-int existing_output_skip(char keep_existing, char *directory){
+-    if (keep_existing && file_exists(directory)){
+-        char matrix_filename[4096];
+-        strcpy(matrix_filename, directory);
+-        strcat(matrix_filename, "features_matrix.mtx");
+-        if (file_exists(matrix_filename)){
+-            fprintf(stderr, "Matrix file %s found and skipping %s\n", matrix_filename, get_basename(directory));
+-            return 1;
+-        }
+-    }
+-    return 0;
+-}
+-size_t get_file_size(char *filepath){
+-    char *filename=filepath;
+-    struct stat file_stat;
+-    if (stat(filename, &file_stat) == 0) {
+-        return file_stat.st_size;
+-    } else {
+-        perror("stat");
+-    }
+-    return 0;
+-}
+-
+-int compare_file_sizes(const void *a, const void *b, void *context) {
+-    size_t *sizes = (size_t *)context;
+-    int index_a = *(int *)a;
+-    int index_b = *(int *)b;
+-
+-    // Compare sizes in descending order (so larger sizes come first)
+-    if (sizes[index_a] < sizes[index_b]) {
+-        return 1;
+-    } else if (sizes[index_a] > sizes[index_b]) {
+-        return -1;
+-    } else {
+-        return 0;
+-    }
+-}
+-
+-// Custom qsort that allows passing a context (like the sizes array)
+-void qsort_with_context(void *base, size_t num, size_t size, 
+-                        int (*compar)(const void *, const void *, void *), 
+-                        void *context) {
+-    char *ptr = (char *)base;
+-    for (size_t i = 0; i < num - 1; i++) {
+-        for (size_t j = i + 1; j < num; j++) {
+-            if (compar(ptr + i * size, ptr + j * size, context) > 0) {
+-                // Swap the elements
+-                char temp[size];
+-                memcpy(temp, ptr + i * size, size);
+-                memcpy(ptr + i * size, ptr + j * size, size);
+-                memcpy(ptr + j * size, temp, size);
+-            }
+-        }
+-    }
+-}
+-
+-// Main function to sort the indices of samples by their size and store the order in sample_order
+-void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order) {
+-    // Allocate memory for the sizes array to store the total size of each sample
+-    size_t *sizes = malloc(fastq_files->nsamples * sizeof(size_t));
+-    if (sizes == NULL) {
+-        perror("Memory allocation failed");
+-        exit(EXIT_FAILURE);
+-    }
+-
+-    // Calculate the total size for each sample and store it in the sizes array
+-    int sample_index = 0;
+-    for (int i = 0; i < fastq_files->nsamples; i++) {
+-        sizes[i] = 0;  // Initialize size for each sample
+-        for (int j = 0; j < fastq_files->sample_sizes[i]; j++) {
+-            sizes[i] += get_file_size(fastq_files->barcode_fastq[sample_index]);
+-            if (fastq_files->forward_fastq) {
+-                sizes[i] += get_file_size(fastq_files->forward_fastq[sample_index]);
+-            }
+-            if (fastq_files->reverse_fastq) {
+-                sizes[i] += get_file_size(fastq_files->reverse_fastq[sample_index]);
+-            }
+-            sample_index++;
+-        }
+-        sample_order[i] = i;  // Initialize sample_order with indices 0 to nsamples-1
+-    }
+-
+-    // Sort the sample_order array based on the sizes array
+-    qsort_with_context(sample_order, fastq_files->nsamples, sizeof(int), compare_file_sizes, sizes);
+-
+-    // Free the allocated memory for sizes
+-    free(sizes);
+-}
+ void cleanup_sample(memory_pool_collection *pools, data_structures *hashes){        
+     free_memory_pool_collection(pools);
+     destroy_data_structures(hashes);
+@@ -2011,54 +1277,6 @@
+     return best_consumer*best_search + producer_cost;
+ }
+ void reverse_in_place(char *str) {
+-    int left = 0;
+-    int right = strlen(str) - 1;
+-    // Swap characters from both ends of the string
+-    while (left < right) {
+-        char temp = str[left];
+-        str[left] = str[right];
+-        str[right] = temp;
+-
+-        left++;
+-        right--;
+-    }
+-}
+-char complement(char base) {
+-    switch (base) {
+-        case 'A': return 'T';
+-        case 'T': return 'A';
+-        case 'C': return 'G';
+-        case 'G': return 'C';
+-        default: return base;  // For unexpected characters, return the base itself
+-    }
+-}
+-
+-// Function to calculate the reverse complement of a sequence in place
+-void reverse_complement_in_place(char *seq) {
+-    int left = 0;
+-    int right = strlen(seq) - 1;
+-
+-    // Loop through the sequence from both ends, swapping and complementing
+-    while (left <= right) {
+-        // Get the complement of both ends
+-        char left_complement = complement(seq[left]);
+-        char right_complement = complement(seq[right]);
+-
+-        // Swap the left and right complements
+-        seq[left] = right_complement;
+-        seq[right] = left_complement;
+-
+-        left++;
+-        right--;
+-    }
+-}
+-
+-void reverse_complement_sequence(char *sequence,  char *reverse, int length){
+-    for (int i = 0; i < length; i++) {
+-        const char comp_base =match[(unsigned char)sequence[length - i - 1]];
+-        if (comp_base == 0){
+-            fprintf(stderr, "Error: Invalid base %c in sequence %s\n", sequence[length - i - 1], sequence);
+-            exit(EXIT_FAILURE);
+-        }
+-        reverse[i] = comp_base;
+-    }
+-    reverse[length] = '\0';
+-}
+-int put_fastq_files_string_into_collection(char *fastqFilesString, char **fastq_files, int *nFiles, char *concatenated_fastq) {
+-    if (!fastqFilesString) {
+-        return 0;
+-    }
+-    char *this_file = concatenated_fastq;
+-    *nFiles = 1;
+-    strcpy(this_file, fastqFilesString);
+-    while (*this_file) {
+-        if (*this_file == ',') {
+-            (*nFiles)++;
+-            *this_file = '\0';
+-        }
+-        this_file++;
+-    }
+-    this_file = concatenated_fastq;
+-    for (int i = 0; i < *nFiles; i++) {
+-        fastq_files[i] = this_file;
+-        this_file += strlen(this_file) + 1;
+-    }
+-    return *nFiles;
+-}
+-void check_filecounts(fastq_files_collection *fastq_files) {
+-    if (!fastq_files->nbarcode_files) {
+-        fprintf(stderr, "Error: No barcode fastq files\n");
+-        exit(EXIT_FAILURE);
+-    }
+-    if (!fastq_files->nforward_files && !fastq_files->nreverse_files) {
+-        fprintf(stderr, "Error: No forward or reverse fastq files\n");
+-        exit(EXIT_FAILURE);
+-    }
+-    if (fastq_files->nforward_files && fastq_files->nforward_files != fastq_files->nbarcode_files) {
+-        fprintf(stderr, "Error: Unequal number of barcode and forward fastq files\n");
+-        exit(EXIT_FAILURE);
+-    }
+-    if (fastq_files->nreverse_files && fastq_files->nreverse_files != fastq_files->nbarcode_files) {
+-        fprintf(stderr, "Error: Unequal number of barcode and reverse fastq files\n");
+-        exit(EXIT_FAILURE);
+-    }
+-}
+-char* extract_sample_name(char *filename, char *pattern) {
+-    const char *samplename=get_basename(filename);
+-    char *pattern_position = strstr(samplename, pattern);
+-    if (!pattern_position) {
+-        fprintf(stderr, "Error: FASTQ file name %s does not contain the sample pattern %s\n", samplename, pattern);
+-        exit(EXIT_FAILURE);
+-    }
+-    *pattern_position = '\0';
+-    //find last underscore
+-    char *underscore_position = strrchr(samplename, '_');
+-    if (!underscore_position) {
+-        return (char*) samplename;
+-    }
+-    if (*(underscore_position+1) == 'L' && isdigit(*(underscore_position+2))){
+-        *underscore_position = '\0';
+-    }
+-    return (char*) samplename;
+-}
+-int count_character(char *string, char character) {
+-    int count = 0;
+-    for (int i = 0; string[i]; i++) {
+-        if (string[i] == character) {
+-            count++;
+-        }
+-    }
+-    return count;
+-}
+-int compare_filenames(const void *a, const void *b) {
+-    return strcmp(*(const char **)a, *(const char **)b);
+-}
+-int count_files_with_pattern(const char *directory_path, const char *pattern) {
+-    DIR *dir = opendir(directory_path);
+-    if (!dir) {
+-        perror("Unable to open directory");
+-        return -1;  // Return -1 to indicate an error
+-    }
+-
+-    struct dirent *entry;
+-    struct stat file_stat;
+-    char filepath[FILENAME_LENGTH];
+-    int count = 0;
+-
+-    // Iterate through the directory entries
+-    while ((entry = readdir(dir)) != NULL) {
+-        // Skip the "." and ".." entries
+-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+-            continue;
+-        }
+-
+-        // Build the full file path
+-        snprintf(filepath, FILENAME_LENGTH, "%s/%s", directory_path, entry->d_name);
+-
+-        // Check if the entry is a regular file (not a directory)
+-        if (stat(filepath, &file_stat) == 0 && S_ISREG(file_stat.st_mode)) {
+-            // Check if the filename contains the pattern
+-            if (strstr(entry->d_name, pattern) != NULL) {
+-                count++;  // Increment the count if a match is found
+-            }
+-        }
+-    }
+-
+-    closedir(dir);
+-    return count;  // Return the count of matching files
+-}
+-char **find_files_with_pattern(const char *directory_path, const char *pattern, int *num_files_found) {
+-    DIR *dir = opendir(directory_path);
+-    if (!dir) {
+-        perror("Unable to open directory");
+-        return NULL;
+-    }
+-
+-    struct dirent *entry;
+-    struct stat file_stat;
+-    char filepath[FILENAME_LENGTH];
+-    char **filepaths = NULL;  // Dynamically allocated array to store filepaths
+-    *num_files_found = 0;
+-
+-    while ((entry = readdir(dir)) != NULL) {
+-        // Skip the "." and ".." entries
+-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+-            continue;
+-        }
+-
+-        // Build the full file path
+-        strcpy(filepath, directory_path);
+-        if (filepath[strlen(filepath) - 1] != '/') {
+-            strcat(filepath, "/");
+-        }
+-        strcpy(filepath+strlen(filepath), entry->d_name);
+-
+-        // Check if the entry is a regular file (not a directory)
+-        if (stat(filepath, &file_stat) == 0 && S_ISREG(file_stat.st_mode)) {
+-            // Check if the filename contains the pattern
+-            if (strstr(entry->d_name, pattern) != NULL) {
+-                // Store the matching filepath in the array
+-                filepaths = realloc(filepaths, (*num_files_found + 1) * sizeof(char *));
+-                if (!filepaths) {
+-                    perror("Memory allocation error");
+-                    exit(EXIT_FAILURE);
+-                }
+-
+-                filepaths[*num_files_found] = strdup(filepath);  // Save a copy of the full file path
+-                if (!filepaths[*num_files_found]) {
+-                    perror("Memory allocation error");
+-                    exit(EXIT_FAILURE);
+-                }
+-
+-                (*num_files_found)++;
+-            }
+-        }
+-    }
+-
+-    closedir(dir);
+-    if (*num_files_found == 0) {
+-        free(filepaths);
+-        return NULL;  // Return NULL if no files were found
+-    }
+-
+-    // Sort the filepaths alphabetically
+-    qsort(filepaths, *num_files_found, sizeof(char *), compare_filenames);
+-
+-    return filepaths;  // Return the array of filepaths
+-}
+-void organize_fastq_files_by_directory(int positional_arg_count, int argc, char *argv[], int optind, char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString, fastq_files_collection *fastq_files, char *barcode_pattern, char *forward_pattern, char *reverse_pattern) {
+-    fastq_files->barcode_fastq = 0;
+-    fastq_files->forward_fastq = 0;
+-    fastq_files->reverse_fastq = 0;
+-    fastq_files->nbarcode_files = 0;
+-    fastq_files->nforward_files = 0;
+-    fastq_files->nreverse_files = 0;
+-    if (positional_arg_count) {
+-        //count the files in the first directory
+-        int barcode_file_exist=count_files_with_pattern(argv[optind], barcode_pattern);
+-        int forward_file_exist=count_files_with_pattern(argv[optind], forward_pattern);
+-        int reverse_file_exist=count_files_with_pattern(argv[optind], reverse_pattern);
+-        int total_barcode_files_found=0;
+-        for (int i=0;i < positional_arg_count;i++){
+-            total_barcode_files_found+=count_files_with_pattern(argv[optind+i], barcode_pattern);
+-        }
+-        if (!barcode_file_exist) {
+-            fprintf(stderr, "Error: No barcode fastq files found in directory %s\n", argv[optind]);
+-            exit(EXIT_FAILURE);
+-        }       
+-        if (!forward_file_exist && !reverse_file_exist) {
+-            fprintf(stderr, "Error: No forward or reverse fastq files found in directory %s\n", argv[optind]);
+-            exit(EXIT_FAILURE);
+-        }
+-        if (forward_file_exist) {
+-            fastq_files->forward_fastq = calloc(total_barcode_files_found, sizeof(char *));
+-            if (fastq_files->forward_fastq == NULL) {
+-                perror("Failed to allocate memory for forward fastq files");
+-                exit(EXIT_FAILURE);
+-            }       
+-        }
+-        if (reverse_file_exist) {
+-            fastq_files->reverse_fastq = calloc(total_barcode_files_found, sizeof(char *));
+-            if (fastq_files->reverse_fastq == NULL) {
+-                perror("Failed to allocate memory for reverse fastq files");
+-                exit(EXIT_FAILURE);
+-            }
+-        }
+-        fastq_files->barcode_fastq = calloc(total_barcode_files_found, sizeof(char *));
+-        fastq_files->sample_sizes=calloc(positional_arg_count,sizeof(int));
+-        fastq_files->sample_names=malloc(positional_arg_count*sizeof(char*));
+-        fastq_files->sample_offsets=malloc(positional_arg_count*sizeof(int));
+-        fastq_files->nsamples=positional_arg_count;
+-        fastq_files->sorted_index=malloc(positional_arg_count*sizeof(int));
+-        //check that the memory allocation was successful
+-        if (fastq_files->barcode_fastq == NULL || (forward_file_exist && fastq_files->forward_fastq == NULL) || (reverse_file_exist && fastq_files->reverse_fastq == NULL) || !fastq_files->sample_sizes || !fastq_files->sample_names || !fastq_files->sample_offsets || !fastq_files->sorted_index) {
+-            perror("Failed to allocate memory for fastq files");
+-            exit(EXIT_FAILURE);
+-        }
+-        total_barcode_files_found=0;
+-        for (int i = 0; i < positional_arg_count; i++) {
+-            int num_barcode_files_found = 0;
+-            int num_forward_files_found = 0;
+-            int num_reverse_files_found = 0;
+-            char *directory = strdup(argv[optind + i]); //this gets modified later
+-            char **sample_barcode_fastq=0, **sample_forward_fastq=0, **sample_reverse_fastq=0;
+-
+-            sample_barcode_fastq=find_files_with_pattern(directory,barcode_pattern, &num_barcode_files_found);
+-            if (forward_file_exist) {
+-                sample_forward_fastq=find_files_with_pattern(directory,forward_pattern, &num_forward_files_found);
+-            }
+-            if (reverse_file_exist) {
+-                sample_reverse_fastq=find_files_with_pattern(directory,reverse_pattern, &num_reverse_files_found);
+-            }
+-            if (!num_barcode_files_found) {
+-                fprintf(stderr, "Error: No barcode fastq files found in directory %s\n", directory);
+-                exit(EXIT_FAILURE);
+-            }
+-            if (!num_forward_files_found && !num_reverse_files_found) {
+-                fprintf(stderr, "Error: No forward or reverse fastq files found in directory %s\n", directory);
+-                exit(EXIT_FAILURE);
+-            }
+-            if (num_forward_files_found && num_forward_files_found != num_barcode_files_found) {
+-                fprintf(stderr, "Error: Unequal number of barcode and forward fastq files in directory %s\n", directory);
+-                exit(EXIT_FAILURE);
+-            }
+-            if (num_reverse_files_found && num_reverse_files_found != num_barcode_files_found) {
+-                fprintf(stderr, "Error: Unequal number of barcode and reverse fastq files in directory %s\n", directory);
+-                exit(EXIT_FAILURE);
+-            }
+-            fastq_files->sample_sizes[i]=num_barcode_files_found;
+-            fastq_files->sample_offsets[i]=total_barcode_files_found;
+-            total_barcode_files_found+=num_barcode_files_found;
+-            for(int j=0;j<num_barcode_files_found;j++){
+-                fastq_files->barcode_fastq[fastq_files->nbarcode_files++]=sample_barcode_fastq[j];
+-                if (num_forward_files_found){
+-                    fastq_files->forward_fastq[fastq_files->nforward_files++]=sample_forward_fastq[j];
+-                }
+-                if (num_reverse_files_found){
+-                    fastq_files->reverse_fastq[fastq_files->nreverse_files++]=sample_reverse_fastq[j];
+-                }
+-            }
+-            
+-            fastq_files->sample_names[i] = strdup(get_basename(directory));
+-            fprintf(stderr, "directory %s Sample name %s\n", directory,fastq_files->sample_names[i]);
+-            free(directory);
+-        }
+-    }    
+-    sort_samples_by_size(fastq_files, fastq_files->sorted_index);
+-    int max_sample_size=0;
+-    for (int i=0; i<fastq_files->nsamples; i++){
+-        if (fastq_files->sample_sizes[i]>max_sample_size){
+-            max_sample_size=fastq_files->sample_sizes[i];
+-        }
+-    }
+-    fastq_files->max_sample_size=max_sample_size;
+-}
+-
+-void organize_fastq_files_by_type(int positional_arg_count, int argc, char *argv[], int optind, char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString, fastq_files_collection *fastq_files, char *barcode_pattern, char *forward_pattern, char *reverse_pattern, int sample_flag) {
+-    fastq_files->barcode_fastq = 0;
+-    fastq_files->forward_fastq = 0;
+-    fastq_files->reverse_fastq = 0;
+-    fastq_files->nbarcode_files = 0;
+-    fastq_files->nforward_files = 0;
+-    fastq_files->nreverse_files = 0;
+-    if (positional_arg_count) {
+-        //allocate memory for the fastq files for now
+-
+-        //count the size of the positional arguments
+-        size_t block_size = 0;
+-        for (int i = 0; i < positional_arg_count; i++) {
+-            block_size += strlen(argv[optind + i]) + 1;
+-        }
+-        fastq_files->concatenated_files = malloc(block_size);
+-        //check if the memory allocation was successful
+-        if (fastq_files->concatenated_files == NULL) {
+-            perror("Failed to allocate memory for concatenated fastq files");
+-            exit(EXIT_FAILURE);
+-        }
+-
+-        //copy the positional arguments to the concatenated fastq files
+-        memset(fastq_files->concatenated_files, 0, block_size);
+-        char *this_file = fastq_files->concatenated_files;
+-        //count the file types and allocate as necessary
+-        for (int i = 0; i < positional_arg_count; i++) {
+-            strcpy(this_file, argv[optind + i]);
+-            char *barcode_pattern_position = strstr(this_file, barcode_pattern);
+-            char *forward_pattern_position = strstr(this_file, forward_pattern);
+-            char *reverse_pattern_position = strstr(this_file, reverse_pattern);
+-            if (!barcode_pattern_position && !forward_pattern_position && !reverse_pattern_position) {
+-                fprintf(stderr, "Error: FASTQ file name %s does not contain the barcode, forward and reverse patterns\n", this_file);
+-                exit(EXIT_FAILURE);
+-            }
+-            if (barcode_pattern_position && !forward_pattern_position && !reverse_pattern_position) {
+-                if (!fastq_files->barcode_fastq){
+-                    fastq_files->barcode_fastq = calloc(positional_arg_count, sizeof(char *));
+-                    if (fastq_files->barcode_fastq == NULL) {
+-                        perror("Failed to allocate memory for barcode fastq files");
+-                        exit(EXIT_FAILURE);
+-                    }
+-                }
+-                fastq_files->barcode_fastq[fastq_files->nbarcode_files++] = this_file;
+-            } else if (!barcode_pattern_position && forward_pattern_position && !reverse_pattern_position) {
+-                if (!fastq_files->forward_fastq){
+-                    fastq_files->forward_fastq = calloc(positional_arg_count, sizeof(char *));
+-                    if (fastq_files->forward_fastq == NULL) {
+-                        perror("Failed to allocate memory for forward fastq files");
+-                        exit(EXIT_FAILURE);
+-                    }
+-                }
+-                fastq_files->forward_fastq[fastq_files->nforward_files++] = this_file;
+-            } else if (!barcode_pattern_position && !forward_pattern_position && reverse_pattern_position) {
+-                if (!fastq_files->reverse_fastq){
+-                    fastq_files->reverse_fastq = calloc(positional_arg_count, sizeof(char *));
+-                    if (fastq_files->reverse_fastq == NULL) {
+-                        perror("Failed to allocate memory for reverse fastq files");
+-                        exit(EXIT_FAILURE);
+-                    }
+-                }
+-                fastq_files->reverse_fastq[fastq_files->nreverse_files++] = this_file;
+-            } else {
+-                fprintf(stderr, "Error: FASTQ file name %s contains more than one of the barcode, forward and reverse patterns\n", this_file);
+-                exit(EXIT_FAILURE);
+-            }
+-            this_file += strlen(argv[optind + i]) + 1;
+-        }
+-    } else {
+-        //find number of files in each type
+-        int barcode_count = 0;
+-        int forward_count = 0;
+-        int reverse_count = 0;
+-        if (barcodeFastqFilesString) {
+-            barcode_count = count_character(barcodeFastqFilesString, ',') + 1;
+-            fastq_files->barcode_fastq = calloc(barcode_count, sizeof(char *));
+-            if (fastq_files->barcode_fastq == NULL) {
+-                perror("Failed to allocate memory for barcode fastq files");
+-                exit(EXIT_FAILURE);
+-            }
+-        }
+-        if (forwardFastqFilesString) {
+-            forward_count = count_character(forwardFastqFilesString, ',') + 1;
+-            fastq_files->forward_fastq = calloc(forward_count, sizeof(char *));
+-            if (fastq_files->forward_fastq == NULL) {
+-                perror("Failed to allocate memory for forward fastq files");
+-                exit(EXIT_FAILURE);
+-            }
+-        }
+-        if (reverseFastqFilesString) {
+-            reverse_count = count_character(reverseFastqFilesString, ',') + 1;
+-            fastq_files->reverse_fastq = calloc(reverse_count, sizeof(char *));
+-            if (fastq_files->reverse_fastq == NULL) {
+-                perror("Failed to allocate memory for reverse fastq files");
+-                exit(EXIT_FAILURE);
+-            }
+-        }
+-        //find concatenated string length
+-        size_t fwd_len = forwardFastqFilesString ? strlen(forwardFastqFilesString) : 0;
+-        size_t rev_len = reverseFastqFilesString ? strlen(reverseFastqFilesString) : 0;
+-        size_t bar_len = barcodeFastqFilesString ? strlen(barcodeFastqFilesString) : 0;
+-        int concatenated_length = bar_len + fwd_len + rev_len + 3;
+-        fastq_files->concatenated_files = malloc(concatenated_length);
+-        if (fastq_files->concatenated_files == NULL) {
+-            perror("Failed to allocate memory for concatenated fastq files");
+-            exit(EXIT_FAILURE);
+-        }
+-        char *this_file = fastq_files->concatenated_files;
+-        if (barcodeFastqFilesString) {
+-            put_fastq_files_string_into_collection(barcodeFastqFilesString, fastq_files->barcode_fastq, &fastq_files->nbarcode_files, this_file);
+-        } else {
+-            perror("Must have some barcode fastq files");
+-            exit(EXIT_FAILURE);
+-        }
+-        put_fastq_files_string_into_collection(forwardFastqFilesString, fastq_files->forward_fastq, &fastq_files->nforward_files, this_file);
+-        put_fastq_files_string_into_collection(reverseFastqFilesString, fastq_files->reverse_fastq, &fastq_files->nreverse_files, this_file);
+-    }
+-    check_filecounts(fastq_files);
+-    fastq_files->nsamples=0;
+-    int name_length=0;
+-    for (int i = 0; i < fastq_files->nbarcode_files; i++) {
+-        name_length+=strlen(fastq_files->barcode_fastq[i])+1;
+-    }
+-    fprintf(stderr, "Name length %d\n", name_length);
+-    fastq_files->concatenated_sample_names=malloc(name_length+1);
+-    fastq_files->sample_sizes=malloc(fastq_files->nbarcode_files*sizeof(int));
+-    fastq_files->sample_names=malloc(fastq_files->nbarcode_files*sizeof(char*));
+-    fastq_files->sample_offsets=malloc(fastq_files->nbarcode_files*sizeof(int));
+-    //check if the memory allocation was successful
+-    if (fastq_files->concatenated_sample_names == NULL || fastq_files->sample_sizes == NULL) {
+-        perror("Failed to allocate memory for sample names");
+-        exit(EXIT_FAILURE);
+-    }
+-    memset(fastq_files->concatenated_sample_names, 0, strlen(fastq_files->concatenated_files)+1);
+-    char name_copy[name_length+1];
+-    char *last_sample=fastq_files->concatenated_sample_names;
+-    char *sample_name=0;
+-    fastq_files->nsamples=0;
+-    fastq_files->sample_offsets[0]=0;
+-    if (sample_flag){
+-        //assume that files are sorted by name
+-        for (int i = 0; i < fastq_files->nbarcode_files; i++) {
+-            strcpy(name_copy, fastq_files->barcode_fastq[i]); //copy is nccecessary because extract_sample_name modifies the string
+-            sample_name=extract_sample_name(name_copy, barcode_pattern);
+-            fprintf(stderr, "Sample name %s\n", sample_name);
+-            fprintf(stderr, "last sample name %s\n", last_sample);
+-            if (!fastq_files->nsamples){
+-                strcpy(last_sample, sample_name);
+-                fastq_files->sample_sizes[0]=1;
+-                fastq_files->sample_names[0]=last_sample;
+-                fastq_files->nsamples=1;
+-            }
+-            else if (strcmp(last_sample, sample_name)){
+-                last_sample+=strlen(last_sample)+1;
+-                fastq_files->sample_offsets[fastq_files->nsamples]=i;
+-                fastq_files->sample_names[fastq_files->nsamples]=last_sample;
+-                strcpy(last_sample, sample_name);
+-                fastq_files->sample_sizes[fastq_files->nsamples]=1;
+-                fastq_files->nsamples++;
+-            }
+-            else{
+-                fastq_files->sample_sizes[fastq_files->nsamples-1]++;
+-            }
+-        }
+-    }
+-    else{
+-        fastq_files->nsamples=1;
+-        fastq_files->sample_sizes[0]=fastq_files->nbarcode_files;
+-    }
+-    //now allocate the sample buffers
+-    fastq_files->sorted_index=malloc(fastq_files->nsamples*sizeof(int));
+-    if (!fastq_files->sorted_index){
+-        perror("Failed to allocate memory for sorted index");
+-        exit(EXIT_FAILURE);
+-    }
+-    sort_samples_by_size(fastq_files, fastq_files->sorted_index);
+-
+-    int max_sample_size=0;
+-    for (int i=0; i<fastq_files->nsamples; i++){
+-        if (fastq_files->sample_sizes[i]>max_sample_size){
+-            max_sample_size=fastq_files->sample_sizes[i];
+-        }
+-    }
+-    fastq_files->max_sample_size=max_sample_size;
+-    //check that memory allocations are non null and free them
+-}
+ void populate_sample_args(sample_args *args, int sample_index,char *directory, fastq_files_collection *fastq_files, feature_arrays *features, int maxHammingDistance, int nThreads, memory_pool_collection *pools, statistics *stats, data_structures *hashes, uint16_t stringency, uint16_t min_counts, int barcode_constant_offset, int feature_constant_offset, int read_buffer_lines, int average_read_length, int parallel_by_file, double min_posterior, int consumer_threads_per_set){ 
+                 args->sample_index = sample_index;
+                 args->directory = directory;
