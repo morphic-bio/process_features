@@ -1,29 +1,49 @@
-#add library for openmp
-#add library for math functions
+CC=gcc
 
-CC=gcc  
-CFLAGS=-Ofast -Wall $(INCLUDES) 
-LDFLAGS=-lz -lglib-2.0 -fopenmp -lm
-ifdef DEBUG
-	CFLAGS=-ggdb -Wunused-function -fsanitize=address $(INCLUDES)
-endif
-ifdef NO_HEATMAP
-	CFLAGS+=-DNO_HEATMAP
+# Directories
+SRCDIR = src
+INCDIR = include
+VPATH = $(SRCDIR)
+
+# Use pkg-config to get the correct flags for glib-2.0 and cairo
+GLIB_CFLAGS := $(shell pkg-config --cflags glib-2.0)
+GLIB_LIBS := $(shell pkg-config --libs glib-2.0)
+
+CAIRO_CFLAGS :=
+CAIRO_LIBS :=
+DEFINES :=
+
+# Add cairo flags and define if NO_HEATMAP is not set to 1
+ifeq ($(NO_HEATMAP), 1)
+	DEFINES += -DNO_HEATMAP
 else
-	LDFLAGS+=$(shell pkg-config --libs cairo)
-	CFLAGS+=$(shell pkg-config --cflags cairo)
+	CAIRO_CFLAGS := $(shell pkg-config --cflags cairo)
+	CAIRO_LIBS := $(shell pkg-config --libs cairo)
 endif
 
-INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include -I/usr/include/hdf5/serial
-#INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include 
+# Combine all flags
+CFLAGS=-g -Wall -O3 -I$(INCDIR) -fopenmp $(GLIB_CFLAGS) $(CAIRO_CFLAGS) $(DEFINES)
+LDFLAGS=-lm -lpthread -lz -fopenmp $(GLIB_LIBS) $(CAIRO_LIBS)
 
-default: clean assignBarcodes
-all: clean heatmap assignBarcodes
+# Source files (basenames only)
+SRCS=main.c assignBarcodes.c queue.c globals.c utils.c
 
-assignBarcodes: assignBarcodes.c queue.c
-	$(CC) $(CFLAGS) -o assignBarcodes assignBarcodes.c queue.c $(LDFLAGS) $(INCLUDES)
-heatmap: heatmap.c
-	$(CC) $(CFLAGS) -o heatmap heatmap.c $(LDFLAGS) $(INCLUDES)
+# Object files
+OBJS=$(SRCS:.c=.o)
+
+# Executable name
+TARGET=assignBarcodes
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+# The implicit rule will now use VPATH to find the .c files in src/
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
 clean:
-	rm -f heatmap assignBarcodes
-
+	rm -f $(OBJS) $(TARGET)

@@ -1,226 +1,18 @@
-#include <ctype.h>
-#include <getopt.h>  // For command line parsing
-#include <glib.h>
-#include <pthread.h>
-#include <limits.h>  // For CHAR_BIT
-#include <math.h>
-#include <omp.h>
-#include <stddef.h>  // For offsetof
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h> // For mkdir and file exists
-#include <sys/time.h> //for timing
-#include <unistd.h>
-#include <zlib.h>
-#include "defines.h"
-#include "queue.h"
-#include "sys/wait.h"
-#include <dirent.h>
-#include <stdatomic.h>
-#include <sys/mman.h>
-#include <errno.h>  // Missing for EEXIST in mkdir_p()
+#include "../include/common.h"
+#include "../include/globals.h"
+#include "../include/prototypes.h"
+#include "../include/utils.h"
 
-//code for feature sequences stats - exclude if not needed
+//will  print if DEBUG is set or debug=1
+//code for feature sequences stats
+
+//code for heatmap generation
 #ifndef NO_HEATMAP
 #include <cairo.h>
 #include "plasma_colormap_16.h"
 #include "plasma_colormap_64.h"
 #include "plasma_colormap_256.h"
 #include "plasma_colormap_1024.h"
-#define CELL_SIZE 10  // Size of each cell in the heatmap
-#define BAR_WIDTH 20  // Width of the color bar
-#define BASE_PADDING 10  // Base padding for additional adjustments
-#define BAR_GRAPH_HEIGHT 100   // Height of the bar graph area
-#endif
-//will  print if DEBUG is set or debug=1
-//code for feature sequences stats
-
-typedef struct feature_arrays {
-    int number_of_features;
-    int max_length;
-    char **feature_names;
-    char *feature_names_storage;
-    unsigned int *feature_lengths;
-    unsigned char *feature_code_lengths;
-    char **feature_sequences;
-    char *feature_sequences_storage;
-    unsigned char **feature_codes;
-    unsigned char *feature_codes_storage; 
-} feature_arrays;
-
-typedef struct feature_counts {
-    unsigned char sequence_code[4]; // need to hardcode to 4 for 32 bit hash - if BARCODE_CODE_LENGTH > 4 then need to change this
-    uint16_t counts[];
-} feature_counts;
-
-typedef struct feature_sequences {
-    uint32_t counts;
-    char hamming_distance;
-    uint32_t feature_index;
-    uint16_t match_position;
-    char sequence[];
-} feature_sequences;
-
-typedef struct feature_umi_counts {
-    unsigned char sequence_umi_code[8]; // hard coded to 8 for 64 bit
-    uint16_t counts[];
-} feature_umi_counts;
-
-typedef struct memory_pool {
-    size_t block_size;       // Size of each block (size of features_block)
-    size_t blocks_per_pool;  // Number of blocks per pool
-    size_t free_blocks;      // Number of free blocks
-    void *next_free;         // Pointer to the next free block
-    struct storage_block *first_block;   // Pointer to the first memory block
-    struct storage_block *current_block; // Pointer to the current memory block
-} memory_pool;
-
-typedef struct memory_pool_collection {
-    memory_pool *feature_counts_pool;
-    memory_pool *feature_umi_counts_pool;
-    memory_pool *feature_sequences_pool;
-    memory_pool *unmatched_barcodes_features_block_pool;
-} memory_pool_collection;
-
-typedef struct storage_block {
-    struct storage_block *next;
-    unsigned char *storage;
-} storage_block;
-
-typedef struct unmatched_barcodes_features {
-    struct unmatched_barcodes_features_block *next;
-    uint32_t feature_index;
-    unsigned char *barcode;
-    unsigned char *umi;
-    unsigned char number_of_closest_barcodes;
-    unsigned char *closest_barcodes;
-    unsigned char *Qscores;
-    uint16_t match_position;
-} unmatched_barcodes_features;
-
-typedef struct unmatched_barcodes_features_block {
-    struct unmatched_barcodes_features_block *next;
-    unsigned char storage[];
-} unmatched_barcodes_features_block;
-
-typedef struct unmatched_barcodes_features_block_list {
-    unmatched_barcodes_features_block *first_entry;
-    unmatched_barcodes_features_block *last_entry;
-} unmatched_barcodes_features_block_list;
-
-typedef struct unit_sizes {
-    // stores unit sizes for dynamically allocated structs
-    size_t feature_counts;
-    size_t feature_umi_counts;
-    size_t feature_sequences;
-    size_t unmatched_barcodes_features_block;
-} unit_sizes;
-
-typedef struct statistics {//keep track of stats
-    double start_time;
-    size_t nMismatches;
-    size_t recovered;
-    size_t pending;
-    size_t valid;
-    size_t pending_recovered;  
-    size_t total_unmatched_features;
-    size_t number_of_reads;
-    unmatched_barcodes_features_block_list unmatched_list;
-} statistics;
-
-typedef struct data_structures {
-    GHashTable *filtered_hash;
-    GHashTable *sequence_umi_hash;
-    GHashTable *unique_features_match;
-    Queue *neighbors_queue;
-} data_structures;
-
-typedef struct fastq_files_collection {
-    char **barcode_fastq;//list of pointers to concatenated strings
-    char **forward_fastq;
-    char **reverse_fastq;
-    char *concatenated_files;
-    int nbarcode_files;
-    int nforward_files;
-    int nreverse_files;
-    char **sample_names;
-    char *concatenated_sample_names;
-    int *sample_sizes;
-    int *sample_offsets;
-    int nsamples;
-    int max_sample_size;
-    int *sorted_index;
-} fastq_files_collection; 
-
-typedef struct sample_args {
-    int sample_index;
-    char *directory;
-    fastq_files_collection *fastq_files;
-    feature_arrays *features;
-    int maxHammingDistance;
-    int nThreads;
-    memory_pool_collection *pools;
-    statistics *stats;
-    data_structures *hashes;
-    uint16_t stringency;
-    uint16_t min_counts;
-    int read_buffer_lines;
-    int average_read_length;
-    int barcode_constant_offset;
-    int feature_constant_offset;
-    int parallel_by_file;
-    double min_posterior;
-    int consumer_threads_per_set;
-} sample_args;
-
-typedef struct fastq_processor {
-    int nsets;
-    int nreaders; //2 or 3 depending on whether forward and or reverse are present  
-    struct fastq_reader_set **reader_sets;
-    struct sample_args *sample_args;
-    pthread_mutex_t process_mutex;
-    pthread_cond_t can_process;
-} fastq_processor;
-// Struct to hold filename and related data
-typedef struct fastq_reader {
-    char *concatenated_filenames;       // Pointer to the filenames joined together by \0
-    char **filenames;                   // Array of pointers to the start of each filename
-    int nfiles;                         // Number of files
-    gzFile gz_pointer;     // gzFile pointer for reading the file
-    int filetype;          // Filetype: barcode, forward, reverse
-
-    pthread_mutex_t mutex;   // Mutex for circular buffer access
-    pthread_cond_t can_produce; // Condition variable for producer
-    pthread_cond_t can_consume; // Condition variable for consumer
-
-    char **buffer;         // Circular buffer to store lines
-    char *buffer_storage;  // Storage for the circular buffer
-    size_t read_buffer_lines;     // Total number of lines in the circular buffer
-    size_t produce_index;   // Index where producer writes next
-    size_t consume_index;   // Index where consumer reads next
-    size_t filled;          // Number of filled slots in the buffer
-
-    int done;               // Flag to indicate end of file
-} fastq_reader;
-
-typedef struct fastq_reader_set {
-    struct fastq_reader *barcode_reader; //must be read together
-    struct fastq_reader *forward_reader;
-    struct fastq_reader *reverse_reader;
-} fastq_reader_set;
-typedef struct fastq_readers_args {
-    int thread_id;
-    int set_index;
-    int reader_type;
-    int nsets;
-    int nfiles;
-    fastq_reader_set **reader_sets;
-} fastq_readers_args;
-
-#ifndef NO_HEATMAP
-//code for heatmap generation
 
 const double (*select_colormap(int dynamic_range, int *colormap_size))[3] {
     if (dynamic_range < 20) {
@@ -238,22 +30,15 @@ const double (*select_colormap(int dynamic_range, int *colormap_size))[3] {
     }
 }
 
-
 // Function to map a normalized value (0–1) to an RGB color using a colormap
 void value_to_color(double normalized_value, double *r, double *g, double *b, const double colormap[][3], int colormap_size) {
-    // Clamp the normalized value to [0, 1]
     if (normalized_value < 0.0) normalized_value = 0.0;
     if (normalized_value > 1.0) normalized_value = 1.0;
-
-    // Scale the normalized value to the colormap size
-    int index = (int)(normalized_value * (colormap_size - 1)); // Map to 0–(colormap_size-1)
-
-    // Map to RGB values from the provided colormap
+    int index = (int)(normalized_value * (colormap_size - 1));
     *r = colormap[index][0];
     *g = colormap[index][1];
     *b = colormap[index][2];
 }
-
 
 // Function to normalize values for coloring
 double normalize(int value, int max_value) {
@@ -268,26 +53,22 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
     } else {
         snprintf(output_file, sizeof(output_file), "%s/heatmap.png", directory);
     }
-    //find max_name_length
     int max_name_length=0;
     const int num_rows = features->number_of_features;
     int column_sums[num_rows];
-    memset(column_sums,0,num_rows*sizeof(int));    
+    memset(column_sums,0,num_rows*sizeof(int));
     for (int i=0; i<num_rows; i++){
         if (strlen(features->feature_names[i])>max_name_length){
             max_name_length=strlen(features->feature_names[i]);
         }
     }
 
-    // Calculate dynamic padding
-    int left_padding = BASE_PADDING + max_name_length * 7; // 7 pixels per character as a rough estimate
-    int right_padding = BASE_PADDING + 50; // Allow space for color bar labels
+    int left_padding = BASE_PADDING + max_name_length * 7;
+    int right_padding = BASE_PADDING + 50;
     int filtered_rows = 0;
     int filter_mask[num_rows];
     int num_cols = 0;
     
-    //create a filter mask - necessary later for color map and calculate max column
-    //remember that coexpression_histograms is 1 indexed with the 0 column saved for totals
     for (int i = 0; i < num_rows; i++) {
        filter_mask[i]=coexpression_histograms[i+1][0]>0;
          if (filter_mask[i]){
@@ -297,13 +78,11 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
            num_cols=coexpression_histograms[i+1][0];
        }
     }
-    // calculate column sums and find the maximum column sum
     for (int i = 0; i < num_rows; i++) {
         for (int j = 0; j < num_cols; j++) {
             column_sums[j] += coexpression_histograms[i+1][j+1];
         }
     }
-    //correct for multiple counting of column sums
     for (int j = 0; j < num_cols; j++) {
         column_sums[j] /= j+1;
     }
@@ -313,51 +92,43 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
             max_column_sum = column_sums[j];
         }
     }
-    // Adjust canvas dimensions to include the bar graph
     int width = left_padding + num_cols * CELL_SIZE + BAR_WIDTH + right_padding;
-    int height = BASE_PADDING + BAR_GRAPH_HEIGHT + BASE_PADDING + 20 + filtered_rows * CELL_SIZE + BASE_PADDING; // +20 for x-axis labels
+    int height = BASE_PADDING + BAR_GRAPH_HEIGHT + BASE_PADDING + 20 + filtered_rows * CELL_SIZE + BASE_PADDING;
 
     cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
     cairo_t *cr = cairo_create(surface);
 
-    // Draw bar graph
     for (int j = 0; j < num_cols; j++) {
         double bar_height = (double)column_sums[j] / max_column_sum * BAR_GRAPH_HEIGHT;
-        cairo_set_source_rgb(cr, 0.2, 0.4, 0.8); // Bar color (blue)
+        cairo_set_source_rgb(cr, 0.2, 0.4, 0.8);
         cairo_rectangle(cr, left_padding + j * CELL_SIZE, BASE_PADDING + BAR_GRAPH_HEIGHT - bar_height, CELL_SIZE, bar_height);
         cairo_fill(cr);
     }
-    // **Draw side labels for maximum and midpoint**
     cairo_set_font_size(cr, 10);
-    cairo_set_source_rgb(cr, 0, 0, 0); // Black color for labels
+    cairo_set_source_rgb(cr, 0, 0, 0);
 
-    // Maximum value label
     char max_label[20];
     snprintf(max_label, sizeof(max_label), "%-d", max_column_sum);
-    cairo_move_to(cr, left_padding - 30 - 10, BASE_PADDING + 5); // Position label at top-left of bar graph
+    cairo_move_to(cr, left_padding - 30 - 10, BASE_PADDING + 5);
     cairo_show_text(cr, max_label);
 
-    // Midpoint value label
     char midpoint_label[20];
     int midpoint_value = max_column_sum / 2;
     snprintf(midpoint_label, sizeof(midpoint_label), "%d", midpoint_value);
-    cairo_move_to(cr, left_padding - 30 - 10, BASE_PADDING + BAR_GRAPH_HEIGHT / 2 + 5); // Position at the midpoint of the bar graph
+    cairo_move_to(cr, left_padding - 30 - 10, BASE_PADDING + BAR_GRAPH_HEIGHT / 2 + 5);
     cairo_show_text(cr, midpoint_label);
     
-    // Draw x-axis labels under the bar graph
     cairo_set_font_size(cr, 10);
-    cairo_set_source_rgb(cr, 0, 0, 0); // Black color for labels
+    cairo_set_source_rgb(cr, 0, 0, 0);
     for (int j = 0; j < num_cols; j++) {
-        if ((j+1) % 5 == 0) { // Label every 5th column
+        if ((j+1) % 5 == 0) {
             char label[10];
             snprintf(label, sizeof(label), "%d", j+1);
-            cairo_move_to(cr, left_padding + j * CELL_SIZE + CELL_SIZE / 4, BASE_PADDING + BAR_GRAPH_HEIGHT + 15); // Adjust placement
+            cairo_move_to(cr, left_padding + j * CELL_SIZE + CELL_SIZE / 4, BASE_PADDING + BAR_GRAPH_HEIGHT + 15);
             cairo_show_text(cr, label);
         }
     }
 
-    // Draw heatmap
-    //find max value
     int max_value = 0;
     for (int i = 0; i < num_rows; i++) {
         if (!filter_mask[i]) continue;
@@ -376,21 +147,18 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
         if (!filter_mask[i]) continue;
         for (int j = 0; j < num_cols; j++) {
             double intensity = normalize(coexpression_histograms[i+1][j+1], max_value);
-            //fprintf(stderr, "Intensity %f\n", intensity);
             double r, g, b;
             value_to_color(intensity, &r, &g, &b, plasma_colormap, colormap_size);
             cairo_set_source_rgb(cr, r, g, b);
             cairo_rectangle(cr, left_padding + j * CELL_SIZE, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + draw_row * CELL_SIZE, CELL_SIZE, CELL_SIZE);
             cairo_fill(cr);
         }
-        // Draw row labels
         cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
         cairo_set_font_size(cr, 10);
         cairo_move_to(cr, BASE_PADDING, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + draw_row * CELL_SIZE + CELL_SIZE / 2);
         cairo_show_text(cr, features->feature_names[i]);
         draw_row++;
     }
-    // Draw color bar
     for (int i = 0; i < height - BAR_GRAPH_HEIGHT - 20 - BASE_PADDING*3 ; i++) {
         double normalized_value = 1.0 - (double)i / (height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20);
         double r, g, b;
@@ -400,122 +168,26 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
         cairo_fill(cr);
     }
 
-    // Add labels to the color bar
     cairo_set_font_size(cr, 10);
     for (int i = 0; i <= height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20; i += 10 * CELL_SIZE) {
         double normalized_value = 1.0 - (double)i / (height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20 );
         int value = (int)(normalized_value * max_value);
         char label[20];
         snprintf(label, sizeof(label), "%d", value);
-        cairo_move_to(cr, width - right_padding + 5, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + i + 4); // Adjust for padding
+        cairo_move_to(cr, width - right_padding + 5, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + i + 4);
         cairo_show_text(cr, label);
     }
 
-    // Save to PNG
     cairo_surface_write_to_png(surface, output_file);
 
-    // Clean up
     cairo_destroy(cr);
     cairo_surface_destroy(surface);
 }
 #endif
 
-
-//function prototypes sorted alphabetically
-void add_deduped_count(feature_counts *s, uint32_t *counts, uint16_t stringency, uint16_t min_counts);
-unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned char *barcodes, unsigned char* corrected_barcodes, char *umi, unsigned char *qscores, uint32_t feature_index, int number_of_variants, uint16_t match_position, memory_pool_collection *pools, statistics *stats);
-storage_block* allocate_storage_block(size_t block_size);
-char check_neighbor(uint64_t code64, uint32_t *counts, data_structures *hashes);
-int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools, statistics *stats, int barcode_constant_offset);
-int checkAndCorrectFeature(char *line, feature_arrays *features, int maxHammingDistance, int nThreads, int *hamming_distance, char *matching_sequence, int maxN, char *ambiguous, uint16_t *match_position);
-char check_sequence(char *sequence, int sequence_length);
-void code2string(unsigned char *code, char *string, int length);
-int compare_feature_sequences(const void *a, const void *b);
-void destroy_data_structures(data_structures *hashes);
-void initialize_data_structures(data_structures *hashes);
-int existing_output_skip(char keep_existing, char *directory);
-void expand_memory_pool(memory_pool *pool);
-void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts,double min_posterior);
-unsigned char* find_best_posterior_match (unmatched_barcodes_features_block *entry_block, int number_of_features, double min_posterior, statistics *stats, data_structures *hashes);
-int find_closest_barcodes(unsigned char* code, unsigned char *corrected_codes, unsigned char *indices);
-void find_connected_component(gpointer start_key, uint32_t *counts, data_structures *hashes);
-void find_deduped_counts(data_structures *hashes, uint16_t stringency, uint16_t min_counts);
-int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxHammingDistance, int nThreads, int *bestScore, char **matching_sequence, uint16_t *match_position);
-int find_feature_match_single(feature_arrays *features, char *lineR2, int maxHammingDistance,int *bestScore, char **matching_sequence, uint16_t *match_position);
-int find_neighbors(uint64_t key64, uint64_t *neighbors, uint32_t *counts, data_structures *hashes);
-int find_matching_codes(unsigned char *sequence_code, unsigned char *feature_code, size_t feature_code_length, size_t feature_length);
-int find_variant_match(unsigned char *code, int sequence_index, unsigned char *corrected_codes);
-double get_time_in_seconds();
-int generate_sequences(char* string, int string_length, int *indices, char **output, int index, int number_of_indices, char *output_indices[], int number_of_outputs);
-void initcode2seq();
-void initdiff2hamming(unsigned char *difference);
-void initseq2Code();
-void initialize_statistics(statistics *stats);
-memory_pool* initialize_storage_pool(size_t block_size, size_t blocks_per_pool);
-void initialize_unit_sizes();
-int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned char hamming_distance, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools);
-int is_directory(const char *path);
-int mkdir_p(const char *path);
-void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz);
-void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts, int **coexpression_counts, int **coexpression_histograms, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts);
-int print_feature_sequences(feature_arrays *features, int *total_counts, char *directory, data_structures *hashes);
-void process_multiple_feature_sequences(int nsequences, char **sequences, int *orientations, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position);
-void process_feature_sequence(char *sequence, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position); 
-void process_pending_barcodes(data_structures *hashes, memory_pool_collection *pools, statistics *stats,double min_posterior);
-void read_unmatched_features_block(unmatched_barcodes_features_block *entry_block, unmatched_barcodes_features *entry);
-unsigned char* read_whiteList(char *whitelist_filename, GHashTable *hash, int reverse_complement_flag);
-feature_arrays* read_features_file(const char* filename);
-char* printToBuffer(char *string, int sequence_length, char *buffer);
-void reverse_complement_sequence(char *sequence, char *reverse, int sequence_length);
-char complement(char base);
-void reverse_complement_in_place(char *seq);
-void reverse_in_place(char *str);
-int split_line(char *line, char *fields[], const char *split_string);
-int string2code(char *string, int sequence_length, unsigned char *code);
-void string2all_codes(char *string, unsigned char codes[][LINE_LENGTH/2+1], int *lengths);
-void update_feature_counts(char *barcode_string, char *umi, uint32_t feature_index, data_structures *hashes,memory_pool_collection *pools);
-void update_feature_counts_from_code(unsigned char *code, char *umi, uint32_t feature_index, data_structures *hashes, memory_pool_collection *pools);
-void update_umi_counts(unsigned char *code, char *umi, uint32_t feature_index, data_structures *hashes, memory_pool_collection *pools);
-void process_files_in_sample(sample_args *args);
-void free_memory_pool_collection(memory_pool_collection *pools);
-void free_memory_pool_storage(memory_pool *pool);
-void free_fastq_files_collection(fastq_files_collection *fastq_files);
+//function proto
 
 
-
-
-//tables for converting sequences to codes
-static unsigned char seq2code[256];
-static char code2seq[256][4];
-static unsigned char diff2Hamming[256];
-static unsigned char match[256];
-//unit sizes for dynamically allocated structs
-static unit_sizes dynamic_struct_sizes;
-
-
-//global variables for the program
-static long long max_reads=0;
-static int debug;
-
-//valid barcode list and hash
-unsigned char *whitelist;
-GHashTable *whitelist_hash; 
-//hash tables for storing feature counts, umi counts, feature sequences, whitelist and filtered barcodes
-
-//size globals to replace constants
-static int barcode_length;
-static int barcode_code_length;
-static int number_of_features;
-static int maximum_feature_length;
-static int feature_code_length;
-
-//default values for the program
-static int max_feature_n=MAX_FEATURE_N;
-static int max_barcode_n=MAX_BARCODE_N;
-static int max_barcode_mismatches=MAX_BARCODE_MISMATCHES;
-static int umi_length=UMI_LENGTH;
-static int umi_code_length=UMI_CODE_LENGTH;
-static int limit_search = -1;
 
 
 
@@ -691,32 +363,6 @@ void free_feature_arrays(feature_arrays *features) {
     free(features->feature_sequences);
     free(features->feature_codes);
     free(features);
-}
-
-guint hash_int64(gconstpointer v) {
-    guint64 k = *(const guint64*)v;
-    k ^= k >> 33;
-    k *= 0xff51afd7ed558ccd;
-    k ^= k >> 33;
-    k *= 0xc4ceb9fe1a85ec53;
-    k ^= k >> 33;
-    return k;
-}
-// Simple equality function for 64-bit integers
-gboolean equal_int64(gconstpointer v1, gconstpointer v2) {
-    return *(const long long*)v1 == *(const long long*)v2;
-}
-
-guint hash_int32(gconstpointer v) {
-    guint32 k = *(const guint32*) v;
-    k ^= k >> 16;
-    k *= 0x85ebca6b;
-    k ^= k >> 13;
-    return k;
-}
-// Simple equality function for 64-bit integers
-gboolean equal_int32(gconstpointer v1, gconstpointer v2) {
-     return *((const gint*)v1) == *((const gint*)v2);
 }
 
 storage_block* allocate_storage_block(size_t block_size){
@@ -4092,381 +3738,4 @@ void populate_sample_args(sample_args *args, int sample_index,char *directory, f
                 args->consumer_threads_per_set=consumer_threads_per_set;
 
             }
-int main(int argc, char *argv[])
-{   
-    omp_set_nested(1);
-    initseq2Code();
-    initcode2seq();
-    initdiff2hamming(diff2Hamming);
-    initialize_complement();
-    feature_arrays *features=0;
-    int reverse_complement_whitelist=0;
-    char *barcodeFastqFilesString=0;
-    char *forwardFastqFilesString=0;
-    char *reverseFastqFilesString=0;
-    char barcode_pattern[LINE_LENGTH], forward_pattern[LINE_LENGTH], reverse_pattern[LINE_LENGTH];
-    strcpy(barcode_pattern, "_R1_");
-    strcpy(forward_pattern, "_R2_");
-    strcpy(reverse_pattern, "_R3_");
-    
-    int maxHammingDistance=1;
-    char directory[LINE_LENGTH];
-    char whitelist_filename[4096];
-    char sample_flag=1;
-    char keep_existing=0;
-    uint16_t stringency=1;
-    uint16_t min_counts=1;
-    int read_buffer_lines=READ_BUFFER_LINES;
-    int average_read_length=AVERAGE_READ_LENGTH;
-    int feature_constant_offset=0;
-    int barcode_constant_offset=0;
-    int parallel_by_file=0; //parallelize by attempting to read all fastq files at the same time - default is to use a thread per set of files i.e. R1/R2 or R1/R2/R3
-    double min_posterior=MIN_POSTERIOR;
-
-    int max_available_threads=8;
-    int max_concurrent_processes=8;
-    int consumer_threads_per_set=1;
-    int search_threads_per_consumer=4;
-    int set_consumer_threads_per_set=0;
-    int set_search_threads_per_consumer=0;
-
-    static struct option long_options[] = {
-        {"whitelist", required_argument, 0, 'w'},
-        {"featurelist", required_argument, 0, 'f'},
-        {"maxHammingDistance", required_argument, 0, 'm'},
-        {"feature_constant_offset", required_argument, 0, 'o'},
-        {"barcode_constant_offset", required_argument, 0, 'B'},
-        {"threads", required_argument, 0, 't'},
-        {"available_threads", required_argument, 0, 'T'},
-        {"search_threads", required_argument, 0, 'S'},
-        {"stringency", required_argument, 0, 's'},
-        {"min_counts", required_argument, 0, 'i'},
-        {"umi_length",required_argument , 0, 'u'},
-        {"barcode_length",required_argument , 0, 'b'},
-        {"directory", required_argument, 0, 'd'},
-        {"debug", no_argument, 0, 'v'},
-        {"as_named", no_argument, 0, 'a'},
-        {"reverse_complement_whitelist", no_argument, 0, 'r'},
-        {"keep_existing", no_argument, 0, 'k'},
-        {"parallel_by_file", no_argument, 0, 'P'},
-        {"read_buffer_lines", required_argument, 0, 'R'},
-        {"average_read_length", required_argument, 0, 'L'},
-        {"min_posterior", required_argument, 0, 'M'},
-        {"consumer_threads_per_set", required_argument, 0, 'c'},
-        {"barcode_fastqs", required_argument, 0, 0},
-        {"forward_fastqs", required_argument, 0, 1},
-        {"reverse_fastqs", required_argument, 0, 2},
-        {"max_barcode_mismatches", required_argument, 0, 3},
-        {"feature_n", required_argument, 0, 4},
-        {"barcode_n", required_argument, 0, 5},
-        {"barcode_fastq_pattern", required_argument, 0, 6},
-        {"forward_fastq_pattern", required_argument, 0, 7},
-        {"reverse_fastq_pattern", required_argument, 0, 8},
-        {"max_reads", required_argument, 0, 9},
-        {"limit_search", required_argument, 0, 10},
-        {0, 0, 0, 0}
-    };
-
-    int option_index = 0;
-    int c;
-    while ((c = getopt_long(argc, argv, "w:b:f:m:s:S:i:t:T:o:d:u:c:vakrPDB:R:L:M:", long_options, &option_index)) != -1) {
-        switch (c) {
-            case 'w':
-                strcpy(whitelist_filename, optarg);
-                break;
-            case 'b':
-                barcode_length=atoi(optarg);
-                barcode_code_length=(barcode_length+3)/4;
-                break;
-            case 'f':
-                features=read_features_file(optarg);
-                number_of_features=features->number_of_features;
-                maximum_feature_length=features->max_length;
-                feature_code_length=(maximum_feature_length+3)/4;
-                break;
-            case 'm':
-                maxHammingDistance=atoi(optarg);
-                break;
-            case 's':
-                stringency=(uint16_t)atoi(optarg);
-                break;
-            case 'S':
-                set_search_threads_per_consumer=atoi(optarg);
-                break;
-            case 'i':
-                min_counts=(uint16_t)atoi(optarg);
-                break;
-            case 'd':
-                strcpy(directory, optarg);
-                //check if directory ends in /
-                if (directory[strlen(directory)-1] != '/'){
-                    strcat(directory, "/");
-                }
-                break;
-            case 'o':
-                feature_constant_offset=atoi(optarg);
-                break;
-            case 't':
-                max_concurrent_processes=atoi(optarg);
-                break;
-            case 'T':
-                max_available_threads=atoi(optarg);
-                break;
-            case 'u':
-                umi_length=atoi(optarg);
-                umi_code_length=(umi_length+3)/4;
-                break;
-            case 'c':
-                set_consumer_threads_per_set=atoi(optarg);
-                break;
-            case 'v':  // Handle the -v flag for enabling debug mode
-                debug = 1;
-                break;
-            case 'a':
-                sample_flag=0;
-                break;
-            case 'k':
-                keep_existing=1;
-                break;
-            case 'r':
-                reverse_complement_whitelist=1;
-                break;
-            case 'B':
-                barcode_constant_offset=atoi(optarg);
-                break;
-            case 'P':
-                parallel_by_file=1;
-                break;
-            case 'R':
-                read_buffer_lines=atoi(optarg);
-                break;
-            case 'L':
-                average_read_length=atoi(optarg);
-                break;
-            case 'M':
-                min_posterior=(double)atof(optarg);
-                break;
-            case 0:
-                barcodeFastqFilesString = malloc(strlen(optarg) + 1);
-                if (barcodeFastqFilesString == NULL) {
-                    fprintf(stderr, "Error: Unable to allocate memory for barcodeFastqFilesString\n");
-                    exit(EXIT_FAILURE);
-                }
-                strcpy(barcodeFastqFilesString, optarg);
-                fprintf(stderr, "Read fastqFilesR1String %s %s\n", optarg, barcodeFastqFilesString);
-                break;
-            case 1:
-                forwardFastqFilesString = malloc(strlen(optarg) + 1);
-                if (forwardFastqFilesString == NULL) {
-                    fprintf(stderr, "Error: Unable to allocate memory for forwardFastqFilesString\n");
-                    exit(EXIT_FAILURE);
-                }
-                strcpy(forwardFastqFilesString, optarg);
-                break;
-            case 2:
-                reverseFastqFilesString = malloc(strlen(optarg) + 1);
-                if (reverseFastqFilesString == NULL) {
-                    fprintf(stderr, "Error: Unable to allocate memory for reverseFastqFilesString\n");
-                    exit(EXIT_FAILURE);
-                }
-                strcpy(reverseFastqFilesString, optarg);
-                break;
-            case 3:
-                max_barcode_mismatches=atoi(optarg);
-                break;    
-            case 4:
-                max_feature_n=atoi(optarg);
-                break;
-            case 5:
-                max_barcode_n=atoi(optarg);
-                break;
-            case 6:
-                strcpy(barcode_pattern, optarg);
-                break;
-            case 7:
-                strcpy(forward_pattern, optarg);
-                break;
-            case 8:
-                strcpy(reverse_pattern, optarg);
-                break;
-            case 9:
-                max_reads=atoll(optarg);
-                break;
-            case 10:
-                limit_search = atoi(optarg);
-                break;
-            default:
-                // print usage
- fprintf(stderr, "Usage: %s \n\
-  -w, --whitelist [filename]         Specify the whitelist file\n\
-  -f, --featurelist [filename]       Specify the feature list file\n\
-  -m, --maxHammingDistance [int]     Set the maximum Hamming distance for barcodes\n\
-  -o, --feature_constant_offset [int] Set the constant offset for feature extraction\n\
-  -B, --barcode_constant_offset [int] Set the constant offset for barcode extraction\n\
-  -t, --threads [int]                Specify the maximum number of concurrent processes\n\
-  -T, --available_threads [int]      Specify the maximum available threads\n\
-  -S, --search_threads [int]         Set the number of threads for searching\n\
-  -s, --stringency [int]             Set the stringency level\n\
-  -i, --min_counts [int]             Set the minimum counts threshold\n\
-  -u, --umi_length [int]             Specify the UMI length\n\
-  -b, --barcode_length [int]         Specify the barcode length\n\
-  -d, --directory [path]             Set the working directory\n\
-  -v, --debug                        Enable debug mode\n\
-  -a, --as_named                     Use named mode\n\
-  -r, --reverse_complement_whitelist Reverse complement the whitelist\n\
-  -k, --keep_existing                Keep existing outputs\n\
-  -P, --parallel_by_file             Enable parallel processing by file\n\
-  -R, --read_buffer_lines [int]      Set the read buffer line count\n\
-  -L, --average_read_length [int]    Specify the average read length\n\
-  -M, --min_posterior [float]        Set the minimum posterior threshold\n\
-  -c, --consumer_threads_per_set [int] Set the number of consumer threads per set\n\
-  --barcode_fastqs [string]          Specify the barcode FASTQ files\n\
-  --forward_fastqs [string]          Specify the forward FASTQ files\n\
-  --reverse_fastqs [string]          Specify the reverse FASTQ files\n\
-  --max_barcode_mismatches [int]     Set the maximum allowed barcode mismatches\n\
-  --feature_n [int]                  Set the maximum feature count\n\
-  --barcode_n [int]                  Set the maximum barcode count\n\
-  --barcode_fastq_pattern [string]   Set the pattern for barcode FASTQ files\n\
-  --forward_fastq_pattern [string]   Set the pattern for forward FASTQ files\n\
-  --reverse_fastq_pattern [string]   Set the pattern for reverse FASTQ files\n\
-  --max_reads [int]                  Set the maximum number of reads to process\n\
-  --limit_search [int]               Limit the search to +/- this value from the feature constant offset\n", argv[0]);
-                return 1;
-        }
-    }
-
-    int positional_arg_count = argc - optind;
-    if (positional_arg_count > 0 && (barcodeFastqFilesString != NULL || forwardFastqFilesString != NULL || reverseFastqFilesString != NULL)) {
-        fprintf(stderr, "Error: Cannot specify both positional arguments and --barcode_fastqs\n");
-        return 1;
-    }
-    //make sure that the patterns are all different or empty
-    if (!strcmp(barcode_pattern, forward_pattern) || !strcmp(barcode_pattern, reverse_pattern) || !strcmp(forward_pattern, reverse_pattern)){
-        fprintf(stderr, "Error: Barcode %s, forward  %s and reverse %s patterns must be different\n", barcode_pattern, forward_pattern, reverse_pattern);
-        return 1;
-    }
-    fastq_files_collection fastq_files;
-    memset(&fastq_files, 0, sizeof(fastq_files));
-    if (positional_arg_count && is_directory(argv[optind])){
-        fprintf(stderr, "Organizing fastq files by directory\n");
-        organize_fastq_files_by_directory(positional_arg_count, argc, argv, optind, barcodeFastqFilesString, forwardFastqFilesString, reverseFastqFilesString, &fastq_files, barcode_pattern, forward_pattern, reverse_pattern);
-    }
-    else{
-        fprintf(stderr, "Organizing fastq files by type\n");   
-        organize_fastq_files_by_type(positional_arg_count, argc, argv,optind, barcodeFastqFilesString, forwardFastqFilesString, reverseFastqFilesString, &fastq_files, barcode_pattern, forward_pattern, reverse_pattern,sample_flag);
-    }
-    whitelist_hash = g_hash_table_new(hash_int32, equal_int32 );
-    read_whiteList(whitelist_filename, whitelist_hash, reverse_complement_whitelist);
-    initialize_unit_sizes();
-    const int nSamples=fastq_files.nsamples;
-    //find max_sample_size
-    int threads_per_set=0;
-    if (max_available_threads){
-        threads_per_set=calculate_initial_threads(&fastq_files, parallel_by_file, max_available_threads, &consumer_threads_per_set, &search_threads_per_consumer, &max_concurrent_processes, set_consumer_threads_per_set,set_search_threads_per_consumer );
-    }
-    else{
-        
-        if (set_search_threads_per_consumer){
-            search_threads_per_consumer=set_search_threads_per_consumer;
-        }
-        if (set_consumer_threads_per_set){
-            consumer_threads_per_set=set_consumer_threads_per_set;
-        } 
-    }
-   fprintf(stderr, "Calculated optimal initial thread usage Threads available %d, consumer_threads_used %d search threads used %d processes %d\n", max_available_threads, consumer_threads_per_set, search_threads_per_consumer, max_concurrent_processes); 
-    int concurrent_processes=0;
-    int recalculate_flag=0;
-    //keep track of threads used for dynamic allocation
-    atomic_int *thread_counter=mmap(NULL, sizeof(atomic_int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (thread_counter == MAP_FAILED){
-        perror("Failed to allocate memory for thread counter");
-        exit(EXIT_FAILURE);
-    }
-    atomic_init(thread_counter, 0);
-    fprintf(stderr,"threads per set %d\n", threads_per_set);
-    for (int index=0; index<nSamples; index++){
-        const int i=fastq_files.sorted_index[index];
-        //calculate the threads for this sample
-    
-        if (concurrent_processes >= max_concurrent_processes){
-            wait(NULL);
-            concurrent_processes--;
-            recalculate_flag=1;
-        }
-        pid_t pid=fork();
-        if (pid< 0){
-            perror("Failed to fork");
-            exit(EXIT_FAILURE); 
-        }
-        else if (pid== 0){
-            /* dynamic thread allocation not working well yet
-            if (recalculate_flag && max_available_threads){
-                int threads_used=atomic_load(thread_counter);
-                threads_per_set=calculate_threads(&fastq_files, parallel_by_file, index, threads_used, max_available_threads, &consumer_threads_per_set, &search_threads_per_consumer, &max_concurrent_processes, set_consumer_threads_per_set,set_search_threads_per_consumer);
-            }*/
-            atomic_fetch_add(thread_counter, threads_per_set);
-            
-            char sample_directory[FILENAME_LENGTH];
-            if (sample_flag){
-                strcpy(sample_directory, directory);
-                strcat(sample_directory, fastq_files.sample_names[i]);
-                strcat(sample_directory, "/");
-            }
-            else{
-                strcpy(sample_directory, directory);
-                strcat(sample_directory, fastq_files.sample_names[0]);
-                strcat(sample_directory, "/");
-            }
-            memory_pool_collection *pools=initialize_memory_pool_collection();
-            statistics stats;
-            data_structures hashes;
-            initialize_data_structures(&hashes);
-            initialize_statistics(&stats);
-            fprintf(stderr, "Processing sample directory %s\n", sample_directory);
-            if (existing_output_skip(keep_existing, sample_directory)) exit(0);
-            sample_args args;
-            populate_sample_args(&args,i, sample_directory, &fastq_files, features, maxHammingDistance, search_threads_per_consumer, pools, &stats, &hashes, stringency, min_counts, barcode_constant_offset, feature_constant_offset, read_buffer_lines, average_read_length,parallel_by_file,min_posterior,consumer_threads_per_set);
-            process_files_in_sample(&args);
-            cleanup_sample(args.pools, args.hashes);
-            atomic_fetch_add(thread_counter, -threads_per_set);
-            exit(0);
-        }
-        concurrent_processes++;
-
-    }
-//wait for all the processes to finish
-    while (concurrent_processes > 0) {
-        wait(NULL);
-        concurrent_processes--;
-    }
-    g_hash_table_destroy(whitelist_hash);
-    free(whitelist);
-    if (barcodeFastqFilesString) free(barcodeFastqFilesString);
-    if (forwardFastqFilesString) free(forwardFastqFilesString);
-    if (reverseFastqFilesString) free(reverseFastqFilesString);
-    free_feature_arrays(features);
-    free_fastq_files_collection(&fastq_files);
-    return 0;
-}
-
-void free_fastq_files_collection(fastq_files_collection *fastq_files){
-    //TODO make memory management consistent between organize by directory and type
-    //for now just freeing what is obviously allocated
-    free(fastq_files->concatenated_files);
-    free(fastq_files->concatenated_sample_names);
-    if(fastq_files->barcode_fastq)
-        free(fastq_files->barcode_fastq);
-    if(fastq_files->forward_fastq)
-        free(fastq_files->forward_fastq);
-    if(fastq_files->reverse_fastq)
-        free(fastq_files->reverse_fastq);
-    if(fastq_files->sample_names)
-        free(fastq_files->sample_names);
-    if(fastq_files->sample_sizes)
-        free(fastq_files->sample_sizes);
-    if(fastq_files->sample_offsets)
-        free(fastq_files->sample_offsets);
-    if(fastq_files->sorted_index)
-        free(fastq_files->sorted_index);
-}
 
