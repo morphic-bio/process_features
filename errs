@@ -1,0 +1,59 @@
+gcc -g -Wall -O3 -Iinclude -fopenmp -I/usr/include/glib-2.0 -I/usr/lib/x86_64-linux-gnu/glib-2.0/include -I/usr/include/cairo -I/usr/include/glib-2.0 -I/usr/lib/x86_64-linux-gnu/glib-2.0/include -I/usr/include/pixman-1 -I/usr/include/uuid -I/usr/include/freetype2 -I/usr/include/libpng16  -c src/assignBarcodes.c -o assignBarcodes.o
+src/assignBarcodes.c: In function ‘printFeatureCounts’:
+src/assignBarcodes.c:1488:32: warning: passing argument 2 of ‘find_deduped_counts’ makes pointer from integer without a cast [-Wint-conversion]
+ 1488 |     find_deduped_counts(hashes,stringency, min_counts);
+      |                                ^~~~~~~~~~
+      |                                |
+      |                                uint16_t {aka short unsigned int}
+src/assignBarcodes.c:1332:63: note: expected ‘GHashTable *’ {aka ‘struct _GHashTable *’} but argument is of type ‘uint16_t’ {aka ‘short unsigned int’}
+ 1332 | void find_deduped_counts(data_structures *hashes, GHashTable* barcode_to_deduped_counts, uint16_t stringency, uint16_t min_counts){
+      |                                                   ~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~
+src/assignBarcodes.c:1488:5: error: too few arguments to function ‘find_deduped_counts’
+ 1488 |     find_deduped_counts(hashes,stringency, min_counts);
+      |     ^~~~~~~~~~~~~~~~~~~
+src/assignBarcodes.c:1332:6: note: declared here
+ 1332 | void find_deduped_counts(data_structures *hashes, GHashTable* barcode_to_deduped_counts, uint16_t stringency, uint16_t min_counts){
+      |      ^~~~~~~~~~~~~~~~~~~
+src/assignBarcodes.c:1501:61: error: invalid use of undefined type ‘struct _GHashTable’
+ 1501 |         uint16_t *const entry_deduped_counts=&(entry->counts[number_of_features+1]);
+      |                                                             ^
+src/assignBarcodes.c:1501:9: error: invalid use of undefined type ‘struct _GHashTable’
+ 1501 |         uint16_t *const entry_deduped_counts=&(entry->counts[number_of_features+1]);
+      |         ^~~~~~~~
+src/assignBarcodes.c:1501:46: warning: initialization of ‘uint16_t * const’ {aka ‘short unsigned int * const’} from incompatible pointer type ‘GHashTable *’ {aka ‘struct _GHashTable *’} [-Wincompatible-pointer-types]
+ 1501 |         uint16_t *const entry_deduped_counts=&(entry->counts[number_of_features+1]);
+      |                                              ^
+src/assignBarcodes.c:1508:30: error: invalid use of undefined type ‘struct _GHashTable’
+ 1508 |             if (entry->counts[i] > 0 && entry_deduped_counts[i] > 0){
+      |                              ^
+src/assignBarcodes.c:1508:17: error: invalid use of incomplete typedef ‘GHashTable’ {aka ‘struct _GHashTable’}
+ 1508 |             if (entry->counts[i] > 0 && entry_deduped_counts[i] > 0){
+      |                 ^~~~~
+src/assignBarcodes.c:1541:61: error: invalid use of undefined type ‘struct _GHashTable’
+ 1541 |         uint16_t *const entry_deduped_counts=&(entry->counts[number_of_features+1]);
+      |                                                             ^
+src/assignBarcodes.c:1541:9: error: invalid use of undefined type ‘struct _GHashTable’
+ 1541 |         uint16_t *const entry_deduped_counts=&(entry->counts[number_of_features+1]);
+      |         ^~~~~~~~
+src/assignBarcodes.c:1541:46: warning: initialization of ‘uint16_t * const’ {aka ‘short unsigned int * const’} from incompatible pointer type ‘GHashTable *’ {aka ‘struct _GHashTable *’} [-Wincompatible-pointer-types]
+ 1541 |         uint16_t *const entry_deduped_counts=&(entry->counts[number_of_features+1]);
+      |                                              ^
+src/assignBarcodes.c:1544:55: error: invalid use of undefined type ‘struct _GHashTable’
+ 1544 |         stats->total_unmatched_features+=entry->counts[0];
+      |                                                       ^
+src/assignBarcodes.c:1544:42: error: invalid use of incomplete typedef ‘GHashTable’ {aka ‘struct _GHashTable’}
+ 1544 |         stats->total_unmatched_features+=entry->counts[0];
+      |                                          ^~~~~
+src/assignBarcodes.c:1551:30: error: invalid use of undefined type ‘struct _GHashTable’
+ 1551 |             if (entry->counts[i] > 0){
+      |                              ^
+src/assignBarcodes.c:1551:17: error: invalid use of incomplete typedef ‘GHashTable’ {aka ‘struct _GHashTable’}
+ 1551 |             if (entry->counts[i] > 0){
+      |                 ^~~~~
+src/assignBarcodes.c:1552:49: error: invalid use of undefined type ‘struct _GHashTable’
+ 1552 |                 feature_counts[i]+=entry->counts[i];
+      |                                                 ^
+src/assignBarcodes.c:1552:36: error: invalid use of incomplete typedef ‘GHashTable’ {aka ‘struct _GHashTable’}
+ 1552 |                 feature_counts[i]+=entry->counts[i];
+      |                                    ^~~~~
+make: *** [Makefile:46: assignBarcodes.o] Error 1
