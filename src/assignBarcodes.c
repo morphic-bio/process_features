@@ -1245,13 +1245,44 @@ void update_feature_counts_from_code(unsigned char *code, char *umi,  uint32_t f
     update_umi_counts(code, umi, feature_index, hashes, pools);
     feature_counts *s=g_hash_table_lookup(hashes->filtered_hash, code);
     if (s == NULL) {
-        feature_counts *entry= (feature_counts*) allocate_memory_from_pool(pools->feature_counts_pool);
-        memcpy(entry->sequence_code,code, barcode_code_length );
-        entry->counts[feature_index]=1;
-        g_hash_table_insert(hashes->filtered_hash, entry->sequence_code, entry);
-        return;
-    }    
-    s->counts[feature_index]++;
+        // --- Logic for a NEW barcode ---
+        s = (feature_counts*) allocate_memory_from_pool(pools->feature_counts_pool);
+        if (s == NULL) {
+            fprintf(stderr, "Fatal: Memory allocation for feature_counts failed.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        memcpy(s->sequence_code, code, barcode_code_length);
+
+        // Create and assign the new inner hash table
+        s->counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+        if (s->counts == NULL) {
+            fprintf(stderr, "Fatal: GHashTable creation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        g_hash_table_insert(hashes->filtered_hash, s->sequence_code, s);
+
+        // --- Set initial counts ---
+        // For a new entry, the count for this feature is 1.
+        g_hash_table_insert(s->counts, GUINT_TO_POINTER(feature_index), GUINT_TO_POINTER(1));
+        // The total count is also 1.
+        g_hash_table_insert(s->counts, GUINT_TO_POINTER(0), GUINT_TO_POINTER(1));
+
+    } else {
+        // --- Logic for an EXISTING barcode ---
+        // The feature_counts object 's' and its 'counts' GHashTable already exist.
+
+        // 1. Increment the specific feature's count
+        uintptr_t current_count = GPOINTER_TO_UINT(g_hash_table_lookup(s->counts, GUINT_TO_POINTER(feature_index)));
+        current_count++;
+        g_hash_table_replace(s->counts, GUINT_TO_POINTER(feature_index), GUINT_TO_POINTER(current_count));
+
+        // 2. Increment the total count stored at key '0'
+        uintptr_t total = GPOINTER_TO_UINT(g_hash_table_lookup(s->counts, GUINT_TO_POINTER(0)));
+        total++;
+        g_hash_table_replace(s->counts, GUINT_TO_POINTER(0), GUINT_TO_POINTER(total));
+    }
 }
 void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,data_structures *hashes, memory_pool_collection *pools){
     unsigned char code8[8];

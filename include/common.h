@@ -83,7 +83,8 @@ typedef struct feature_arrays {
 
 typedef struct feature_counts {
     unsigned char sequence_code[4];
-    uint16_t counts[];
+    GHashTable *counts;
+    GHashTable *deduped_counts;
 } feature_counts;
 
 typedef struct feature_sequences {
