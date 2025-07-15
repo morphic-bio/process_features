@@ -12,8 +12,8 @@ int debug;
 unsigned char *whitelist;
 GHashTable *whitelist_hash; 
 
-int barcode_length;
-int barcode_code_length;
+int barcode_length=BARCODE_LENGTH;
+int barcode_code_length=BARCODE_CODE_LENGTH;
 int number_of_features;
 int maximum_feature_length;
 int feature_code_length;

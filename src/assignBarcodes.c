@@ -186,11 +186,14 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
 }
 #endif
 
-//function proto
-
-
-
-
+void destroy_feature_umi_counts(gpointer data) {
+    feature_umi_counts *umi_counts = (feature_umi_counts*)data;
+    if (umi_counts && umi_counts->counts) {
+        g_hash_table_destroy(umi_counts->counts);
+    }
+    // We do NOT free(umi_counts) itself, because it was allocated
+    // from our custom memory pool, which is freed all at once later.
+}
 
 void initialize_complement(){
     match['A']='T';
@@ -340,14 +343,16 @@ void free_feature_arrays(feature_arrays *features) {
 
 void initialize_unit_sizes(){
     // Size of feature_counts (rounded up to alignment of uint16_t)
-    size_t feature_counts_size = sizeof(feature_counts) + 2 * (number_of_features + 1) * sizeof(uint16_t);
-    size_t feature_counts_alignment = __alignof__(uint16_t);  // Use __alignof__ instead of alignof
+    size_t feature_counts_size = sizeof(feature_counts);
+    size_t feature_counts_alignment = __alignof__(feature_counts);
     dynamic_struct_sizes.feature_counts = (feature_counts_size + feature_counts_alignment - 1) & ~(feature_counts_alignment - 1);
 
+
     // Size of feature_umi_counts (rounded up to alignment of uint16_t)
-    size_t feature_umi_counts_size = sizeof(feature_umi_counts) + (number_of_features + 1) * sizeof(uint16_t);
-    size_t feature_umi_counts_alignment = __alignof__(uint16_t);  // Use __alignof__ instead of alignof
+    size_t feature_umi_counts_size = sizeof(feature_umi_counts);
+    size_t feature_umi_counts_alignment = __alignof__(feature_umi_counts);
     dynamic_struct_sizes.feature_umi_counts = (feature_umi_counts_size + feature_umi_counts_alignment - 1) & ~(feature_umi_counts_alignment - 1);
+
 
     // Size of feature_sequences (rounded up to alignment of char)
     size_t feature_sequences_size = sizeof(feature_sequences) + maximum_feature_length + 1;
@@ -1287,28 +1292,57 @@ void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,d
     memset(code8,0,8);
     memcpy(code8,code,barcode_code_length);
     string2code(umi, umi_length, code8+barcode_code_length);
-    feature_umi_counts *s=g_hash_table_lookup(hashes->sequence_umi_hash, code8);
-    if(s == NULL){
-        feature_umi_counts *entry= (feature_umi_counts*) allocate_memory_from_pool(pools->feature_umi_counts_pool);
-        memset(entry,0,sizeof(feature_umi_counts));
-        memcpy(entry->sequence_umi_code,code8, 8);
-        entry->counts[feature_index]=1;
-        g_hash_table_insert(hashes->sequence_umi_hash, entry->sequence_umi_code, entry);
-        return;
+
+    feature_umi_counts *s = g_hash_table_lookup(hashes->sequence_umi_hash, code8);
+    
+    if (s == NULL) {
+        // Logic for a NEW barcode-UMI combination
+        s = (feature_umi_counts*) allocate_memory_from_pool(pools->feature_umi_counts_pool);
+        if (s == NULL) return; // Error check
+
+        memcpy(s->sequence_umi_code, code8, 8);
+        
+        // Create the new inner hash table for this UMI's feature counts
+        s->counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+        
+        // Set initial count for this feature to 1
+        g_hash_table_insert(s->counts, GUINT_TO_POINTER(feature_index), GUINT_TO_POINTER(1));
+        // Mark as unvisited for the connected components algorithm by setting key '0' to 0.
+        g_hash_table_insert(s->counts, GUINT_TO_POINTER(0), GUINT_TO_POINTER(0));
+
+        g_hash_table_insert(hashes->sequence_umi_hash, s->sequence_umi_code, s);
+    } else {
+        // Logic for an EXISTING barcode-UMI combination
+        uintptr_t current_count = GPOINTER_TO_UINT(g_hash_table_lookup(s->counts, GUINT_TO_POINTER(feature_index)));
+        current_count++;
+        g_hash_table_replace(s->counts, GUINT_TO_POINTER(feature_index), GUINT_TO_POINTER(current_count));
     }
-    s->counts[feature_index]++;
 }
 char check_neighbor(uint64_t code64,uint32_t *counts, data_structures *hashes){
-    feature_umi_counts *result=g_hash_table_lookup(hashes->sequence_umi_hash, &code64);
-    if (result && !result->counts[0]){
-        for (int i=0; i<number_of_features+1; i++){
-            counts[i]+=result->counts[i];
+    feature_umi_counts *result = g_hash_table_lookup(hashes->sequence_umi_hash, &code64);
+
+    if (result && result->counts) {
+        // Check if this node has been visited using key '0'
+        uintptr_t visited_flag = GPOINTER_TO_UINT(g_hash_table_lookup(result->counts, GUINT_TO_POINTER(0)));
+        
+        if (visited_flag == 0) { // If not visited
+            // --- NEW: Iterate through the hash table to sum counts ---
+            GHashTableIter iter;
+            gpointer key, value;
+            g_hash_table_iter_init(&iter, result->counts);
+            while (g_hash_table_iter_next(&iter, &key, &value)) {
+                uint32_t feature_index = GPOINTER_TO_UINT(key);
+                if (feature_index > 0) { // Don't add the visited flag to the temp counts array
+                    counts[feature_index] += GPOINTER_TO_UINT(value);
+                }
+            }
+
+            // Mark as visited by replacing the value at key '0' with 1
+            g_hash_table_replace(result->counts, GUINT_TO_POINTER(0), GUINT_TO_POINTER(1));
+            return 1; // Indicate success
         }
-        //mark as visited
-        result->counts[0]=1;
-        return 1;
     }
-    return 0;
+    return 0; // Not found or already visited
 }
 int find_neighbors(uint64_t key64, uint64_t *neighbors, uint32_t *counts, data_structures *hashes){
     int neighbor_count=0;
@@ -1337,8 +1371,9 @@ void find_deduped_counts(data_structures *hashes, GHashTable* barcode_to_deduped
 
     while (g_hash_table_iter_next(&iter, &lookup_key, &result)) {
         feature_umi_counts *umi_counts = (feature_umi_counts*) result;
-        if (umi_counts->counts[0]) continue;
-        
+        if (GPOINTER_TO_UINT(g_hash_table_lookup(umi_counts->counts, GUINT_TO_POINTER(0)))) {
+            continue; // Already processed if the flag is 1
+        }
         memset(clique_counts, 0, sizeof(clique_counts));
         
         find_connected_component(lookup_key, clique_counts, hashes);
@@ -1502,7 +1537,45 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     fprintf(matrixfp, "%%%%MatrixMarket matrix coordinate real general\n");
     fprintf(matrixfp, "%%metadata_json: {\"software_version\": \"assignBarcodes-0.1\", \"format_version\": 1}\n");
     fprintf(matrixfp, "%d %ld %ld\n", features->number_of_features, number_of_barcode_entries, number_of_features_seen);
-
+    
+    
+    
+    // --- NEW (Restored Logic): Populate Co-expression Matrices ---
+    // This loop must run before we start writing the output file.
+    if (coexpression_counts != NULL && coexpression_histograms != NULL) {
+        g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            GHashTable* deduped_hash = (GHashTable*)value;
+            int number_of_coexpressors = 0;
+            int coCounts[features->number_of_features + 1];
+            int coExpressorsIndices[features->number_of_features];
+            
+            GHashTableIter inner_iter;
+            gpointer inner_key, inner_value;
+            g_hash_table_iter_init(&inner_iter, deduped_hash);
+            while(g_hash_table_iter_next(&inner_iter, &inner_key, &inner_value)) {
+                int feature_index = GPOINTER_TO_INT(inner_key);
+                int count = GPOINTER_TO_INT(inner_value);
+                if (count > 0) {
+                    coCounts[number_of_coexpressors] = count;
+                    coExpressorsIndices[number_of_coexpressors++] = feature_index;
+                }
+            }
+            
+            if (number_of_coexpressors > 1) {
+                for (int i = 0; i < number_of_coexpressors; i++) {
+                    for (int j = 0; j < number_of_coexpressors; j++) {
+                        coexpression_counts[coExpressorsIndices[i]][coExpressorsIndices[j]] += coCounts[i];
+                    }
+                    coexpression_histograms[coExpressorsIndices[i]][number_of_coexpressors]++;
+                }
+            } else if (number_of_coexpressors) {
+                coexpression_counts[coExpressorsIndices[0]][0] += coCounts[0];
+                coexpression_counts[0][coExpressorsIndices[0]] += coCounts[0];
+                coexpression_histograms[coExpressorsIndices[0]][1]++;
+            }
+        }
+    }
     // --- Step 3: Iterate through all barcodes to write files and calculate final stats ---
     int line_no = 1;
     g_hash_table_iter_init(&iter, hashes->filtered_hash);
@@ -1968,16 +2041,25 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     int total_feature_counts[features->number_of_features];
     int total_deduped_counts[features->number_of_features];
     int total_barcoded_counts[features->number_of_features];
+
+    int **coExpression = NULL;
+    int **coexpression_histograms = NULL;
+    int *coExpressionStorage = NULL;
+    int *histogramsStorage = NULL;
     //coexpression matrix will store the total counts for each feature (also when there are no others - in the 0 field) in cells with feature i starting with 1
     //for simplicity we also hava a zero line so that all the indices are 1 based
     //store the total counts in the zero line
-    int *coExpressionStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
+    if (features->number_of_features >10000){
+        printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, directory, hashes, stats, stringency, min_counts);
+        return;
+    }
+    coExpressionStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
     if (coExpressionStorage == NULL) {
         perror("Failed to allocate memory for coexpression matrix");
         exit(EXIT_FAILURE);
     }
     memset(coExpressionStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-    int **coExpression = malloc((features->number_of_features + 1) * sizeof(int *));
+    coExpression = malloc((features->number_of_features + 1) * sizeof(int *));
     if (coExpression == NULL) {
         perror("Failed to allocate memory for coexpression matrix");
         exit(EXIT_FAILURE);
@@ -1985,13 +2067,13 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     for (int i = 0; i < features->number_of_features + 1; i++) {
         coExpression[i] = coExpressionStorage + i * (features->number_of_features + 1);
     }
-    int *histogramsStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
+    histogramsStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
     if (histogramsStorage == NULL) {
         perror("Failed to allocate memory for coexpression histograms");
         exit(EXIT_FAILURE);
     }
     memset(histogramsStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-    int **coexpression_histograms = malloc((features->number_of_features + 1) * sizeof(int *));
+    coexpression_histograms = malloc((features->number_of_features + 1) * sizeof(int *));
     if (coexpression_histograms == NULL) {
         perror("Failed to allocate memory for coexpression histograms");
         exit(EXIT_FAILURE);
@@ -2935,8 +3017,10 @@ void process_files_in_sample(sample_args *args) {
 }
 void initialize_data_structures(data_structures *hashes){
     hashes->filtered_hash = g_hash_table_new(hash_int32, equal_int32);
-    hashes->unique_features_match = g_hash_table_new(g_str_hash, g_str_equal);
-    hashes->sequence_umi_hash = g_hash_table_new(hash_int64, equal_int64);
+    hashes->unique_features_match = g_hash_table_new(g_str_hash, g_str_equal);    
+    // Use g_hash_table_new_full to provide our custom value destroyer function.
+    hashes->sequence_umi_hash = g_hash_table_new_full(hash_int64, equal_int64, NULL, destroy_feature_umi_counts);
+    
     hashes->neighbors_queue=malloc(sizeof(Queue));
     //check if the memory allocation was successful
     if (hashes->neighbors_queue == NULL) {

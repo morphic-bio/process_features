@@ -36,12 +36,12 @@ void free_memory_pool_storage(memory_pool *pool) {
 storage_block* allocate_storage_block(size_t block_size) {
     storage_block *new_block = (storage_block *)malloc(sizeof(storage_block));
     if (!new_block) {
-        perror("Failed to allocate new storage block");
+        fprintf(stderr, "Failed to allocate new storage block %f GB\n", (double)block_size/1000000000);
         return NULL;
     }
     new_block->storage = (unsigned char *)malloc(block_size);
     if (!new_block->storage) {
-        perror("Failed to allocate new storage block");
+        fprintf(stderr, "Failed to allocate new storage block %f GB\n", (double)block_size/1000000000);
         return NULL;
     }
     new_block->next = NULL;

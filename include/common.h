@@ -96,7 +96,7 @@ typedef struct feature_sequences {
 
 typedef struct feature_umi_counts {
     unsigned char sequence_umi_code[8];
-    uint16_t counts[];
+    GHashTable *counts;
 } feature_umi_counts;
 
 typedef struct unmatched_barcodes_features_block {

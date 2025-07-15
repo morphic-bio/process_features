@@ -16,3 +16,5 @@ msk*
 sc_test*
 .specstory
 .cursor*
+*.o
+
