@@ -39,4 +39,10 @@ void reverse_complement_in_place(char *seq);
 void reverse_in_place(char *str);
 void process_feature_sequence(char *sequence, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position);
 
+void merge_stats(statistics *merged_stats, statistics *thread_stats);
+void merge_feature_counts(gpointer key, gpointer value, gpointer user_data);
+void merge_feature_umi_counts(gpointer key, gpointer value, gpointer user_data);
+void merge_feature_sequences(gpointer key, gpointer value, gpointer user_data);
+void merge_unmatched_barcodes(unmatched_barcodes_features_block_list *merged_list, unmatched_barcodes_features_block_list *thread_list);
+
 #endif // PROTOTYPES_H

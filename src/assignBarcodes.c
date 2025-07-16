@@ -185,6 +185,13 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
     cairo_surface_destroy(surface);
 }
 #endif
+static void merge_uint_counters(gpointer key,gpointer value,gpointer user_data)
+{
+    GHashTable *dest = (GHashTable *)user_data;
+    uintptr_t current = GPOINTER_TO_UINT(g_hash_table_lookup(dest, key));
+    uintptr_t add     = GPOINTER_TO_UINT(value);
+    g_hash_table_replace(dest, key, GUINT_TO_POINTER(current + add));
+}
 
 void destroy_feature_umi_counts(gpointer data) {
     feature_umi_counts *umi_counts = (feature_umi_counts*)data;
@@ -396,7 +403,7 @@ int is_directory(const char *path) {
     // In case it's neither a file nor a directory
     return -1;
 }
-void read_unmatched_features_block(unmatched_barcodes_features_block *entry_block, unmatched_barcodes_features *entry){
+void read_unmatched_barcodes_features_block(unmatched_barcodes_features_block *entry_block, unmatched_barcodes_features *entry){
     entry->next=entry_block->next;
     unsigned char *storage = entry_block->storage;
     memcpy(&entry->feature_index, storage, sizeof(uint32_t));
@@ -1697,7 +1704,7 @@ void process_pending_barcodes( data_structures *hashes, memory_pool_collection *
         unsigned char *retcode=find_best_posterior_match(current_entry_block, number_of_features, min_posterior,stats, hashes);
         if (retcode != 0){
             unmatched_barcodes_features current_entry;
-            read_unmatched_features_block(current_entry_block, &current_entry);
+            read_unmatched_barcodes_features_block(current_entry_block, &current_entry);
             char umi[umi_length+1];
             code2string(current_entry.umi,umi, umi_code_length);
             update_feature_counts_from_code(retcode, umi, current_entry.feature_index, hashes,pools);
@@ -1708,7 +1715,7 @@ void process_pending_barcodes( data_structures *hashes, memory_pool_collection *
 unsigned char* find_best_posterior_match (unmatched_barcodes_features_block *entry_block, int number_of_features, double min_posterior, statistics *stats, data_structures *hashes){
     unmatched_barcodes_features entry_struct;
     unmatched_barcodes_features *entry=&entry_struct;
-    read_unmatched_features_block(entry_block, entry);
+    read_unmatched_barcodes_features_block(entry_block, entry);
     if (!entry->feature_index){
         return 0;
     }
@@ -2919,6 +2926,71 @@ void initiate_processor_args(fastq_processor *processor_args, sample_args *args,
     processor_args->nreaders=(reader_sets[0]->forward_reader && reader_sets[0]->reverse_reader)?3:2;
     pthread_mutex_init(&processor_args->process_mutex, NULL);
 }
+void merge_stats(statistics *merged_stats, statistics *thread_stats) {
+    merged_stats->nMismatches += thread_stats->nMismatches;
+    merged_stats->recovered += thread_stats->recovered;
+    merged_stats->pending += thread_stats->pending;
+    merged_stats->valid += thread_stats->valid;
+    merged_stats->pending_recovered += thread_stats->pending_recovered;
+    merged_stats->total_unmatched_features += thread_stats->total_unmatched_features;
+    merged_stats->number_of_reads += thread_stats->number_of_reads;
+}
+
+void merge_feature_counts(gpointer key, gpointer value, gpointer user_data)
+{
+    GHashTable *dst = (GHashTable *)user_data;
+    feature_counts *src_entry = (feature_counts *)value;
+    feature_counts *dst_entry = g_hash_table_lookup(dst, key);
+
+    if (dst_entry) {
+        /* merge the per-barcode feature counters */
+        g_hash_table_foreach(src_entry->counts,
+                             merge_uint_counters,
+                             dst_entry->counts);
+    } else {
+        g_hash_table_insert(dst, key, value);
+    }
+}
+
+void merge_feature_umi_counts(gpointer key, gpointer value, gpointer user_data)
+{
+    GHashTable *dst             = (GHashTable *)user_data;      /* hashes[0] */
+    feature_umi_counts *src_ent = (feature_umi_counts *)value;  /* from worker */
+    feature_umi_counts *dst_ent = g_hash_table_lookup(dst, key);
+
+    if (dst_ent) {
+        /* Same barcode-UMI already present – add the counters */
+        g_hash_table_foreach(src_ent->counts,merge_uint_counters, dst_ent->counts);
+    } else {
+        /* Key not present – move the whole struct into the dst table  */
+        g_hash_table_insert(dst, key, src_ent);
+    }
+}
+
+
+void merge_feature_sequences(gpointer key, gpointer value, gpointer user_data) {
+    GHashTable *merged_hash = (GHashTable *)user_data;
+    feature_sequences *thread_entry = (feature_sequences *)value;
+    feature_sequences *merged_entry = g_hash_table_lookup(merged_hash, key);
+    if (merged_entry) {
+        merged_entry->counts += thread_entry->counts;
+    } else {
+        g_hash_table_insert(merged_hash, key, value);
+    }
+}
+
+
+void merge_unmatched_barcodes(unmatched_barcodes_features_block_list *merged_list, unmatched_barcodes_features_block_list *thread_list) {
+    if (thread_list->first_entry) {
+        if (merged_list->first_entry) {
+            merged_list->last_entry->next = thread_list->first_entry;
+            merged_list->last_entry = thread_list->last_entry;
+        } else {
+            merged_list->first_entry = thread_list->first_entry;
+            merged_list->last_entry = thread_list->last_entry;
+        }
+    }
+}
 void process_files_in_sample(sample_args *args) {
     //allocate buffers here
     //number of lines to read into the buffer
@@ -2981,8 +3053,6 @@ void process_files_in_sample(sample_args *args) {
         // Check if the output file directory/features_matrix.mtx exist
     const int nreaders=(fastq_files->forward_fastq && fastq_files->reverse_fastq)?3*sample_size:2*sample_size;
 
-
-
     pthread_t producer_threads[nreaders];
     int thread_index=0;
 
@@ -3040,9 +3110,17 @@ void process_files_in_sample(sample_args *args) {
     for (int j=0; j<nconsumers; j++){
         pthread_join(consumer_threads[j], NULL);
     }
-
+    // Merge data from all threads into the first thread's data structures
+    for (int i = 1; i < nconsumers; i++) {
+        merge_stats(&args->stats[0], &args->stats[i]);
+        g_hash_table_foreach(args->hashes[i].filtered_hash, merge_feature_counts, args->hashes[0].filtered_hash);
+        g_hash_table_foreach(args->hashes[i].sequence_umi_hash, merge_feature_umi_counts, args->hashes[0].sequence_umi_hash);
+        g_hash_table_foreach(args->hashes[i].unique_features_match, merge_feature_sequences, args->hashes[0].unique_features_match);
+        merge_unmatched_barcodes(&args->stats[0].unmatched_list, &args->stats[i].unmatched_list);
+    }
     // Since merging is not required, finalize using the first thread's data.
     finalize_processing(args->features, &args->hashes[0], args->directory, args->pools, &args->stats[0], args->stringency, args->min_counts, min_posterior);
+   
     if(read_by_set) {
         free_fastq_reader_set(reader_single_set[0]);
     } else {
@@ -3051,6 +3129,7 @@ void process_files_in_sample(sample_args *args) {
         }
     }
 }
+
 void initialize_data_structures(data_structures *hashes){
     hashes->filtered_hash = g_hash_table_new(hash_int32, equal_int32);
     hashes->unique_features_match = g_hash_table_new(g_str_hash, g_str_equal);    
@@ -3835,4 +3914,6 @@ void populate_sample_args(sample_args *args, int sample_index,char *directory, f
                 args->consumer_threads_per_set=consumer_threads_per_set;
 
             }
+
+
 
