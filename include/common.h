@@ -234,6 +234,7 @@ typedef struct fastq_reader_set {
 } fastq_reader_set;
 
 typedef struct fastq_processor {
+    int thread_id; // Add thread_id to identify the consumer thread
     int nsets;
     int nreaders;
     struct fastq_reader_set **reader_sets;

@@ -2685,6 +2685,11 @@ void *consume_reads(void *arg) {
     const int nsets = processor_args->nsets;
     fastq_reader_set **reader_sets = processor_args->reader_sets;
     const sample_args *sample_args = processor_args->sample_args;
+
+    // Use thread-local statistics and hashes
+    statistics *stats = &sample_args->stats[processor_args->thread_id];
+    data_structures *hashes = &sample_args->hashes[processor_args->thread_id];
+
     int done=0;
     //first one is always barcode
     char *lines_buffer=malloc(6*LINE_LENGTH);
@@ -2724,7 +2729,7 @@ void *consume_reads(void *arg) {
             }
             fastq_reader *barcode_reader=reader_sets[i]->barcode_reader;
             fastq_reader *forward_reader=reader_sets[i]->forward_reader;
-            fastq_reader *reverse_reader=reader_sets[i]->reverse_reader; 
+            fastq_reader *reverse_reader=reader_sets[i]->reverse_reader;
             //check the mutexes
             if (pthread_mutex_trylock(&barcode_reader->mutex) != 0) {
                 continue;
@@ -2833,27 +2838,27 @@ void *consume_reads(void *arg) {
                 char *sequence=(forward_lines)?forward_lines[0]:reverse_lines[0];
                 process_feature_sequence(sequence, features, maxHammingDistance, nThreads, feature_constant_offset, max_feature_n, &feature_index, &hamming_distance, matching_sequence, &match_position);
             }
-            pthread_mutex_lock(&processor_args->process_mutex);
+
+            // The mutex is removed from here
             if (feature_index){
                 // need to have feature_index -1 because the feature index is 1 based but array in struct is 0 based
-                matching_sequence[features->feature_lengths[feature_index - 1]] = '\0';               
-                insert_feature_sequence(matching_sequence, feature_index, hamming_distance, match_position, sample_args->hashes, sample_args->pools);
-                checkAndCorrectBarcode(barcode_lines, max_barcode_n, feature_index, match_position, sample_args->hashes, sample_args->pools, sample_args->stats, barcode_constant_offset);
+                matching_sequence[features->feature_lengths[feature_index - 1]] = '\0';
+                insert_feature_sequence(matching_sequence, feature_index, hamming_distance, match_position, hashes, sample_args->pools);
+                checkAndCorrectBarcode(barcode_lines, max_barcode_n, feature_index, match_position, hashes, sample_args->pools, stats, barcode_constant_offset);
             }
             else{
                 missing_flag=1;
             }
-            sample_args->stats->number_of_reads++;
-            if (sample_args->stats->number_of_reads % 1000000 == 0)
+            stats->number_of_reads++;
+            if (stats->number_of_reads % 1000000 == 0)
             {
-                double elapsed_time = get_time_in_seconds() - sample_args->stats->start_time;
-                fprintf(stderr, "Processed %ld million reads in %.1f seconds\n", sample_args->stats->number_of_reads / 1000000, elapsed_time);
+                double elapsed_time = get_time_in_seconds() - stats->start_time;
+                fprintf(stderr, "Processed %ld million reads in %.1f seconds\n", stats->number_of_reads / 1000000, elapsed_time);
             }
             if (missing_flag){
-                sample_args->stats->nMismatches++;
-                sample_args->stats->total_unmatched_features++;
+                stats->nMismatches++;
+                stats->total_unmatched_features++;
             }
-            pthread_mutex_unlock(&processor_args->process_mutex);
         }
         for (int i=0; i<nsets; i++){
             if (!done_flags[i]){
@@ -2864,7 +2869,7 @@ void *consume_reads(void *arg) {
         }
         if(!done && !data_available){
             sched_yield();
-        } 
+        }
     }
     //free the lines buffer
     free(lines_buffer);
@@ -2920,15 +2925,29 @@ void process_files_in_sample(sample_args *args) {
     double  min_posterior=args->min_posterior;
     int read_by_set=(args->parallel_by_file)?0:1;
     const int sample_index = args->sample_index;
-    fastq_processor processor_args;
+    const int nconsumers = args->consumer_threads_per_set;
+    fastq_processor processor_args[nconsumers]; // Array of processor args
+
     fastq_files_collection *fastq_files=args->fastq_files;
     const int sample_offset=fastq_files->sample_offsets[sample_index];
     const int sample_size=fastq_files->sample_sizes[sample_index];
-    
+
+    // Allocate and initialize arrays of statistics and data_structures
+    args->stats = malloc(nconsumers * sizeof(statistics));
+    args->hashes = malloc(nconsumers * sizeof(data_structures));
+    if (!args->stats || !args->hashes) {
+        perror("Failed to allocate memory for thread-local data");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < nconsumers; i++) {
+        initialize_statistics(&args->stats[i]);
+        initialize_data_structures(&args->hashes[i]);
+    }
+
     // Initialize the data structures
     fastq_reader_set* reader_sets[sample_size];
     fastq_reader_set* reader_single_set[1];
-    
+
     fprintf(stderr, "Processing sample %d of size %d\n", sample_index, sample_size);
     if (read_by_set){
         char **forward_filenames=(fastq_files->forward_fastq)?fastq_files->forward_fastq+sample_offset:0;
@@ -2936,7 +2955,12 @@ void process_files_in_sample(sample_args *args) {
         DEBUG_PRINT("sample size %d\n", sample_size);
         DEBUG_PRINT( "sample offset %d\n",sample_offset);
         reader_single_set[0]=allocate_fastq_reader_set(fastq_files->barcode_fastq+sample_offset,forward_filenames,reverse_filenames, sample_size, args->average_read_length, args->read_buffer_lines);
-        initiate_processor_args(&processor_args, args, reader_single_set, 1);
+        for(int i = 0; i < nconsumers; i++) {
+            processor_args[i].sample_args = args;
+            processor_args[i].reader_sets = reader_single_set;
+            processor_args[i].nsets = 1;
+            processor_args[i].thread_id = i;
+        }
     }
     else{
         for (int i=0; i<sample_size; i++){
@@ -2945,14 +2969,19 @@ void process_files_in_sample(sample_args *args) {
             char **reverse_filenames=(fastq_files->reverse_fastq)?fastq_files->reverse_fastq+sample_offset+i:0;
             reader_sets[i]=allocate_fastq_reader_set(fastq_files->barcode_fastq+sample_offset+i, forward_filenames, reverse_filenames, 1, args->average_read_length, args->read_buffer_lines);
         }
-        initiate_processor_args(&processor_args, args, reader_sets, sample_size);
+        for(int i = 0; i < nconsumers; i++) {
+            processor_args[i].sample_args = args;
+            processor_args[i].reader_sets = reader_sets;
+            processor_args[i].nsets = sample_size;
+            processor_args[i].thread_id = i;
+        }
     }
-    
+
     mkdir_p(args->directory);
         // Check if the output file directory/features_matrix.mtx exist
     const int nreaders=(fastq_files->forward_fastq && fastq_files->reverse_fastq)?3*sample_size:2*sample_size;
 
-    
+
 
     pthread_t producer_threads[nreaders];
     int thread_index=0;
@@ -2991,14 +3020,14 @@ void process_files_in_sample(sample_args *args) {
                     exit(EXIT_FAILURE);
                 }
                 thread_index++;
-            }      
+            }
         }
     }
-    const int nconsumers=args->consumer_threads_per_set;
+
     pthread_t consumer_threads[nconsumers];
     fprintf(stderr, "Will use %d threads to process the reads\n", nconsumers);
     for (int j=0; j<nconsumers; j++){
-        if (pthread_create(&consumer_threads[j], NULL, consume_reads, (void *)&processor_args) != 0) {
+        if (pthread_create(&consumer_threads[j], NULL, consume_reads, (void *)&processor_args[j]) != 0) {
             perror("Failed to create consumer thread");
             exit(EXIT_FAILURE);
         }
@@ -3011,9 +3040,16 @@ void process_files_in_sample(sample_args *args) {
     for (int j=0; j<nconsumers; j++){
         pthread_join(consumer_threads[j], NULL);
     }
-    fprintf(stderr, "Finished processing sample %d\n", sample_index);
-    finalize_processing(args->features, args->hashes, args->directory, args->pools,args->stats, args->stringency, args->min_counts, min_posterior);
-    free_fastq_processor(&processor_args);
+
+    // Since merging is not required, finalize using the first thread's data.
+    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools, &args->stats[0], args->stringency, args->min_counts, min_posterior);
+    if(read_by_set) {
+        free_fastq_reader_set(reader_single_set[0]);
+    } else {
+        for(int i=0; i < sample_size; i++) {
+            free_fastq_reader_set(reader_sets[i]);
+        }
+    }
 }
 void initialize_data_structures(data_structures *hashes){
     hashes->filtered_hash = g_hash_table_new(hash_int32, equal_int32);
