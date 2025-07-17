@@ -2,6 +2,7 @@
 #include "../include/globals.h"
 #include "../include/prototypes.h"
 #include "../include/utils.h"
+#include "../include/io.h"
 
 int main(int argc, char *argv[])
 {   

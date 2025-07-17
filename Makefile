@@ -26,7 +26,7 @@ CFLAGS=-g -Wall -O3 -I$(INCDIR) -fopenmp $(GLIB_CFLAGS) $(CAIRO_CFLAGS) $(DEFINE
 LDFLAGS=-lm -lpthread -lz -fopenmp $(GLIB_LIBS) $(CAIRO_LIBS)
 
 # Source files (basenames only)
-SRCS=main.c assignBarcodes.c queue.c globals.c utils.c memory.c
+SRCS=main.c assignBarcodes.c queue.c globals.c utils.c memory.c io.c
 
 # Object files
 OBJS=$(SRCS:.c=.o)
