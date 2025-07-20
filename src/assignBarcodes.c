@@ -2397,6 +2397,7 @@ void *consume_reads(void *arg) {
     // Use thread-local statistics and hashes
     statistics *stats = &sample_args->stats[processor_args->thread_id];
     data_structures *hashes = &sample_args->hashes[processor_args->thread_id];
+    memory_pool_collection *pools = sample_args->pools[processor_args->thread_id];
 
     int done=0;
     //first one is always barcode
@@ -2500,8 +2501,8 @@ void *consume_reads(void *arg) {
             if (feature_index){
                 // need to have feature_index -1 because the feature index is 1 based but array in struct is 0 based
                 matching_sequence[features->feature_lengths[feature_index - 1]] = '\0';
-                insert_feature_sequence(matching_sequence, feature_index, hamming_distance, match_position, hashes, sample_args->pools);
-                checkAndCorrectBarcode(barcode_lines, max_barcode_n, feature_index, match_position, hashes, sample_args->pools, stats, barcode_constant_offset);
+                insert_feature_sequence(matching_sequence, feature_index, hamming_distance, match_position, hashes, pools);
+                checkAndCorrectBarcode(barcode_lines, max_barcode_n, feature_index, match_position, hashes, pools, stats, barcode_constant_offset);
             }
             else{
                 missing_flag=1;
@@ -2622,7 +2623,7 @@ void merge_feature_sequences(gpointer key, gpointer value, gpointer user_data) {
 
 void merge_unmatched_barcodes(unmatched_barcodes_features_block_list *merged_list, unmatched_barcodes_features_block_list *thread_list) {
     if (thread_list->first_entry) {
-        if (merged_list->first_entry) {
+        if (merged_list->last_entry) { // More robust check
             merged_list->last_entry->next = thread_list->first_entry;
             merged_list->last_entry = thread_list->last_entry;
         } else {
@@ -2649,13 +2650,16 @@ void process_files_in_sample(sample_args *args) {
     // Allocate and initialize arrays of statistics and data_structures
     args->stats = malloc(nconsumers * sizeof(statistics));
     args->hashes = malloc(nconsumers * sizeof(data_structures));
-    if (!args->stats || !args->hashes) {
+    args->pools = malloc(nconsumers * sizeof(memory_pool_collection*));
+    if (!args->stats || !args->hashes || !args->pools) {
         perror("Failed to allocate memory for thread-local data");
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < nconsumers; i++) {
         initialize_statistics(&args->stats[i]);
         initialize_data_structures(&args->hashes[i]);
+        // NEW: Initialize a memory pool for each consumer thread
+        args->pools[i] = initialize_memory_pool_collection();
     }
 
     // Initialize the data structures
@@ -2724,7 +2728,7 @@ void process_files_in_sample(sample_args *args) {
         merge_unmatched_barcodes(&args->stats[0].unmatched_list, &args->stats[i].unmatched_list);
     }
     // Since merging is not required, finalize using the first thread's data.
-    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools, &args->stats[0], args->stringency, args->min_counts, min_posterior);
+    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior);
    
     // Free the reader sets
     for (int i = 0; i < sample_size; ++i)
@@ -2761,11 +2765,23 @@ void process_files_in_sample(sample_args *args) {
     }
     // If nconsumers is 1, we don't need to do anything special since
     // the arrays only have one element which is still in use
+    for (int i = 0; i < nconsumers; i++) {
+        destroy_data_structures(&args->hashes[i]);
+        free_memory_pool_collection(args->pools[i]);
+    }
+    
+    // Now free the arrays themselves
+    free(args->stats);
+    free(args->hashes);
+    free(args->pools);
+    args->stats = NULL;
+    args->hashes = NULL;
+    args->pools = NULL;
 }
 
 void initialize_data_structures(data_structures *hashes){
-    hashes->filtered_hash = g_hash_table_new(hash_int32, equal_int32);
-    hashes->unique_features_match = g_hash_table_new(g_str_hash, g_str_equal);    
+    hashes->filtered_hash = g_hash_table_new_full(hash_int32, equal_int32, NULL, NULL); // Values are memory-pooled
+    hashes->unique_features_match = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL); // Keys/Values are memory-pooled
     // Use g_hash_table_new_full to provide our custom value destroyer function.
     hashes->sequence_umi_hash = g_hash_table_new_full(hash_int64, equal_int64, NULL, destroy_feature_umi_counts);
     

@@ -195,7 +195,7 @@ typedef struct sample_args {
     feature_arrays *features;
     int maxHammingDistance;
     int nThreads;
-    memory_pool_collection *pools;
+    memory_pool_collection **pools;
     statistics *stats;
     data_structures *hashes;
     uint16_t stringency;
