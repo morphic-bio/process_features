@@ -34,7 +34,6 @@ int main(int argc, char *argv[])
     int barcode_constant_offset=0;
     double min_posterior=MIN_POSTERIOR;
 
-    int max_available_threads=8;
     int max_concurrent_processes=8;
     int consumer_threads_per_set=1;
     int search_threads_per_consumer=4;
@@ -48,7 +47,6 @@ int main(int argc, char *argv[])
         {"feature_constant_offset", required_argument, 0, 'o'},
         {"barcode_constant_offset", required_argument, 0, 'B'},
         {"threads", required_argument, 0, 't'},
-        {"available_threads", required_argument, 0, 'T'},
         {"search_threads", required_argument, 0, 'S'},
         {"stringency", required_argument, 0, 's'},
         {"min_counts", required_argument, 0, 'i'},
@@ -91,7 +89,6 @@ int main(int argc, char *argv[])
             case 'd': strcpy(directory, optarg); if (directory[strlen(directory)-1] != '/'){ strcat(directory, "/"); } break;
             case 'o': feature_constant_offset=atoi(optarg); break;
             case 't': max_concurrent_processes=atoi(optarg); break;
-            case 'T': max_available_threads=atoi(optarg); break;
             case 'u': umi_length=atoi(optarg); umi_code_length=(umi_length+3)/4; break;
             case 'c': set_consumer_threads_per_set=atoi(optarg); break;
             case 'v': debug = 1; break;
@@ -138,19 +135,13 @@ int main(int argc, char *argv[])
     read_whiteList(whitelist_filename, whitelist_hash, reverse_complement_whitelist);
     initialize_unit_sizes();
     const int nSamples=fastq_files.nsamples;
-    int threads_per_set=0;
-    if (max_available_threads){
-        threads_per_set=calculate_initial_threads(&fastq_files, max_available_threads, &consumer_threads_per_set, &search_threads_per_consumer, &max_concurrent_processes, set_consumer_threads_per_set,set_search_threads_per_consumer );
+    if (set_search_threads_per_consumer){
+        search_threads_per_consumer=set_search_threads_per_consumer;
     }
-    else{
-        if (set_search_threads_per_consumer){
-            search_threads_per_consumer=set_search_threads_per_consumer;
-        }
-        if (set_consumer_threads_per_set){
-            consumer_threads_per_set=set_consumer_threads_per_set;
-        } 
-    }
-    fprintf(stderr, "Calculated optimal initial thread usage Threads available %d, consumer_threads_used %d search threads used %d processes %d\n", max_available_threads, consumer_threads_per_set, search_threads_per_consumer, max_concurrent_processes); 
+    if (set_consumer_threads_per_set){
+        consumer_threads_per_set=set_consumer_threads_per_set;
+    } 
+    fprintf(stderr, "Using %d consumer threads and %d search threads per consumer. Max concurrent processes %d\n", consumer_threads_per_set, search_threads_per_consumer, max_concurrent_processes);
     int concurrent_processes=0;
     atomic_int *thread_counter=mmap(NULL, sizeof(atomic_int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (thread_counter == MAP_FAILED){
@@ -158,6 +149,7 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
     atomic_init(thread_counter, 0);
+    int threads_per_set = consumer_threads_per_set * (1 + search_threads_per_consumer);
     fprintf(stderr,"threads per set %d\n", threads_per_set);
     for (int index=0; index<nSamples; index++){
         const int i=fastq_files.sorted_index[index];

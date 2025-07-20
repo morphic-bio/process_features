@@ -2841,8 +2841,8 @@ void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order
     free(sizes);
 }
 void cleanup_sample(memory_pool_collection *pools, data_structures *hashes){
-    destroy_data_structures(hashes);      /* first: walk and free hash nodes */
-    free_memory_pool_collection(pools);   /* then: free the underlying pools */
+    destroy_data_structures(hashes);
+    free_memory_pool_collection(pools);
 }
 int calculate_initial_threads(fastq_files_collection *fastq_files, int available_threads, int *consumer_threads_per_set, int *search_threads_per_consumer, int *max_concurrent_processes, int set_consumer_threads_per_set, int set_search_threads_per_consumer){
     int nsamples=fastq_files->nsamples;
@@ -2910,16 +2910,15 @@ int calculate_initial_threads(fastq_files_collection *fastq_files, int available
 }
 
 void reverse_in_place(char *str) {
-    int left = 0;
-    int right = strlen(str) - 1;
-    // Swap characters from both ends of the string
-    while (left < right) {
-        char temp = str[left];
-        str[left] = str[right];
-        str[right] = temp;
-
-        left++;
-        right--;
+    if (str) {
+        char *end = str + strlen(str) - 1;
+        while (str < end) {
+            char temp = *str;
+            *str = *end;
+            *end = temp;
+            str++;
+            end--;
+        }
     }
 }
 char complement(char base) {

@@ -5,7 +5,6 @@
 
 // Function prototypes from assignBarcodes.c
 void add_deduped_count(GHashTable* temp_deduped_hash, uint32_t *clique_counts, uint16_t stringency, uint16_t min_counts);
-int calculate_initial_threads(fastq_files_collection *fastq_files, int available_threads, int *consumer_threads_per_set, int *search_threads_per_consumer, int *max_concurrent_processes, int set_consumer_threads_per_set, int set_search_threads_per_consumer);
 char check_sequence(char *sequence, int sequence_length);
 void cleanup_sample(memory_pool_collection *pools, data_structures *hashes);
 int existing_output_skip(char keep_existing, char *directory);
