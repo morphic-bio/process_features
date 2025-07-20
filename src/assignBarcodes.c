@@ -223,7 +223,7 @@ void initialize_statistics(statistics *stats) {
     stats->unmatched_list.last_entry = NULL;
 }
 
-void free_unmatched_barcodes_features_list(unmatched_barcodes_features_block_list *list) {
+void free_unmatched_barcodes_features_list(unmatched_barcodes_features_block *list) {
     unmatched_barcodes_features_block *current = list->first_entry;
     while (current != NULL) {
         unmatched_barcodes_features_block *next = current->next;
@@ -2065,18 +2065,18 @@ fastq_reader_set *  allocate_fastq_reader_set( char **barcode_filenames, char **
         fprintf(stderr, "allocating reverse reader\n");
         reader_set->reverse_reader=allocate_fastq_reader(reverse_filenames, nfiles, 3, read_size, read_buffer_lines);
     }
-    set->read_buffer_lines = read_buffer_lines;
-    set->buffer_storage    = malloc(read_buffer_lines * (read_size + 1));
-    set->buffer            = malloc(read_buffer_lines * sizeof(char*));
+    reader_set->read_buffer_lines = read_buffer_lines;
+    reader_set->buffer_storage    = malloc(read_buffer_lines * (read_size + 1));
+    reader_set->buffer            = malloc(read_buffer_lines * sizeof(char*));
     for (size_t i = 0; i < read_buffer_lines; ++i)
-        set->buffer[i] = set->buffer_storage + i * (read_size + 1);
+        reader_set->buffer[i] = reader_set->buffer_storage + i * (read_size + 1);
 
-    set->produce_index = set->consume_index = set->filled = 0;
-    set->done = 0;
+    reader_set->produce_index = reader_set->consume_index = reader_set->filled = 0;
+    reader_set->done = 0;
 
-    pthread_mutex_init(&set->mutex, NULL);
-    pthread_cond_init (&set->can_produce, NULL);
-    pthread_cond_init (&set->can_consume, NULL);
+    pthread_mutex_init(&reader_set->mutex, NULL);
+    pthread_cond_init (&reader_set->can_produce, NULL);
+    pthread_cond_init (&reader_set->can_consume, NULL);
     return reader_set;
 }
 
@@ -2145,14 +2145,21 @@ void *read_fastqs_by_set(void *arg) {
                 done=1;
                 //signal the consumer that the buffer is done
                 
-                for (int j=0; j<number_of_readers; j++){
-                    fastq_reader *reader=readers[j];
-                    pthread_mutex_lock(&reader->mutex);
-                    reader->buffer[reader->produce_index][0]='\0';
-                    reader->buffer[(reader->produce_index+1)%read_buffer_lines][0]='\0';
-                    pthread_cond_signal(&reader->can_consume);
-                    pthread_mutex_unlock(&reader->mutex);
+                pthread_mutex_lock(&set->mutex);
+                
+                // Wait for space to write the termination signal
+                while (set->filled > read_buffer_lines - lines_per_block)
+                    pthread_cond_wait(&set->can_produce, &set->mutex);
+                
+                // Write termination signals (null-terminated strings)
+                for (int line_idx = 0; line_idx < lines_per_block; line_idx++) {
+                    set->buffer[(set->produce_index + line_idx) % read_buffer_lines][0] = '\0';
                 }
+                
+                set->produce_index = (set->produce_index + lines_per_block) % read_buffer_lines;
+                set->filled += lines_per_block;
+                pthread_cond_signal(&set->can_consume);
+                pthread_mutex_unlock(&set->mutex);
                 break;
             }
             else{
@@ -2460,6 +2467,10 @@ void *consume_reads(void *arg) {
             //check if the data is null and if so set the done flag
             if (set->buffer[set->consume_index][0] == '\0') {
                 done_flags[i] = 1;
+                // Consume the termination signal from the buffer
+                set->consume_index = (set->consume_index + lines_per_block) % set->read_buffer_lines;
+                set->filled -= lines_per_block;
+                pthread_cond_signal(&set->can_produce);
                 pthread_mutex_unlock(&set->mutex);
                 continue;
             }
