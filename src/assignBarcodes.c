@@ -224,12 +224,8 @@ void initialize_statistics(statistics *stats) {
 }
 
 void free_unmatched_barcodes_features_list(unmatched_barcodes_features_block_list *list) {
-    unmatched_barcodes_features_block *current = list->first_entry;
-    while (current != NULL) {
-        unmatched_barcodes_features_block *next = current->next;
-        free(current);
-        current = next;
-    }
+    // The blocks are allocated from a memory pool, which is freed all at once.
+    // We don't need to free each block individually. Just reset the list pointers.
     list->first_entry = NULL;
     list->last_entry = NULL;
 }
@@ -702,14 +698,14 @@ int find_matching_codes(unsigned char *sequence_code, unsigned char *feature_cod
         }
         a+=4*(length/4);
         b+=4*(length/4);
-        length=length%4;    
+        length=length%4;
     }
     if (length >= 2){
         const uint16_t *a16=(uint16_t*) a;
         const uint16_t *b16=(uint16_t*) b;
         for (int i=0;i<length/2; i++){
             if (a16[i] != b16[i]){
-                return feature_code_length+1;  
+                return feature_code_length+1;
             }
         }
         if (length % 2 == 0){
@@ -2047,6 +2043,7 @@ fastq_reader* allocate_fastq_reader( char **filenames, int nfiles, int filetype,
         reader->filenames[i] = this_filename;
         this_filename += strlen(filenames[i]) + 1;
     }
+    reader->nfiles = nfiles;
     reader->gz_pointer = NULL;            // Initialize gz_pointer as needed
     reader->filetype = filetype;          // Set the filetype
     return reader;
@@ -2088,8 +2085,8 @@ void *read_fastqs_by_set(void *arg) {
     const int number_of_readers = (set->forward_reader != NULL) + (set->reverse_reader != NULL) + 1;
     fastq_reader *readers[number_of_readers];
     readers[0]  = set->barcode_reader;
-    const int lines_per_block   = 2 * number_of_readers;     /* NEW */
-    const int read_buffer_lines = set->read_buffer_lines;    /* NEW */
+    const int lines_per_block   = 2 * number_of_readers;
+    const int read_buffer_lines = set->read_buffer_lines;
     if (set->forward_reader != NULL) {
         readers[1] = set->forward_reader;
     }
@@ -2099,6 +2096,7 @@ void *read_fastqs_by_set(void *arg) {
 
     char line1[number_of_readers][LINE_LENGTH];
     char line2[number_of_readers][LINE_LENGTH];
+    char dummy_line[LINE_LENGTH];
     int done = 0;
     // Open the files
     int file_index=0;
@@ -2111,59 +2109,36 @@ void *read_fastqs_by_set(void *arg) {
         }
     }
     while(!done){
-        //read the lines into the given buffer
-        int file_finished[3];
-        memset(file_finished, 0, 3 * sizeof(int));
-        for (int j=0; j<number_of_readers; j++){
-            const fastq_reader *reader=readers[j];
-            if (gzgets(reader->gz_pointer, line1[j], LINE_LENGTH) == Z_NULL){
-                file_finished[j]=1;
-                if(reader->gz_pointer != Z_NULL){
-                    gzclose(reader->gz_pointer);
+        int eof_detected = 0;
+        for (int j = 0; j < number_of_readers; j++) {
+            if (gzgets(readers[j]->gz_pointer, dummy_line, LINE_LENGTH) == Z_NULL ||
+                gzgets(readers[j]->gz_pointer, line1[j], LINE_LENGTH) == Z_NULL ||
+                gzgets(readers[j]->gz_pointer, dummy_line, LINE_LENGTH) == Z_NULL ||
+                gzgets(readers[j]->gz_pointer, line2[j], LINE_LENGTH) == Z_NULL)
+            {
+                if (!gzeof(readers[j]->gz_pointer)) {
+                    fprintf(stderr, "Thread %d: Error or incomplete record in FASTQ file %s\n",
+                            thread_id, readers[j]->filenames[file_index]);
+                    exit(EXIT_FAILURE);
                 }
-                continue;
+                eof_detected = 1;
+                break; // Exit inner loop immediately
             }
-            if (gzgets(reader->gz_pointer, line1[j], LINE_LENGTH) == Z_NULL){
-                perror("1 Error: Incomplete record in the FASTQ file\n");
-                exit (EXIT_FAILURE);
-            }
-            if (gzgets(reader->gz_pointer, line2[j], LINE_LENGTH) == Z_NULL){
-                perror("2 Error: Incomplete record in the FASTQ file\n");
-                exit (EXIT_FAILURE);
-            }
-            if (gzgets(reader->gz_pointer, line2[j], LINE_LENGTH) == Z_NULL){
-                fprintf(stderr, "index %d done %d\n",j, done);
-                perror("3 Error: Incomplete record in the FASTQ file\n");
-                exit (EXIT_FAILURE);    
-            }          
         }
-        if (file_finished[0] && file_finished[1] && file_finished[2]){
-            //check if all files are finished
-            if(++file_index>=readers[0]->nfiles){
-                fprintf(stderr, "Thread %d done reading\n", thread_id);
-                done=1;
-                //signal the consumer that the buffer is done
-                
-                pthread_mutex_lock(&set->mutex);
-                
-                // Wait for space to write the termination signal
-                while (set->filled > read_buffer_lines - lines_per_block)
-                    pthread_cond_wait(&set->can_produce, &set->mutex);
-                
-                // Write termination signals (null-terminated strings)
-                for (int line_idx = 0; line_idx < lines_per_block; line_idx++) {
-                    set->buffer[(set->produce_index + line_idx) % read_buffer_lines][0] = '\0';
+
+        if (eof_detected || (max_reads && number_of_reads >= max_reads)) {
+            for (int j = 0; j < number_of_readers; j++) {
+                if (readers[j]->gz_pointer) {
+                    gzclose(readers[j]->gz_pointer);
+                    readers[j]->gz_pointer = NULL;
                 }
-                
-                set->produce_index = (set->produce_index + lines_per_block) % read_buffer_lines;
-                set->filled += lines_per_block;
-                pthread_cond_signal(&set->can_consume);
-                pthread_mutex_unlock(&set->mutex);
-                break;
             }
-            else{
-                for (int j=0; j<number_of_readers; j++){
-                    fprintf(stderr, "Opening file %s\n", readers[j]->filenames[file_index]);
+            if (++file_index >= readers[0]->nfiles) {
+                done = 1; // All files for this producer are processed
+            } else {
+                // Open the next set of files
+                for (int j = 0; j < number_of_readers; j++) {
+                    fprintf(stderr, "Thread %d opening next file: %s\n", thread_id, readers[j]->filenames[file_index]);
                     readers[j]->gz_pointer = gzopen(readers[j]->filenames[file_index], "rb");
                     if (readers[j]->gz_pointer == NULL) {
                         fprintf(stderr, "Error: Unable to open file %s\n", readers[j]->filenames[file_index]);
@@ -2171,41 +2146,50 @@ void *read_fastqs_by_set(void *arg) {
                     }
                 }
             }
+            continue; // Restart the while loop
         }
-        else{
-            number_of_reads++;
 
-            /* ---------- NEW: write a whole block into set->buffer ---------- */
-            pthread_mutex_lock(&set->mutex);
-
-            while (set->filled > read_buffer_lines - lines_per_block)
-                pthread_cond_wait(&set->can_produce, &set->mutex);
-
-            size_t p = set->produce_index;
-            /* barcode (always) */
-            strcpy(set->buffer[p],                             line1[0]);
-            strcpy(set->buffer[(p+1)%read_buffer_lines],       line2[0]);
-
-            int offset = 2;   /* start of next reader's lines */
-            int r_idx  = 1;   /* reader index we are copying from */
-
-            if (set->forward_reader) {            /* forward read present */
-                strcpy(set->buffer[(p+offset)%read_buffer_lines],     line1[r_idx]);
-                strcpy(set->buffer[(p+offset+1)%read_buffer_lines],   line2[r_idx]);
-                offset += 2;
-                r_idx  += 1;
-            }
-            if (set->reverse_reader) {            /* reverse read present */
-                strcpy(set->buffer[(p+offset)%read_buffer_lines],     line1[r_idx]);
-                strcpy(set->buffer[(p+offset+1)%read_buffer_lines],   line2[r_idx]);
-            }
-
-            set->produce_index = (p + lines_per_block) % read_buffer_lines;
-            set->filled       += lines_per_block;
-            pthread_cond_signal(&set->can_consume);
-            pthread_mutex_unlock(&set->mutex);
+        if (number_of_reads > 0 && number_of_reads % 1000000 == 0) {
+            fprintf(stderr, "Thread %d has read %lld million records.\n", thread_id, number_of_reads / 1000000);
         }
+        number_of_reads++;
+
+        /* ---------- NEW: write a whole block into set->buffer ---------- */
+        pthread_mutex_lock(&set->mutex);
+
+        while (set->filled >= read_buffer_lines - lines_per_block)
+            pthread_cond_wait(&set->can_produce, &set->mutex);
+
+        size_t p = set->produce_index;
+        /* barcode (always) */
+        strcpy(set->buffer[p],                             line1[0]);
+        strcpy(set->buffer[(p+1)%read_buffer_lines],       line2[0]);
+
+        int offset = 2;   /* start of next reader's lines */
+        int r_idx  = 1;   /* reader index we are copying from */
+
+        if (set->forward_reader) {            /* forward read present */
+            strcpy(set->buffer[(p+offset)%read_buffer_lines],     line1[r_idx]);
+            strcpy(set->buffer[(p+offset+1)%read_buffer_lines],   line2[r_idx]);
+            offset += 2;
+            r_idx  += 1;
+        }
+        if (set->reverse_reader) {            /* reverse read present */
+            strcpy(set->buffer[(p+offset)%read_buffer_lines],     line1[r_idx]);
+            strcpy(set->buffer[(p+offset+1)%read_buffer_lines],   line2[r_idx]);
+        }
+
+        set->produce_index = (p + lines_per_block) % read_buffer_lines;
+        set->filled       += lines_per_block;
+        pthread_cond_signal(&set->can_consume);
+        pthread_mutex_unlock(&set->mutex);
     }
+    
+    // Signal that this producer is completely finished
+    pthread_mutex_lock(&set->mutex);
+    set->done = 1;
+    pthread_cond_broadcast(&set->can_consume);
+    pthread_mutex_unlock(&set->mutex);
     
     fprintf(stderr, "Thread %d done reading\n", thread_id);
     pthread_exit(NULL);
@@ -2454,42 +2438,42 @@ void *consume_reads(void *arg) {
             }
             fastq_reader_set *set = reader_sets[i];
             //check the mutexes
-            if (pthread_mutex_trylock(&set->mutex) != 0) {
-                continue;
-            }
-            //check if there is data to consume
-            if (set->filled < lines_per_block) {
+            pthread_mutex_lock(&set->mutex);
+
+            while (set->filled < lines_per_block && !set->done)
+                pthread_cond_wait(&set->can_consume, &set->mutex);
+
+            if (set->done && set->filled == 0) {
                 pthread_mutex_unlock(&set->mutex);
-                continue;
-            }
-            data_available = 1;
-            //check if the data is null and if so set the done flag
-            if (set->buffer[set->consume_index][0] == '\0') {
                 done_flags[i] = 1;
-                // Consume the termination signal from the buffer
-                set->consume_index = (set->consume_index + lines_per_block) % set->read_buffer_lines;
-                set->filled -= lines_per_block;
-                pthread_cond_signal(&set->can_produce);
-                pthread_mutex_unlock(&set->mutex);
                 continue;
             }
 
-            //copy the data to the local buffer
-            strcpy(barcode_lines[0], set->buffer[set->consume_index]);
-            strcpy(barcode_lines[1], set->buffer[(set->consume_index+1) % set->read_buffer_lines]);
+            /* If we fall through, there's either data or it's the end */
+            if (set->filled == 0) { // This means set->done must be true
+                pthread_mutex_unlock(&set->mutex);
+                done_flags[i] = 1;
+                continue;
+            }
+            
+            /* we have a data block – copy it out */
+            data_available = 1; // We found work
+            size_t c = set->consume_index;
+            strcpy(barcode_lines[0], set->buffer[c]);
+            strcpy(barcode_lines[1], set->buffer[(c+1) % set->read_buffer_lines]);
 
             if (forward_lines) {
-                strcpy(forward_lines[0], set->buffer[(set->consume_index+2) % set->read_buffer_lines]);
-                strcpy(forward_lines[1], set->buffer[(set->consume_index+3) % set->read_buffer_lines]);
+                strcpy(forward_lines[0], set->buffer[(c+2) % set->read_buffer_lines]);
+                strcpy(forward_lines[1], set->buffer[(c+3) % set->read_buffer_lines]);
             }
             if (reverse_lines) {
-                int off = (nreaders == 3) ? 4 : 2;  /* NEW – use nreaders */
-                strcpy(reverse_lines[0], set->buffer[(set->consume_index+off) % set->read_buffer_lines]);
-                strcpy(reverse_lines[1], set->buffer[(set->consume_index+off+1) % set->read_buffer_lines]);
+                int off = (nreaders == 3) ? 4 : 2;
+                strcpy(reverse_lines[0], set->buffer[(c+off) % set->read_buffer_lines]);
+                strcpy(reverse_lines[1], set->buffer[(c+off+1) % set->read_buffer_lines]);
             }
             //signal that the data has been consumed
-            set->consume_index = (set->consume_index + lines_per_block) % set->read_buffer_lines;  /* NEW */
-            set->filled      -= lines_per_block;   /* NEW */
+            set->consume_index = (set->consume_index + lines_per_block) % set->read_buffer_lines;
+            set->filled      -= lines_per_block;
             pthread_cond_signal(&set->can_produce);
             pthread_mutex_unlock(&set->mutex);
             //process the data
@@ -2532,6 +2516,7 @@ void *consume_reads(void *arg) {
                 stats->nMismatches++;
                 stats->total_unmatched_features++;
             }
+            break; // Exit the for loop to process the data
         }
         for (int i=0; i<nsets; i++){
             if (!done_flags[i]){
@@ -2549,23 +2534,22 @@ void *consume_reads(void *arg) {
     pthread_exit(NULL);
 }
 void free_fastq_reader(fastq_reader *reader) {
-    if (reader->gz_pointer != NULL ) {
-        gzclose(reader->gz_pointer);
-        reader->gz_pointer = NULL;
-    }
+    if (reader == NULL) return;
+    // The gz_pointer is closed by the reader thread itself.
     free(reader->concatenated_filenames);
     free(reader->filenames);
+    free(reader); // Free the reader struct itself here.
 }
 void free_fastq_reader_set(fastq_reader_set *reader_set) {
     free_fastq_reader(reader_set->barcode_reader);
-    free(reader_set->barcode_reader);
+    // free(reader_set->barcode_reader); // This was a double free.
     if (reader_set->forward_reader) {
         free_fastq_reader(reader_set->forward_reader);
-        free(reader_set->forward_reader);
+        // free(reader_set->forward_reader); // This was a double free.
     }
     if (reader_set->reverse_reader) {
         free_fastq_reader(reader_set->reverse_reader);
-        free(reader_set->reverse_reader);
+        // free(reader_set->reverse_reader); // This was a double free.
     }
     free(reader_set->buffer);
     free(reader_set->buffer_storage);
@@ -2691,6 +2675,7 @@ void process_files_in_sample(sample_args *args) {
                                                    /* nfiles = */ 1,
                                                    args->average_read_length,
                                                    args->read_buffer_lines);
+        reader_sets[i]->thread_id = i;
     }
 
     for (int i = 0; i < nconsumers; ++i) {
@@ -2741,9 +2726,41 @@ void process_files_in_sample(sample_args *args) {
     // Since merging is not required, finalize using the first thread's data.
     finalize_processing(args->features, &args->hashes[0], args->directory, args->pools, &args->stats[0], args->stringency, args->min_counts, min_posterior);
    
+    // Free the reader sets
     for (int i = 0; i < sample_size; ++i)
         free_fastq_reader_set(reader_sets[i]);
-    free(reader_sets);          /* if you malloc'ed the array itself */
+    // need to write a free function for reader_sets
+    
+    // Free the thread-local data structures except for index 0 which is used by the caller
+    /*
+    for (int i = 1; i < nconsumers; i++) {
+        destroy_data_structures(&args->hashes[i]);
+        free_unmatched_barcodes_features_list(&args->stats[i].unmatched_list);
+    }
+    */
+    
+    // Now free the arrays themselves
+    // Note: Don't free the individual elements at index 0 as they're still in use
+    if (nconsumers > 1) {
+        // We need to keep the first element (index 0) for the caller
+        // Move the first element to a temporary location
+        statistics first_stat = args->stats[0];
+        data_structures first_hash = args->hashes[0];
+        
+        // Free the arrays
+        free(args->stats);
+        free(args->hashes);
+        
+        // Allocate new single-element arrays
+        args->stats = malloc(sizeof(statistics));
+        args->hashes = malloc(sizeof(data_structures));
+        
+        // Copy back the first elements
+        memcpy(args->stats, &first_stat, sizeof(statistics));
+        memcpy(args->hashes, &first_hash, sizeof(data_structures));
+    }
+    // If nconsumers is 1, we don't need to do anything special since
+    // the arrays only have one element which is still in use
 }
 
 void initialize_data_structures(data_structures *hashes){

@@ -43,5 +43,7 @@ void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order
 int string2code(char *string, int sequence_length, unsigned char *code);
 void update_feature_counts_from_code(unsigned char *code, char *umi, uint32_t feature_index, data_structures *hashes, memory_pool_collection *pools);
 void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,data_structures *hashes, memory_pool_collection *pools);
+void destroy_data_structures(data_structures *hashes);
+void free_unmatched_barcodes_features_list(unmatched_barcodes_features_block_list *list);
 
 #endif // PROTOTYPES_H
