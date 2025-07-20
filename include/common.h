@@ -215,22 +215,22 @@ typedef struct fastq_reader {
     int nfiles;
     gzFile gz_pointer;
     int filetype;
-    pthread_mutex_t mutex;
-    pthread_cond_t can_produce;
-    pthread_cond_t can_consume;
-    char **buffer;
-    char *buffer_storage;
-    size_t read_buffer_lines;
-    size_t produce_index;
-    size_t consume_index;
-    size_t filled;
-    int done;
 } fastq_reader;
 
 typedef struct fastq_reader_set {
     struct fastq_reader *barcode_reader;
     struct fastq_reader *forward_reader;
     struct fastq_reader *reverse_reader;
+    char   **buffer;
+    char    *buffer_storage;
+    size_t   read_buffer_lines;
+    size_t   produce_index;
+    size_t   consume_index;
+    size_t   filled;
+    pthread_mutex_t mutex;
+    pthread_cond_t  can_produce;
+    pthread_cond_t  can_consume;
+    int done;
 } fastq_reader_set;
 
 typedef struct fastq_processor {
@@ -243,14 +243,6 @@ typedef struct fastq_processor {
     pthread_cond_t can_process;
 } fastq_processor;
 
-typedef struct fastq_readers_args {
-    int thread_id;
-    int set_index;
-    int reader_type;
-    int nsets;
-    int nfiles;
-    fastq_reader_set **reader_sets;
-} fastq_readers_args;
 
 // Queue function prototypes
 void init_queue(Queue *queue);
