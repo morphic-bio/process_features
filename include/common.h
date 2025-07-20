@@ -218,6 +218,7 @@ typedef struct fastq_reader {
 } fastq_reader;
 
 typedef struct fastq_reader_set {
+    int thread_id;
     struct fastq_reader *barcode_reader;
     struct fastq_reader *forward_reader;
     struct fastq_reader *reverse_reader;

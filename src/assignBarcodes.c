@@ -223,7 +223,7 @@ void initialize_statistics(statistics *stats) {
     stats->unmatched_list.last_entry = NULL;
 }
 
-void free_unmatched_barcodes_features_list(unmatched_barcodes_features_block *list) {
+void free_unmatched_barcodes_features_list(unmatched_barcodes_features_block_list *list) {
     unmatched_barcodes_features_block *current = list->first_entry;
     while (current != NULL) {
         unmatched_barcodes_features_block *next = current->next;
@@ -2111,7 +2111,6 @@ void *read_fastqs_by_set(void *arg) {
         }
     }
     while(!done){
-        int open_next_file=0;
         //read the lines into the given buffer
         int file_finished[3];
         memset(file_finished, 0, 3 * sizeof(int));
@@ -2550,20 +2549,12 @@ void *consume_reads(void *arg) {
     pthread_exit(NULL);
 }
 void free_fastq_reader(fastq_reader *reader) {
-    for (int i = 0; i < reader->nfiles; i++) {
-        //test if any are open
-        if (reader->gz_pointer != NULL ) {
-            gzclose(reader->gz_pointer);
-            reader->gz_pointer = NULL;
-        }
+    if (reader->gz_pointer != NULL ) {
+        gzclose(reader->gz_pointer);
+        reader->gz_pointer = NULL;
     }
-    free(reader->buffer);
-    free(reader->buffer_storage);
     free(reader->concatenated_filenames);
     free(reader->filenames);
-    pthread_mutex_destroy(&reader->mutex);
-    pthread_cond_destroy(&reader->can_produce);
-    pthread_cond_destroy(&reader->can_consume);
 }
 void free_fastq_reader_set(fastq_reader_set *reader_set) {
     free_fastq_reader(reader_set->barcode_reader);
