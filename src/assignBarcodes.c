@@ -2087,8 +2087,9 @@ void *read_fastqs_by_set(void *arg) {
     long long number_of_reads=0;
     const int number_of_readers = (set->forward_reader != NULL) + (set->reverse_reader != NULL) + 1;
     fastq_reader *readers[number_of_readers];
-    readers[0] = set->barcode_reader;
-    const int read_buffer_lines = readers[0]->read_buffer_lines;
+    readers[0]  = set->barcode_reader;
+    const int lines_per_block   = 2 * number_of_readers;     /* NEW */
+    const int read_buffer_lines = set->read_buffer_lines;    /* NEW */
     if (set->forward_reader != NULL) {
         readers[1] = set->forward_reader;
     }
@@ -2168,30 +2169,35 @@ void *read_fastqs_by_set(void *arg) {
         else{
             number_of_reads++;
 
-            for (int j=0; j<number_of_readers; j++){
-                fastq_reader *reader=readers[j];
-                pthread_mutex_lock(&reader->mutex);
-                if (done){
-                    reader->buffer[reader->produce_index][0]='\0';
-                    reader->buffer[(reader->produce_index+1)%read_buffer_lines][0]='\0';
-                    pthread_cond_signal(&reader->can_consume);
-                    reader->filled+=2;
-                    pthread_mutex_unlock(&reader->mutex);
-                    continue;
-                }
-                // Wait until there is space in the buffer
-                if (reader->filled > read_buffer_lines-2) {
-                    pthread_cond_wait(&reader->can_produce, &reader->mutex);
-                }
-                // Produce lines (add it to buffer)
-                strcpy(reader->buffer[reader->produce_index], line1[j]);
-                strcpy(reader->buffer[(reader->produce_index+1)%read_buffer_lines], line2[j]); 
-                reader->produce_index = (reader->produce_index+ 2) % read_buffer_lines;
-                reader->filled+=2;
-                // Signal consumer that data is available
-                pthread_cond_signal(&reader->can_consume);
-                pthread_mutex_unlock(&reader->mutex);
+            /* ---------- NEW: write a whole block into set->buffer ---------- */
+            pthread_mutex_lock(&set->mutex);
+
+            while (set->filled > read_buffer_lines - lines_per_block)
+                pthread_cond_wait(&set->can_produce, &set->mutex);
+
+            size_t p = set->produce_index;
+            /* barcode (always) */
+            strcpy(set->buffer[p],                             line1[0]);
+            strcpy(set->buffer[(p+1)%read_buffer_lines],       line2[0]);
+
+            int offset = 2;   /* start of next reader's lines */
+            int r_idx  = 1;   /* reader index we are copying from */
+
+            if (set->forward_reader) {            /* forward read present */
+                strcpy(set->buffer[(p+offset)%read_buffer_lines],     line1[r_idx]);
+                strcpy(set->buffer[(p+offset+1)%read_buffer_lines],   line2[r_idx]);
+                offset += 2;
+                r_idx  += 1;
             }
+            if (set->reverse_reader) {            /* reverse read present */
+                strcpy(set->buffer[(p+offset)%read_buffer_lines],     line1[r_idx]);
+                strcpy(set->buffer[(p+offset+1)%read_buffer_lines],   line2[r_idx]);
+            }
+
+            set->produce_index = (p + lines_per_block) % read_buffer_lines;
+            set->filled       += lines_per_block;
+            pthread_cond_signal(&set->can_consume);
+            pthread_mutex_unlock(&set->mutex);
         }
     }
     
@@ -2414,6 +2420,7 @@ void *consume_reads(void *arg) {
     const int maxHammingDistance = sample_args->maxHammingDistance;
     const int nThreads = sample_args->nThreads;
     int nreaders=(reader_sets[0]->forward_reader && reader_sets[0]->reverse_reader)?3:2;
+    const int lines_per_block=2*nreaders;           /* NEW – 4 or 6 lines */
     for (int i=0; i<6; i++){
         lines[i]=lines_buffer+i*LINE_LENGTH;
     }
@@ -2445,7 +2452,7 @@ void *consume_reads(void *arg) {
                 continue;
             }
             //check if there is data to consume
-            if (set->filled < 2) {
+            if (set->filled < lines_per_block) {
                 pthread_mutex_unlock(&set->mutex);
                 continue;
             }
@@ -2466,12 +2473,13 @@ void *consume_reads(void *arg) {
                 strcpy(forward_lines[1], set->buffer[(set->consume_index+3) % set->read_buffer_lines]);
             }
             if (reverse_lines) {
-                strcpy(reverse_lines[0], set->buffer[(set->consume_index+2) % set->read_buffer_lines]);
-                strcpy(reverse_lines[1], set->buffer[(set->consume_index+3) % set->read_buffer_lines]);
+                int off = (nreaders == 3) ? 4 : 2;  /* NEW – use nreaders */
+                strcpy(reverse_lines[0], set->buffer[(set->consume_index+off) % set->read_buffer_lines]);
+                strcpy(reverse_lines[1], set->buffer[(set->consume_index+off+1) % set->read_buffer_lines]);
             }
             //signal that the data has been consumed
-            set->consume_index = (set->consume_index + 2) % set->read_buffer_lines;
-            set->filled-=2;
+            set->consume_index = (set->consume_index + lines_per_block) % set->read_buffer_lines;  /* NEW */
+            set->filled      -= lines_per_block;   /* NEW */
             pthread_cond_signal(&set->can_produce);
             pthread_mutex_unlock(&set->mutex);
             //process the data
