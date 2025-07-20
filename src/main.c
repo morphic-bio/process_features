@@ -32,7 +32,6 @@ int main(int argc, char *argv[])
     int average_read_length=AVERAGE_READ_LENGTH;
     int feature_constant_offset=0;
     int barcode_constant_offset=0;
-    int parallel_by_file=0;
     double min_posterior=MIN_POSTERIOR;
 
     int max_available_threads=8;
@@ -60,7 +59,6 @@ int main(int argc, char *argv[])
         {"as_named", no_argument, 0, 'a'},
         {"reverse_complement_whitelist", no_argument, 0, 'r'},
         {"keep_existing", no_argument, 0, 'k'},
-        {"parallel_by_file", no_argument, 0, 'P'},
         {"read_buffer_lines", required_argument, 0, 'R'},
         {"average_read_length", required_argument, 0, 'L'},
         {"min_posterior", required_argument, 0, 'M'},
@@ -81,7 +79,7 @@ int main(int argc, char *argv[])
 
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "w:b:f:m:s:S:i:t:T:o:d:u:c:vakrPDB:R:L:M:", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "w:b:f:m:s:S:i:t:T:o:d:u:c:vakrDB:R:L:M:", long_options, &option_index)) != -1) {
         switch (c) {
             case 'w': strcpy(whitelist_filename, optarg); break;
             case 'b': barcode_length=atoi(optarg); barcode_code_length=(barcode_length+3)/4; break;
@@ -101,7 +99,6 @@ int main(int argc, char *argv[])
             case 'k': keep_existing=1; break;
             case 'r': reverse_complement_whitelist=1; break;
             case 'B': barcode_constant_offset=atoi(optarg); break;
-            case 'P': parallel_by_file=1; break;
             case 'R': read_buffer_lines=atoi(optarg); break;
             case 'L': average_read_length=atoi(optarg); break;
             case 'M': min_posterior=(double)atof(optarg); break;
@@ -143,7 +140,7 @@ int main(int argc, char *argv[])
     const int nSamples=fastq_files.nsamples;
     int threads_per_set=0;
     if (max_available_threads){
-        threads_per_set=calculate_initial_threads(&fastq_files, parallel_by_file, max_available_threads, &consumer_threads_per_set, &search_threads_per_consumer, &max_concurrent_processes, set_consumer_threads_per_set,set_search_threads_per_consumer );
+        threads_per_set=calculate_initial_threads(&fastq_files, max_available_threads, &consumer_threads_per_set, &search_threads_per_consumer, &max_concurrent_processes, set_consumer_threads_per_set,set_search_threads_per_consumer );
     }
     else{
         if (set_search_threads_per_consumer){
@@ -188,17 +185,18 @@ int main(int argc, char *argv[])
                 strcat(sample_directory, fastq_files.sample_names[0]);
                 strcat(sample_directory, "/");
             }
-            memory_pool_collection *pools=initialize_memory_pool_collection();
-            statistics stats;
-            data_structures hashes;
-            initialize_data_structures(&hashes);
-            initialize_statistics(&stats);
             fprintf(stderr, "Processing sample directory %s\n", sample_directory);
             if (existing_output_skip(keep_existing, sample_directory)) exit(0);
             sample_args args;
-            populate_sample_args(&args,i, sample_directory, &fastq_files, features, maxHammingDistance, search_threads_per_consumer, pools, &stats, &hashes, stringency, min_counts, barcode_constant_offset, feature_constant_offset, read_buffer_lines, average_read_length,parallel_by_file,min_posterior,consumer_threads_per_set);
+            // The following are now initialized in process_files_in_sample
+            // memory_pool_collection *pools=initialize_memory_pool_collection();
+            // statistics stats;
+            // data_structures hashes;
+            // initialize_data_structures(&hashes);
+            // initialize_statistics(&stats);
+            populate_sample_args(&args,i, sample_directory, &fastq_files, features, maxHammingDistance, search_threads_per_consumer, NULL, NULL, NULL, stringency, min_counts, barcode_constant_offset, feature_constant_offset, read_buffer_lines, average_read_length,min_posterior,consumer_threads_per_set);
             process_files_in_sample(&args);
-            cleanup_sample(args.pools, args.hashes);
+            // cleanup_sample is handled within process_files_in_sample
             atomic_fetch_add(thread_counter, -threads_per_set);
             exit(0);
         }

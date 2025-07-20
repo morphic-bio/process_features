@@ -1,11 +1,11 @@
 #ifndef PROTOTYPES_H
 #define PROTOTYPES_H
 
-#include "common.h"
+#include "../include/common.h"
 
 // Function prototypes from assignBarcodes.c
 void add_deduped_count(GHashTable* temp_deduped_hash, uint32_t *clique_counts, uint16_t stringency, uint16_t min_counts);
-int calculate_initial_threads(fastq_files_collection *fastq_files, int parallel_by_file, int available_threads, int *consumer_threads_per_set, int *search_threads_per_consumer, int *max_concurrent_processes, int set_consumer_threads_per_set, int set_search_threads_per_consumer);
+int calculate_initial_threads(fastq_files_collection *fastq_files, int available_threads, int *consumer_threads_per_set, int *search_threads_per_consumer, int *max_concurrent_processes, int set_consumer_threads_per_set, int set_search_threads_per_consumer);
 char check_sequence(char *sequence, int sequence_length);
 void cleanup_sample(memory_pool_collection *pools, data_structures *hashes);
 int existing_output_skip(char keep_existing, char *directory);
@@ -32,7 +32,7 @@ void merge_stats(statistics *merged_stats, statistics *thread_stats);
 void merge_unmatched_barcodes(unmatched_barcodes_features_block_list *merged_list, unmatched_barcodes_features_block_list *thread_list);
 void organize_fastq_files_by_directory(int positional_arg_count, int argc, char *argv[], int optind, char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString, fastq_files_collection *fastq_files, char *barcode_pattern, char *forward_pattern, char *reverse_pattern);
 void organize_fastq_files_by_type(int positional_arg_count, int argc, char *argv[], int optind, char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString, fastq_files_collection *fastq_files, char *barcode_pattern, char *forward_pattern, char *reverse_pattern, int sample_flag);
-void populate_sample_args(sample_args *args, int sample_index,char *directory, fastq_files_collection *fastq_files, feature_arrays *features, int maxHammingDistance, int nThreads, memory_pool_collection **pools, statistics *stats, data_structures *hashes, uint16_t stringency, uint16_t min_counts, int barcode_constant_offset, int feature_constant_offset, int read_buffer_lines, int average_read_length, int parallel_by_file, double min_posterior, int consumer_threads_per_set);
+void populate_sample_args(sample_args *args, int sample_index,char *directory, fastq_files_collection *fastq_files, feature_arrays *features, int maxHammingDistance, int nThreads, memory_pool_collection **pools, statistics *stats, data_structures *hashes, uint16_t stringency, uint16_t min_counts, int barcode_constant_offset, int feature_constant_offset, int read_buffer_lines, int average_read_length, double min_posterior, int consumer_threads_per_set);
 void process_feature_sequence(char *sequence, feature_arrays *features, int maxHammingDistance, int nThreads, int feature_constant_offset, int max_feature_n, uint32_t *feature_index, int *hamming_distance, char *matching_sequence, uint16_t *match_position);
 void process_files_in_sample(sample_args *args);
 feature_arrays* read_features_file(const char* filename);
@@ -45,5 +45,8 @@ void update_feature_counts_from_code(unsigned char *code, char *umi, uint32_t fe
 void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,data_structures *hashes, memory_pool_collection *pools);
 void destroy_data_structures(data_structures *hashes);
 void free_unmatched_barcodes_features_list(unmatched_barcodes_features_block_list *list);
+unsigned char* read_whiteList(char *whitelist_filename,GHashTable *hash, int reverse_complement_flag);
+int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned char hamming_distance, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools);
+int split_line(char *line, char *fields[], const char *split_string);
 
 #endif // PROTOTYPES_H

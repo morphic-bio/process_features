@@ -1952,56 +1952,6 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     fclose(feature_histograms_fp);
 }
 
-void read_fastq_chunks(gzFile barcode_fastqgz, gzFile forward_fastqgz, gzFile reverse_fastqgz, char *barcode_lines[], char *forward_lines[], char *reverse_lines[], char *buffer, char *done) {
-    char *bufferptr = buffer;
-    long long number_of_reads=0;
-    gzFile gzfps[3] = {barcode_fastqgz, forward_fastqgz, reverse_fastqgz};  
-    char **lines[3] = {barcode_lines, forward_lines, reverse_lines};
-    for (int i=0; i<3; i++){
-        gzFile gzfp=gzfps[i];
-        if(!gzfp){
-            continue;
-        }
-        fprintf(stderr, "Reading file %d %lld\n", i, number_of_reads);
-        if (max_reads && number_of_reads >= max_reads){
-            *done = 1;
-            break;
-        }
-        for (int j = 0; j < 4; j++) {
-            lines[i][j] = bufferptr;
-            if (gzgets(gzfp, lines[i][j], LINE_LENGTH) != Z_NULL) {
-            // Overwrite the newline character with null terminator
-                const int length = strlen(lines[i][j]);
-                if (lines[i][j][length - 1] != '\n') {
-                    fprintf(stderr, "Error: Incomplete record in the FASTQ file\n");
-                    exit(EXIT_FAILURE);
-                }
-                lines[i][j][length - 1] = '\0';
-                if(i==2 && j==1){
-                    if (j == 1) {
-                        reverse_complement_in_place(bufferptr);
-                    }
-                    if (j == 3) {
-                        reverse_in_place(bufferptr);
-                    }
-                }
-                //DEBUG_PRINT( "Read %s\n", lines[i][j]);
-                bufferptr += length;
-            } 
-            else {
-                if (j == 0) {
-                    *done = 1;
-                    break;
-                } else {
-                 fprintf(stderr, "Error: Incomplete record in the FASTQ file\n");
-                 exit(EXIT_FAILURE);
-                }
-            }
-        }
-        number_of_reads++;
-
-    }    
-}
 void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz) {
     *barcode_fastqgz = gzopen(barcode_fastq, "r");
     if (*barcode_fastqgz == NULL) {
@@ -2894,14 +2844,14 @@ void cleanup_sample(memory_pool_collection *pools, data_structures *hashes){
     destroy_data_structures(hashes);      /* first: walk and free hash nodes */
     free_memory_pool_collection(pools);   /* then: free the underlying pools */
 }
-int calculate_threads(fastq_files_collection *fastq_files, int parallel_by_file, int index, int threads_used, int available_threads, int *consumer_threads_per_set, int *search_threads_per_consumer, int *max_concurrent_processes, int set_consumer_threads_per_set, int set_search_threads_per_consumer){
-    //assume that all concurrent processes will eventually become available for calculations
-    int nsamples=fastq_files->nsamples-index;
-    int sample_index=fastq_files->sorted_index[index];
-    int sample_size=fastq_files->sample_sizes[sample_index];
-    int producer_threads=(parallel_by_file)?sample_size:1;
-    int remaining_threads=available_threads-producer_threads-threads_used;
-    fprintf(stderr, "Remaining threads %d\n", remaining_threads);
+int calculate_initial_threads(fastq_files_collection *fastq_files, int available_threads, int *consumer_threads_per_set, int *search_threads_per_consumer, int *max_concurrent_processes, int set_consumer_threads_per_set, int set_search_threads_per_consumer){
+    int nsamples=fastq_files->nsamples;
+    int sample_size=fastq_files->max_sample_size;
+    //start off with producer threads
+    int producer_threads=sample_size;
+    int remaining_threads=available_threads-producer_threads; 
+    //search threads should be 4:2:1 depending on the number of consumer threads available - could use 3 but that is a waste
+    //metric for work done is approximately consumer*search
     double best_value=0;
     int best_search=4; //default to 1 in worst case
     int best_consumer=1;
@@ -2959,79 +2909,6 @@ int calculate_threads(fastq_files_collection *fastq_files, int parallel_by_file,
     return best_consumer*best_search + producer_cost;
 }
 
-int calculate_initial_threads(fastq_files_collection *fastq_files, int parallel_by_file, int available_threads, int *consumer_threads_per_set, int *search_threads_per_consumer, int *max_concurrent_processes, int set_consumer_threads_per_set, int set_search_threads_per_consumer){
-    int nsamples=fastq_files->nsamples;
-    int sample_size=fastq_files->max_sample_size;
-    //start off with producer threads
-    int producer_threads=(parallel_by_file)?sample_size:1;
-    int remaining_threads=available_threads-producer_threads; 
-    //search threads should be 4:2:1 depending on the number of consumer threads available - could use 3 but that is a waste
-    //metric for work done is approximately consumer*search
-    double best_value=0;
-    int best_search=4; //default to 1 in worst case
-    int best_consumer=1;
-    int best_concurrent=1;
-    //int search=(remaining_threads>=4)?4:2;
-    //if (remaining_threads<2){
-    //    search=1;
-    //}
-    //prefer high concurrent and low consumer - less overhead - put consumer in outer loop
-
-    double search_value[3]={3.2,1.9,1.0};
-    int sthreads[3]={4,2,1};
-    double producer_cost=0.6*(double)producer_threads;
-    int start_sthread_index=0;
-    int end_sthread_index=2;
-    int start_consumer=1;
-    int end_consumer=(remaining_threads)?remaining_threads:1;
-    if (set_consumer_threads_per_set){
-        start_consumer=set_consumer_threads_per_set;
-        end_consumer=set_consumer_threads_per_set;
-    }
-    //set the search threads if specified by user
-    if (set_search_threads_per_consumer){
-        if (set_search_threads_per_consumer<=1){
-            start_sthread_index=2;
-            end_sthread_index=2;
-        }
-        else if (set_search_threads_per_consumer<=3){
-            start_sthread_index=1;
-            end_sthread_index=1;
-        }
-        else {
-            start_sthread_index=0;
-            end_sthread_index=0;
-        }
-    }    
-    for (int i=start_sthread_index; i<=end_sthread_index; i++){   
-        for (int consumer=start_consumer; consumer<=end_consumer; consumer++){
-            for (int concurrent=1; concurrent<=*max_concurrent_processes && concurrent <= nsamples; concurrent++){
-                //check that this is less than number of threads - remaining threads instead of available for same reason
-                if (((double)consumer*sthreads[i]+producer_cost)*(double)concurrent>available_threads){
-                    break;
-                }
-                double dconsumer=(double) consumer;
-                double dsearch=(double)search_value[i];
-                double dconcurrent=(double)concurrent;
-                double value=dconsumer*dsearch*dconcurrent-dconsumer*dconsumer/4.0;
-                DEBUG_PRINT( "consumer %d search %d concurrent %d Value %f\n",consumer,sthreads[i],concurrent,value);
-
-                if (value>best_value){
-                    best_value=value;
-                    best_search=sthreads[i];
-                    best_consumer=consumer;
-                    best_concurrent=concurrent;
-                    DEBUG_PRINT( "Best value %f consumer %d search %d concurrent %d\n", best_value, best_consumer, best_search, best_concurrent);
-
-                }
-            }
-        }
-    }
-    *consumer_threads_per_set=best_consumer;
-    *search_threads_per_consumer=best_search;
-    *max_concurrent_processes=best_concurrent;
-    return best_consumer*best_search + producer_cost;
-}
 void reverse_in_place(char *str) {
     int left = 0;
     int right = strlen(str) - 1;
