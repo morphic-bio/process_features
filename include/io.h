@@ -8,7 +8,7 @@
 #include "globals.h"
 // Function prototypes for file I/O operations
 feature_arrays* read_features_file(const char* filename);
-void get_feature_line_sizes(char *line, int nameIndex, int seqIndex, int *name_size, int *seq_size, int *code_size, int *maxFeatureLength);
+int get_feature_line_sizes(char *line, int nameIndex, int seqIndex, int *name_size, int *seq_size, int *code_size, int *maxFeatureLength);
 void process_feature_line(char *line, int nameIndex, int seqIndex, feature_arrays *myfeatures, int count);
 feature_arrays* allocate_feature_arrays(int name_size, int seq_size, int code_size, int count, int maxFeatureLength);
 void find_name_and_sequence_fields(char *line, int *nameIndex, int *seqIndex);

@@ -345,6 +345,7 @@ void free_feature_arrays(feature_arrays *features) {
     free(features->feature_names);
     free(features->feature_sequences);
     free(features->feature_codes);
+    free(features->mismatched_feature_indices);
     free(features);
 }
 
@@ -935,29 +936,40 @@ int simple_hash_search(feature_arrays *features, char *sequence){
         // The value is the feature index, convert it back from a pointer.
         return GPOINTER_TO_INT(value);
     }
-    return 0;
-}
-
-int simple_search(feature_arrays *features, char *line){
-    int retvalue=0;
-    if ((retvalue=simple_hash_search(features, line))){
-        return retvalue;
-    }
-    //if the code search failed, do a simple hamming search
-    for (int i=0; i<features->number_of_features; i++){
-        char *query=line;
-        char *feature=features->feature_sequences[i];
-        //DEBUG_PRINT( "Comparing %s %s\n", query, feature);
+    //check against the mismatched features
+    for (int i=0; i<features->number_of_mismatched_features; i++){
+        char *query=sequence;
+        char *feature=features->feature_sequences[features->mismatched_feature_indices[i]];
         while (*query == *feature){
             query++;
             feature++;
         }
         if (!*feature){
-            return i+1;
+            return features->mismatched_feature_indices[i]+1;
         }
     }
     return 0;
 }
+
+int simple_search(feature_arrays *features, char *line){
+    if (features->number_of_features < 150){
+        for (int i=0; i<features->number_of_features; i++){
+            char *query=line;
+            char *feature=features->feature_sequences[i];
+            //DEBUG_PRINT( "Comparing %s %s\n", query, feature);
+            while (*query == *feature){
+                query++;
+                feature++;
+            }
+            if (!*feature){
+                return i+1;
+            }
+        }
+        return 0;
+    }
+    return simple_hash_search(features, line);    
+}
+
 int simple_hamming_search(feature_arrays *features, char *line, int maxHammingDistance, int *hamming_distance){  
     int ambiguous=0;
     int bestFeature=0;

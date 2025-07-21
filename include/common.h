@@ -78,6 +78,7 @@ typedef struct feature_search_tables{
 typedef struct feature_arrays {
     int number_of_features;
     int max_length;
+    int common_length;
     char **feature_names;
     char *feature_names_storage;
     unsigned int *feature_lengths;
@@ -86,6 +87,8 @@ typedef struct feature_arrays {
     char *feature_sequences_storage;
     unsigned char **feature_codes;
     unsigned char *feature_codes_storage;
+    int number_of_mismatched_features;
+    int *mismatched_feature_indices;
 } feature_arrays;
 
 typedef struct feature_counts {

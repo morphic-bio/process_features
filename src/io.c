@@ -23,12 +23,35 @@ feature_arrays* read_features_file(const char* filename) {
     }
     find_name_and_sequence_fields(line, &nameIndex, &seqIndex);
     
+    GHashTable* length_counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+
     while (fgets(line, LINE_LENGTH, file) != NULL) {
-        get_feature_line_sizes(line, nameIndex, seqIndex, &name_size, &seq_size, &code_size, &maxFeatureLength);
+        int length = get_feature_line_sizes(line, nameIndex, seqIndex, &name_size, &seq_size, &code_size, &maxFeatureLength);
+        if (length > 0) {
+            uintptr_t current_count = GPOINTER_TO_UINT(g_hash_table_lookup(length_counts, GINT_TO_POINTER(length)));
+            g_hash_table_replace(length_counts, GINT_TO_POINTER(length), GUINT_TO_POINTER(current_count + 1));
+        }
         count++;
     }
-    fprintf(stderr, "Read %d tags with max length %d\n", count, maxFeatureLength);
+
+    GHashTableIter iter;
+    gpointer key, value;
+    int most_common_length = 0;
+    int max_count = 0;
+    g_hash_table_iter_init(&iter, length_counts);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        int length = GPOINTER_TO_INT(key);
+        int current_count = GPOINTER_TO_UINT(value);
+        if (current_count > max_count) {
+            max_count = current_count;
+            most_common_length = length;
+        }
+    }
+    g_hash_table_destroy(length_counts);
+
+    fprintf(stderr, "Read %d tags with max length %d and most common length %d\n", count, maxFeatureLength, most_common_length);
     feature_arrays *myfeatures = allocate_feature_arrays(name_size, seq_size, code_size, count, maxFeatureLength);
+    myfeatures->common_length = most_common_length;
     //rewind the file and read the sequences
     fseek(file, 0, SEEK_SET);
     if (!fgets(line, LINE_LENGTH, file)) {
@@ -42,9 +65,19 @@ feature_arrays* read_features_file(const char* filename) {
     }
     fprintf(stderr, "Read %d tags\n", count);
     fclose(file);
+
+    int mismatched_count = 0;
+    for (int i = 0; i < myfeatures->number_of_features; i++) {
+        if (myfeatures->feature_lengths[i] != myfeatures->common_length) {
+            myfeatures->mismatched_feature_indices[mismatched_count++] = i;
+        }
+    }
+    myfeatures->number_of_mismatched_features = mismatched_count;
+    fprintf(stderr, "Found %d features with length different from common length %d\n", mismatched_count, myfeatures->common_length);
+
     return myfeatures;
 }
-void get_feature_line_sizes(char *line, int nameIndex, int seqIndex, int *name_size, int *seq_size, int *code_size, int *maxFeatureLength) {
+int get_feature_line_sizes(char *line, int nameIndex, int seqIndex, int *name_size, int *seq_size, int *code_size, int *maxFeatureLength) {
     line[strcspn(line, "\r\n")] = '\0';
     char *fields[LINE_LENGTH];
     int nFields = split_line(line, fields, ",");
@@ -59,15 +92,16 @@ void get_feature_line_sizes(char *line, int nameIndex, int seqIndex, int *name_s
         exit(EXIT_FAILURE);
     }
     const int string_length = strlen(tmpSeq);
-    *seq_size += strlen(tmpSeq) + 1; 
+    *seq_size += string_length + 1; 
     *code_size += string_length / 4;
     if (string_length % 4){
         (*code_size)++;
     } 
-    if (strlen(tmpSeq) > *maxFeatureLength){
-        *maxFeatureLength = strlen(tmpSeq);
+    if (string_length > *maxFeatureLength){
+        *maxFeatureLength = string_length;
     }
     *name_size += strlen(fields[nameIndex]) + 1;
+    return string_length;
 }
 void process_feature_line(char *line, int nameIndex, int seqIndex, feature_arrays *myfeatures, int count) {
     // Split the line by spaces and read the 3rd and 6th columns
@@ -88,8 +122,10 @@ void process_feature_line(char *line, int nameIndex, int seqIndex, feature_array
     strcpy(myfeatures->feature_sequences[count], tmpSeq);
     myfeatures->feature_lengths[count] = strlen(tmpSeq);
     myfeatures->feature_code_lengths[count] = string2code(tmpSeq, strlen(tmpSeq), myfeatures->feature_codes[count]);
-    GBytes *key = g_bytes_new_static(myfeatures->feature_codes[count], myfeatures->feature_code_lengths[count]);
-    g_hash_table_insert(feature_code_hash, key, GUINT_TO_POINTER(count + 1));
+    if (myfeatures->feature_lengths[count] == myfeatures->common_length) {
+        GBytes *key = g_bytes_new_static(myfeatures->feature_codes[count], myfeatures->feature_code_lengths[count]);
+        g_hash_table_insert(feature_code_hash, key, GUINT_TO_POINTER(count + 1));
+    }
     if (count + 1 < myfeatures->number_of_features) {
         myfeatures->feature_sequences[count + 1] = myfeatures->feature_sequences[count] + strlen(tmpSeq) + 1;
         myfeatures->feature_codes[count + 1] = myfeatures->feature_codes[count] + myfeatures->feature_code_lengths[count];
@@ -112,9 +148,10 @@ feature_arrays* allocate_feature_arrays(int name_size, int seq_size, int code_si
         myfeatures->feature_codes = malloc(count * sizeof(unsigned char*));
         myfeatures->feature_sequences = malloc(count * sizeof(char*));
         myfeatures->number_of_features = count;
+        myfeatures->mismatched_feature_indices = malloc(count * sizeof(int));
 
         // Check if any of the mallocs failed by checking for NULL pointers
-        if (myfeatures->feature_names_storage == NULL || myfeatures->feature_sequences_storage == NULL || myfeatures->feature_codes_storage == NULL || myfeatures->feature_names == NULL || myfeatures->feature_lengths == NULL || myfeatures->feature_code_lengths == NULL || myfeatures->feature_codes == NULL) {
+        if (myfeatures->feature_names_storage == NULL || myfeatures->feature_sequences_storage == NULL || myfeatures->feature_codes_storage == NULL || myfeatures->feature_names == NULL || myfeatures->feature_lengths == NULL || myfeatures->feature_code_lengths == NULL || myfeatures->feature_codes == NULL || myfeatures->mismatched_feature_indices == NULL) {
             fprintf(stderr, "Failed to allocate memory for feature arrays\n");
             exit(EXIT_FAILURE);
         }
