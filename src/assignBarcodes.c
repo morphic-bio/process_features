@@ -190,6 +190,14 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
 }
 #endif
 
+void destroy_feature_counts(gpointer data) {
+    feature_counts *fc = (feature_counts*)data;
+    if (fc && fc->counts) {
+        g_hash_table_destroy(fc->counts);
+    }
+    // fc itself is pool-allocated, so we don't free it here.
+}
+
 void destroy_feature_umi_counts(gpointer data) {
     feature_umi_counts *umi_counts = (feature_umi_counts*)data;
     if (umi_counts && umi_counts->counts) {
@@ -2815,7 +2823,7 @@ void process_files_in_sample(sample_args *args) {
 }
 
 void initialize_data_structures(data_structures *hashes){
-    hashes->filtered_hash = g_hash_table_new_full(hash_int32, equal_int32, NULL, NULL); // Values are memory-pooled
+    hashes->filtered_hash = g_hash_table_new_full(hash_int32, equal_int32, NULL, destroy_feature_counts);
     hashes->unique_features_match = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL); // Keys/Values are memory-pooled
     // Use g_hash_table_new_full to provide our custom value destroyer function.
     hashes->sequence_umi_hash = g_hash_table_new_full(hash_int64, equal_int64, NULL, destroy_feature_umi_counts);
