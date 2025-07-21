@@ -189,18 +189,6 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
     cairo_surface_destroy(surface);
 }
 #endif
-static void copy_uint_entry(gpointer key, gpointer value, gpointer user_data) {
-    GHashTable *dest = (GHashTable *)user_data;
-    g_hash_table_insert(dest, key, value);
-}
-
-static void merge_uint_counters(gpointer key,gpointer value,gpointer user_data)
-{
-    GHashTable *dest = (GHashTable *)user_data;
-    uintptr_t current = GPOINTER_TO_UINT(g_hash_table_lookup(dest, key));
-    uintptr_t add     = GPOINTER_TO_UINT(value);
-    g_hash_table_replace(dest, key, GUINT_TO_POINTER(current + add));
-}
 
 void destroy_feature_umi_counts(gpointer data) {
     feature_umi_counts *umi_counts = (feature_umi_counts*)data;
@@ -2596,6 +2584,18 @@ typedef struct {
     memory_pool_collection *dst_pool;
 } merge_context;
 
+static void merge_uint_counters(gpointer key,gpointer value,gpointer user_data)
+{
+    GHashTable *dest = (GHashTable *)user_data;
+    uintptr_t current = GPOINTER_TO_UINT(g_hash_table_lookup(dest, key));
+    uintptr_t add     = GPOINTER_TO_UINT(value);
+    g_hash_table_replace(dest, key, GUINT_TO_POINTER(current + add));
+}
+
+static void copy_uint_entry(gpointer key, gpointer value, gpointer user_data) {
+    GHashTable *dest = (GHashTable *)user_data;
+    g_hash_table_insert(dest, key, value);
+}
 
 void merge_feature_counts(gpointer key, gpointer value, gpointer user_data)
 {
@@ -2637,7 +2637,6 @@ void merge_feature_umi_counts(gpointer key, gpointer value, gpointer user_data)
         g_hash_table_insert(dst, dst_ent->sequence_umi_code, dst_ent);
     }
 }
-
 
 void merge_feature_sequences(gpointer key, gpointer value, gpointer user_data) {
     merge_context *ctx = (merge_context *)user_data;
@@ -2787,6 +2786,12 @@ void process_files_in_sample(sample_args *args) {
 
         merge_unmatched_barcodes(&args->stats[0].unmatched_list, &args->stats[i].unmatched_list, args->pools[0]);
         merge_queues(args->hashes[0].neighbors_queue, args->hashes[i].neighbors_queue);
+
+        // After deep copying all data from thread i, we can free its data structures
+        // and its memory pool, as they are no longer needed.
+        destroy_data_structures(&args->hashes[i]);
+        free_memory_pool_collection(args->pools[i]);
+        args->pools[i] = NULL; // Avoid double-free in later cleanup
     }
     // Since merging is not required, finalize using the first thread's data.
     finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior);
@@ -2796,41 +2801,9 @@ void process_files_in_sample(sample_args *args) {
         free_fastq_reader_set(reader_sets[i]);
     // need to write a free function for reader_sets
     
-    // Free the thread-local data structures except for index 0 which is used by the caller
-    /*
-    for (int i = 1; i < nconsumers; i++) {
-        destroy_data_structures(&args->hashes[i]);
-        free_unmatched_barcodes_features_list(&args->stats[i].unmatched_list);
-    }
-    */
-    
-    // Now free the arrays themselves
-    // Note: Don't free the individual elements at index 0 as they're still in use
-    if (nconsumers > 1) {
-        // We need to keep the first element (index 0) for the caller
-        // Move the first element to a temporary location
-        statistics first_stat = args->stats[0];
-        data_structures first_hash = args->hashes[0];
-        
-        // Free the arrays
-        free(args->stats);
-        free(args->hashes);
-        
-        // Allocate new single-element arrays
-        args->stats = malloc(sizeof(statistics));
-        args->hashes = malloc(sizeof(data_structures));
-        
-        // Copy back the first elements
-        memcpy(args->stats, &first_stat, sizeof(statistics));
-        memcpy(args->hashes, &first_hash, sizeof(data_structures));
-    }
-    // If nconsumers is 1, we don't need to do anything special since
-    // the arrays only have one element which is still in use
-    for (int i = 0; i < nconsumers; i++) {
-        fprintf(stderr, "Freeing data structures for thread %d\n", i);
-        destroy_data_structures(&args->hashes[i]);
-        free_memory_pool_collection(args->pools[i]);
-    }
+    // Now that all processing is complete, clean up the resources from thread 0.
+    destroy_data_structures(&args->hashes[0]);
+    free_memory_pool_collection(args->pools[0]);
     
     // Now free the arrays themselves
     free(args->stats);
@@ -2858,14 +2831,11 @@ void initialize_data_structures(data_structures *hashes){
 void destroy_data_structures(data_structures *hashes){
     if (hashes->neighbors_queue){
         if (hashes->neighbors_queue->data)free_queue(hashes->neighbors_queue);
-        //free(hashes->neighbors_queue);
+        free(hashes->neighbors_queue);
     }
-    return;
     if (hashes->filtered_hash) g_hash_table_destroy(hashes->filtered_hash);
     if (hashes->unique_features_match) g_hash_table_destroy(hashes->unique_features_match);
     if (hashes->sequence_umi_hash) g_hash_table_destroy(hashes->sequence_umi_hash);
-    return;
-
 }
 
 
