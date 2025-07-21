@@ -189,6 +189,11 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
     cairo_surface_destroy(surface);
 }
 #endif
+static void copy_uint_entry(gpointer key, gpointer value, gpointer user_data) {
+    GHashTable *dest = (GHashTable *)user_data;
+    g_hash_table_insert(dest, key, value);
+}
+
 static void merge_uint_counters(gpointer key,gpointer value,gpointer user_data)
 {
     GHashTable *dest = (GHashTable *)user_data;
@@ -2586,9 +2591,16 @@ void merge_stats(statistics *merged_stats, statistics *thread_stats) {
     merged_stats->number_of_reads += thread_stats->number_of_reads;
 }
 
+typedef struct {
+    GHashTable *dst_hash;
+    memory_pool_collection *dst_pool;
+} merge_context;
+
+
 void merge_feature_counts(gpointer key, gpointer value, gpointer user_data)
 {
-    GHashTable *dst = (GHashTable *)user_data;
+    merge_context *ctx = (merge_context *)user_data;
+    GHashTable *dst = ctx->dst_hash;
     feature_counts *src_entry = (feature_counts *)value;
     feature_counts *dst_entry = g_hash_table_lookup(dst, key);
 
@@ -2598,51 +2610,80 @@ void merge_feature_counts(gpointer key, gpointer value, gpointer user_data)
                              merge_uint_counters,
                              dst_entry->counts);
     } else {
-        g_hash_table_insert(dst, key, value);
+        dst_entry = (feature_counts*) allocate_memory_from_pool(ctx->dst_pool->feature_counts_pool);
+        memcpy(dst_entry->sequence_code, src_entry->sequence_code, barcode_code_length);
+        dst_entry->counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+        g_hash_table_foreach(src_entry->counts, copy_uint_entry, dst_entry->counts);
+        g_hash_table_insert(dst, dst_entry->sequence_code, dst_entry);
     }
 }
 
 void merge_feature_umi_counts(gpointer key, gpointer value, gpointer user_data)
 {
-    GHashTable *dst             = (GHashTable *)user_data;      /* hashes[0] */
-    feature_umi_counts *src_ent = (feature_umi_counts *)value;  /* from worker */
+    merge_context *ctx        = (merge_context *)user_data;
+    GHashTable *dst           = ctx->dst_hash;
+    feature_umi_counts *src_ent = (feature_umi_counts *)value;
     feature_umi_counts *dst_ent = g_hash_table_lookup(dst, key);
 
     if (dst_ent) {
         /* Same barcode-UMI already present – add the counters */
         g_hash_table_foreach(src_ent->counts,merge_uint_counters, dst_ent->counts);
     } else {
-        /* Key not present – move the whole struct into the dst table  */
-        g_hash_table_insert(dst, key, src_ent);
+        /* Key not present – copy the whole struct into the dst pool and table  */
+        dst_ent = (feature_umi_counts*) allocate_memory_from_pool(ctx->dst_pool->feature_umi_counts_pool);
+        memcpy(dst_ent->sequence_umi_code, src_ent->sequence_umi_code, 8);
+        dst_ent->counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+        g_hash_table_foreach(src_ent->counts, copy_uint_entry, dst_ent->counts);
+        g_hash_table_insert(dst, dst_ent->sequence_umi_code, dst_ent);
     }
 }
 
 
 void merge_feature_sequences(gpointer key, gpointer value, gpointer user_data) {
-    GHashTable *merged_hash = (GHashTable *)user_data;
+    merge_context *ctx = (merge_context *)user_data;
+    GHashTable *merged_hash = ctx->dst_hash;
     feature_sequences *thread_entry = (feature_sequences *)value;
     feature_sequences *merged_entry = g_hash_table_lookup(merged_hash, key);
     if (merged_entry) {
         merged_entry->counts += thread_entry->counts;
     } else {
-        g_hash_table_insert(merged_hash, key, value);
+        merged_entry = (feature_sequences*) allocate_memory_from_pool(ctx->dst_pool->feature_sequences_pool);
+        memcpy(merged_entry, thread_entry, dynamic_struct_sizes.feature_sequences);
+        g_hash_table_insert(merged_hash, merged_entry->sequence, merged_entry);
     }
 }
 
-
-void merge_unmatched_barcodes(unmatched_barcodes_features_block_list *merged_list, unmatched_barcodes_features_block_list *thread_list) {
-    if (thread_list->first_entry) {
-        if (merged_list->last_entry) { // More robust check
-            merged_list->last_entry->next = thread_list->first_entry;
-            merged_list->last_entry = thread_list->last_entry;
-        } else {
-            merged_list->first_entry = thread_list->first_entry;
-            merged_list->last_entry = thread_list->last_entry;
-        }
-        //detach the thread list
-        thread_list->first_entry = NULL;
-        thread_list->last_entry = NULL;
+void merge_queues(Queue *dest_q, Queue *src_q) {
+    if (!src_q || !src_q->data) return;
+    
+    while(!is_empty(src_q)){
+        enqueue(dest_q, dequeue(src_q));
     }
+}
+
+void merge_unmatched_barcodes(unmatched_barcodes_features_block_list *merged_list, unmatched_barcodes_features_block_list *thread_list, memory_pool_collection *merged_pool) {
+    unmatched_barcodes_features_block *current_block = thread_list->first_entry;
+    while (current_block) {
+        unmatched_barcodes_features_block *new_block = (unmatched_barcodes_features_block*)allocate_memory_from_pool(merged_pool->unmatched_barcodes_features_block_pool);
+        
+        // Copy the data, excluding the 'next' pointer which will be set manually.
+        memcpy(new_block, current_block, dynamic_struct_sizes.unmatched_barcodes_features_block);
+        new_block->next = NULL;
+
+        // Append to merged list
+        if (merged_list->last_entry) {
+            merged_list->last_entry->next = new_block;
+            merged_list->last_entry = new_block;
+        } else {
+            merged_list->first_entry = new_block;
+            merged_list->last_entry = new_block;
+        }
+        current_block = current_block->next;
+    }
+
+    // Detach the thread list
+    thread_list->first_entry = NULL;
+    thread_list->last_entry = NULL;
 }
 void process_files_in_sample(sample_args *args) {
     //allocate buffers here
@@ -2731,10 +2772,21 @@ void process_files_in_sample(sample_args *args) {
     // Merge data from all threads into the first thread's data structures
     for (int i = 1; i < nconsumers; i++) {
         merge_stats(&args->stats[0], &args->stats[i]);
-        g_hash_table_foreach(args->hashes[i].filtered_hash, merge_feature_counts, args->hashes[0].filtered_hash);
-        g_hash_table_foreach(args->hashes[i].sequence_umi_hash, merge_feature_umi_counts, args->hashes[0].sequence_umi_hash);
-        g_hash_table_foreach(args->hashes[i].unique_features_match, merge_feature_sequences, args->hashes[0].unique_features_match);
-        merge_unmatched_barcodes(&args->stats[0].unmatched_list, &args->stats[i].unmatched_list);
+        
+        merge_context ctx;
+        ctx.dst_pool = args->pools[0];
+
+        ctx.dst_hash = args->hashes[0].filtered_hash;
+        g_hash_table_foreach(args->hashes[i].filtered_hash, merge_feature_counts, &ctx);
+
+        ctx.dst_hash = args->hashes[0].sequence_umi_hash;
+        g_hash_table_foreach(args->hashes[i].sequence_umi_hash, merge_feature_umi_counts, &ctx);
+        
+        ctx.dst_hash = args->hashes[0].unique_features_match;
+        g_hash_table_foreach(args->hashes[i].unique_features_match, merge_feature_sequences, &ctx);
+
+        merge_unmatched_barcodes(&args->stats[0].unmatched_list, &args->stats[i].unmatched_list, args->pools[0]);
+        merge_queues(args->hashes[0].neighbors_queue, args->hashes[i].neighbors_queue);
     }
     // Since merging is not required, finalize using the first thread's data.
     finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior);
@@ -2775,6 +2827,7 @@ void process_files_in_sample(sample_args *args) {
     // If nconsumers is 1, we don't need to do anything special since
     // the arrays only have one element which is still in use
     for (int i = 0; i < nconsumers; i++) {
+        fprintf(stderr, "Freeing data structures for thread %d\n", i);
         destroy_data_structures(&args->hashes[i]);
         free_memory_pool_collection(args->pools[i]);
     }
@@ -2803,11 +2856,16 @@ void initialize_data_structures(data_structures *hashes){
     init_queue(hashes->neighbors_queue);
 }
 void destroy_data_structures(data_structures *hashes){
-    g_hash_table_destroy(hashes->filtered_hash);
-    g_hash_table_destroy(hashes->unique_features_match);
-    g_hash_table_destroy(hashes->sequence_umi_hash);
-    free_queue(hashes->neighbors_queue);
-    free(hashes->neighbors_queue);
+    if (hashes->neighbors_queue){
+        if (hashes->neighbors_queue->data)free_queue(hashes->neighbors_queue);
+        //free(hashes->neighbors_queue);
+    }
+    return;
+    if (hashes->filtered_hash) g_hash_table_destroy(hashes->filtered_hash);
+    if (hashes->unique_features_match) g_hash_table_destroy(hashes->unique_features_match);
+    if (hashes->sequence_umi_hash) g_hash_table_destroy(hashes->sequence_umi_hash);
+    return;
+
 }
 
 
