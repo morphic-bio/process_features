@@ -31,6 +31,7 @@ void free_memory_pool_storage(memory_pool *pool) {
         free(current);
         current = next;
     }
+    free(pool);
 }
 
 storage_block* allocate_storage_block(size_t block_size) {

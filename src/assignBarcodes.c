@@ -2553,14 +2553,11 @@ void free_fastq_reader(fastq_reader *reader) {
 }
 void free_fastq_reader_set(fastq_reader_set *reader_set) {
     free_fastq_reader(reader_set->barcode_reader);
-    // free(reader_set->barcode_reader); // This was a double free.
     if (reader_set->forward_reader) {
         free_fastq_reader(reader_set->forward_reader);
-        // free(reader_set->forward_reader); // This was a double free.
     }
     if (reader_set->reverse_reader) {
         free_fastq_reader(reader_set->reverse_reader);
-        // free(reader_set->reverse_reader); // This was a double free.
     }
     free(reader_set->buffer);
     free(reader_set->buffer_storage);
@@ -2799,7 +2796,7 @@ void process_files_in_sample(sample_args *args) {
         // and its memory pool, as they are no longer needed.
         destroy_data_structures(&args->hashes[i]);
         free_memory_pool_collection(args->pools[i]);
-        args->pools[i] = NULL; // Avoid double-free in later cleanup
+        //[i] = NULL; // Avoid double-free in later cleanup
     }
     // Since merging is not required, finalize using the first thread's data.
     finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior);
@@ -2808,6 +2805,9 @@ void process_files_in_sample(sample_args *args) {
     for (int i = 0; i < sample_size; ++i)
         free_fastq_reader_set(reader_sets[i]);
     // need to write a free function for reader_sets
+    for (int i = 0; i < nconsumers; i++) {
+        pthread_mutex_destroy(&processor_args[i].process_mutex);
+    }
     
     // Now that all processing is complete, clean up the resources from thread 0.
     destroy_data_structures(&args->hashes[0]);
