@@ -11,6 +11,7 @@ int main(int argc, char *argv[])
     initcode2seq();
     initdiff2hamming(diff2Hamming);
     initialize_complement();
+    feature_code_hash = g_hash_table_new_full(g_bytes_hash, g_bytes_equal, (GDestroyNotify)g_bytes_unref, NULL);
     feature_arrays *features=0;
     int reverse_complement_whitelist=0;
     char *barcodeFastqFilesString=0;

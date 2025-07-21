@@ -16,6 +16,8 @@ extern int debug;
 extern unsigned char *whitelist;
 extern GHashTable *whitelist_hash; 
 
+extern GHashTable *feature_code_hash;
+
 // Size globals to replace constants
 extern int barcode_length;
 extern int barcode_code_length;

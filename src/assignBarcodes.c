@@ -15,6 +15,9 @@
 #include "../include/plasma_colormap_64.h"
 #include "../include/plasma_colormap_256.h"
 #include "../include/plasma_colormap_1024.h"
+int exact_search(feature_search_tables *search_tables, char *sequence, unsigned char *code);
+
+
 
 const double (*select_colormap(int dynamic_range, int *colormap_size))[3] {
     if (dynamic_range < 20) {
@@ -896,7 +899,51 @@ int number_of_outputs) {
     }
     return number_of_outputs;
 }
-int simple_search(feature_arrays *features, char *line){  
+int simple_code_search(feature_arrays *features, char *sequence){
+    const int string_length=strlen(sequence);
+    unsigned char code[string_length/2+1];
+    memset(code, 0, string_length/2+1);
+    const int sequence_code_length=string2code(sequence,string_length, code);
+    for (int i=0; i<features->number_of_features; i++){
+        const int feature_code_length=features->feature_code_lengths[i];
+        if (sequence_code_length != feature_code_length){
+            continue;
+        }
+        if (find_matching_codes(code, features->feature_codes[i], sequence_code_length, features->feature_lengths[i])== 0){
+            return i+1;
+        }
+    }
+    return 0;
+}
+int simple_hash_search(feature_arrays *features, char *sequence){
+    const int string_length=strlen(sequence);
+    const int feature_sequence_length=features->feature_lengths[0];
+    const int sequence_code_length=features->feature_code_lengths[0];
+    if (string_length < feature_sequence_length) return 0;
+    char local_line[LINE_LENGTH];
+    memcpy(local_line, sequence, feature_sequence_length);
+    local_line[feature_sequence_length]='\0';
+    unsigned char code[sequence_code_length];
+    string2code(local_line, feature_sequence_length, code);
+    
+    // Create a GBytes key for lookup.
+    GBytes *key = g_bytes_new(code, sequence_code_length);
+    gpointer value = g_hash_table_lookup(feature_code_hash, key);
+    g_bytes_unref(key); // Free the GBytes wrapper
+
+    if (value){
+        // The value is the feature index, convert it back from a pointer.
+        return GPOINTER_TO_INT(value);
+    }
+    return 0;
+}
+
+int simple_search(feature_arrays *features, char *line){
+    int retvalue=0;
+    if ((retvalue=simple_hash_search(features, line))){
+        return retvalue;
+    }
+    //if the code search failed, do a simple hamming search
     for (int i=0; i<features->number_of_features; i++){
         char *query=line;
         char *feature=features->feature_sequences[i];

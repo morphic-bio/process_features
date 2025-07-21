@@ -68,6 +68,13 @@ typedef struct _storage_block {
     struct _storage_block *next;
     unsigned char *storage;
 } storage_block;
+typedef struct feature_search_tables{
+    struct feature_arrays *features;
+    void *feature_code;
+    unsigned char feature_code_length;
+    GHashTable *feature_code_hash;
+} feature_search_tables;
+
 typedef struct feature_arrays {
     int number_of_features;
     int max_length;
@@ -254,5 +261,7 @@ void enqueue(Queue *queue, uint64_t value);
 uint64_t dequeue(Queue *queue);
 uint64_t peek(Queue *queue);
 void free_queue(Queue *queue);
+
+
 
 #endif // COMMON_H

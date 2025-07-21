@@ -88,6 +88,8 @@ void process_feature_line(char *line, int nameIndex, int seqIndex, feature_array
     strcpy(myfeatures->feature_sequences[count], tmpSeq);
     myfeatures->feature_lengths[count] = strlen(tmpSeq);
     myfeatures->feature_code_lengths[count] = string2code(tmpSeq, strlen(tmpSeq), myfeatures->feature_codes[count]);
+    GBytes *key = g_bytes_new_static(myfeatures->feature_codes[count], myfeatures->feature_code_lengths[count]);
+    g_hash_table_insert(feature_code_hash, key, GUINT_TO_POINTER(count + 1));
     if (count + 1 < myfeatures->number_of_features) {
         myfeatures->feature_sequences[count + 1] = myfeatures->feature_sequences[count] + strlen(tmpSeq) + 1;
         myfeatures->feature_codes[count + 1] = myfeatures->feature_codes[count] + myfeatures->feature_code_lengths[count];
