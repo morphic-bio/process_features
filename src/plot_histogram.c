@@ -1,0 +1,321 @@
+#include "../include/plot_histogram.h"
+#include "../include/globals.h"
+#include <math.h>
+
+// Helper function to calculate negative binomial PMF
+double nb_pmf(int k, double r, double p) {
+    if (k < 0 || r <= 0.0 || p <= 0.0 || p >= 1.0) return 0.0;
+    return exp(lgamma(k + r) - lgamma(k + 1) - lgamma(r) + r*log(p) + k*log(1.0 - p));
+}
+
+// Helper function to calculate Poisson PMF
+double poisson_pmf(int k, double lambda) {
+    if (k < 0 || lambda <= 0) return 0.0;
+    return exp(k*log(lambda) - lambda - lgamma(k + 1));
+}
+
+void calculate_theoretical_fit(NBSignalCut em_fit, int max_count, double *fit_values) {
+    for (int k = 0; k <= max_count; k++) {
+        fit_values[k] = 0.0;
+        
+        for (int comp = 0; comp < em_fit.n_comp; comp++) {
+            double component_value = 0.0;
+            
+            if (em_fit.p[comp] == -1.0) {
+                // Poisson component (sentinel value -1.0 for p)
+                component_value = poisson_pmf(k, em_fit.r[comp]);
+            } else {
+                // Negative binomial component
+                component_value = nb_pmf(k, em_fit.r[comp], em_fit.p[comp]);
+            }
+            
+            fit_values[k] += em_fit.weight[comp] * component_value;
+        }
+    }
+}
+
+// New function to calculate individual component values
+void calculate_individual_components(NBSignalCut em_fit, int max_count, double **component_values, long total_counts) {
+    for (int comp = 0; comp < em_fit.n_comp; comp++) {
+        for (int k = 0; k <= max_count; k++) {
+            double component_value = 0.0;
+            
+            if (em_fit.p[comp] == -1.0) {
+                // Poisson component
+                component_value = poisson_pmf(k, em_fit.r[comp]);
+            } else {
+                // Negative binomial component
+                component_value = nb_pmf(k, em_fit.r[comp], em_fit.p[comp]);
+            }
+            
+            // Scale by weight and total counts
+            component_values[comp][k] = em_fit.weight[comp] * component_value * total_counts;
+        }
+    }
+}
+
+void generate_plotly_html(const char *filename, 
+                         const uint32_t *hist_data, 
+                         int hist_len,
+                         NBSignalCut em_fit, 
+                         uint16_t min_counts,
+                         double posterior_cutoff) {
+    FILE *fp = fopen(filename, "w");
+    if (!fp) {
+        fprintf(stderr, "Error: Cannot create file %s\n", filename);
+        return;
+    }
+
+    // Calculate theoretical fit values
+    double *fit_values = malloc((hist_len + 1) * sizeof(double));
+    if (!fit_values) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        fclose(fp);
+        return;
+    }
+    
+    // Allocate memory for individual components
+    double **component_values = malloc(em_fit.n_comp * sizeof(double*));
+    for (int comp = 0; comp < em_fit.n_comp; comp++) {
+        component_values[comp] = malloc((hist_len + 1) * sizeof(double));
+    }
+    
+    calculate_theoretical_fit(em_fit, hist_len, fit_values);
+    
+    // Find total counts for scaling the theoretical fit
+    long total_counts = 0;
+    for (int i = 0; i < hist_len; i++) {
+        total_counts += hist_data[i];
+    }
+
+    // Calculate individual component values
+    calculate_individual_components(em_fit, hist_len, component_values, total_counts);
+
+    // Write HTML header
+    fprintf(fp, "<!DOCTYPE html>\n");
+    fprintf(fp, "<html>\n");
+    fprintf(fp, "<head>\n");
+    fprintf(fp, "    <title>Cumulative Dedupe Histogram with EM Fit</title>\n");
+    fprintf(fp, "    <script src=\"https://cdn.plot.ly/plotly-latest.min.js\"></script>\n");
+    fprintf(fp, "</head>\n");
+    fprintf(fp, "<body>\n");
+    fprintf(fp, "    <div id=\"plot\" style=\"width:100%%;height:600px;\"></div>\n");
+    fprintf(fp, "    <script>\n");
+
+    // Histogram data
+    fprintf(fp, "        var hist_x = [");
+    for (int i = 0; i < hist_len; i++) {
+        if (i > 0) fprintf(fp, ", ");
+        fprintf(fp, "%d", i);
+    }
+    fprintf(fp, "];\n");
+
+    fprintf(fp, "        var hist_y = [");
+    for (int i = 0; i < hist_len; i++) {
+        if (i > 0) fprintf(fp, ", ");
+        fprintf(fp, "%u", hist_data[i]);
+    }
+    fprintf(fp, "];\n");
+
+    // Theoretical fit data (scaled to match histogram counts)
+    fprintf(fp, "        var fit_x = [");
+    for (int i = 0; i < hist_len; i++) {
+        if (i > 0) fprintf(fp, ", ");
+        fprintf(fp, "%d", i);
+    }
+    fprintf(fp, "];\n");
+
+    fprintf(fp, "        var fit_y = [");
+    for (int i = 0; i < hist_len; i++) {
+        if (i > 0) fprintf(fp, ", ");
+        fprintf(fp, "%.6f", fit_values[i] * total_counts);
+    }
+    fprintf(fp, "];\n");
+
+    // Individual component data
+    const char* component_colors[] = {"blue", "green", "orange", "purple"};
+    const char* component_dash[] = {"dot", "dashdot", "longdash", "longdashdot"};
+    
+    for (int comp = 0; comp < em_fit.n_comp; comp++) {
+        fprintf(fp, "        var comp%d_x = [", comp);
+        for (int i = 0; i < hist_len; i++) {
+            if (i > 0) fprintf(fp, ", ");
+            fprintf(fp, "%d", i);
+        }
+        fprintf(fp, "];\n");
+
+        fprintf(fp, "        var comp%d_y = [", comp);
+        for (int i = 0; i < hist_len; i++) {
+            if (i > 0) fprintf(fp, ", ");
+            fprintf(fp, "%.6f", component_values[comp][i]);
+        }
+        fprintf(fp, "];\n");
+    }
+
+    // Define traces
+    fprintf(fp, "        var histogram_trace = {\n");
+    fprintf(fp, "            x: hist_x,\n");
+    fprintf(fp, "            y: hist_y,\n");
+    fprintf(fp, "            type: 'bar',\n");
+    fprintf(fp, "            name: 'Observed Histogram',\n");
+    fprintf(fp, "            marker: { color: 'rgba(55, 128, 191, 0.7)', line: { color: 'rgba(55, 128, 191, 1.0)', width: 1 } },\n");
+    fprintf(fp, "            opacity: 0.7\n");
+    fprintf(fp, "        };\n");
+
+    fprintf(fp, "        var fit_trace = {\n");
+    fprintf(fp, "            x: fit_x,\n");
+    fprintf(fp, "            y: fit_y,\n");
+    fprintf(fp, "            type: 'scatter',\n");
+    fprintf(fp, "            mode: 'lines',\n");
+    fprintf(fp, "            name: 'Overall EM Fit (%d components)',\n", em_fit.n_comp);
+    fprintf(fp, "            line: { color: 'red', width: 3 }\n");
+    fprintf(fp, "        };\n");
+
+    // Individual component traces
+    for (int comp = 0; comp < em_fit.n_comp; comp++) {
+        const char* dist_type = (em_fit.p[comp] == -1.0) ? "Poisson" : "NB";
+        const char* component_name = "";
+        
+        // Determine component name based on distribution and parameters
+        if (em_fit.p[comp] == -1.0) {
+            component_name = "Background (Poisson)";
+        } else {
+            // For NB components, try to identify based on mean
+            double mean = em_fit.r[comp] * (1.0 - em_fit.p[comp]) / em_fit.p[comp];
+            if (comp == 0 || mean < 10) {
+                component_name = "Signal (NB)";
+            } else {
+                component_name = "Multiplet (NB)";
+            }
+        }
+        
+        fprintf(fp, "        var comp%d_trace = {\n", comp);
+        fprintf(fp, "            x: comp%d_x,\n", comp);
+        fprintf(fp, "            y: comp%d_y,\n", comp);
+        fprintf(fp, "            type: 'scatter',\n");
+        fprintf(fp, "            mode: 'lines',\n");
+        if (em_fit.p[comp] == -1.0) {
+            fprintf(fp, "            name: 'Component %d: %s (λ=%.3f, w=%.3f)',\n", comp + 1, component_name, em_fit.r[comp], em_fit.weight[comp]);
+        } else {
+            fprintf(fp, "            name: 'Component %d: %s (r=%.3f, p=%.3f, w=%.3f)',\n", comp + 1, component_name, em_fit.r[comp], em_fit.p[comp], em_fit.weight[comp]);
+        }
+        fprintf(fp, "            line: { color: '%s', width: 2, dash: '%s' },\n", component_colors[comp % 4], component_dash[comp % 4]);
+        fprintf(fp, "            opacity: 0.8\n");
+        fprintf(fp, "        };\n");
+    }
+
+    // Vertical lines for cutoffs
+    fprintf(fp, "        var min_cutoff_trace = {\n");
+    fprintf(fp, "            x: [%d, %d],\n", em_fit.k_min_signal, em_fit.k_min_signal);
+    fprintf(fp, "            y: [0, Math.max(...hist_y) * 1.1],\n");
+    fprintf(fp, "            type: 'scatter',\n");
+    fprintf(fp, "            mode: 'lines',\n");
+    fprintf(fp, "            name: 'Min Signal Cutoff (%d)',\n", em_fit.k_min_signal);
+    fprintf(fp, "            line: { color: 'darkgreen', width: 2, dash: 'dash' },\n");
+    fprintf(fp, "            showlegend: true\n");
+    fprintf(fp, "        };\n");
+
+    fprintf(fp, "        var max_cutoff_trace = {\n");
+    fprintf(fp, "            x: [%d, %d],\n", em_fit.k_max_signal, em_fit.k_max_signal);
+    fprintf(fp, "            y: [0, Math.max(...hist_y) * 1.1],\n");
+    fprintf(fp, "            type: 'scatter',\n");
+    fprintf(fp, "            mode: 'lines',\n");
+    fprintf(fp, "            name: 'Max Signal Cutoff (%d)',\n", em_fit.k_max_signal);
+    fprintf(fp, "            line: { color: 'darkorange', width: 2, dash: 'dash' },\n");
+    fprintf(fp, "            showlegend: true\n");
+    fprintf(fp, "        };\n");
+
+    // Min counts line
+    fprintf(fp, "        var min_counts_trace = {\n");
+    fprintf(fp, "            x: [%d, %d],\n", min_counts, min_counts);
+    fprintf(fp, "            y: [0, Math.max(...hist_y) * 1.1],\n");
+    fprintf(fp, "            type: 'scatter',\n");
+    fprintf(fp, "            mode: 'lines',\n");
+    fprintf(fp, "            name: 'Min Counts Threshold (%d)',\n", min_counts);
+    fprintf(fp, "            line: { color: 'purple', width: 2, dash: 'dot' },\n");
+    fprintf(fp, "            showlegend: true\n");
+    fprintf(fp, "        };\n");
+
+    // Layout
+    fprintf(fp, "        var layout = {\n");
+    fprintf(fp, "            title: {\n");
+    fprintf(fp, "                text: 'Cumulative Dedupe Histogram with EM Fit and Components<br><sub>BIC: %.2f, Components: %d</sub>',\n", em_fit.bic, em_fit.n_comp);
+    fprintf(fp, "                x: 0.5\n");
+    fprintf(fp, "            },\n");
+    fprintf(fp, "            xaxis: {\n");
+    fprintf(fp, "                title: 'Deduplicated Counts',\n");
+    fprintf(fp, "                type: 'linear'\n");
+    fprintf(fp, "            },\n");
+    fprintf(fp, "            yaxis: {\n");
+    fprintf(fp, "                title: 'Frequency',\n");
+    fprintf(fp, "                type: 'log'\n");
+    fprintf(fp, "            },\n");
+    fprintf(fp, "            showlegend: true,\n");
+    fprintf(fp, "            legend: {\n");
+    fprintf(fp, "                x: 1.02,\n");
+    fprintf(fp, "                y: 1.0,\n");
+    fprintf(fp, "                xanchor: 'left',\n");
+    fprintf(fp, "                yanchor: 'top',\n");
+    fprintf(fp, "                bgcolor: 'rgba(255,255,255,0.8)',\n");
+    fprintf(fp, "                bordercolor: 'black',\n");
+    fprintf(fp, "                borderwidth: 1\n");
+    fprintf(fp, "            },\n");
+    fprintf(fp, "            hovermode: 'x unified',\n");
+    fprintf(fp, "            annotations: [\n");
+    fprintf(fp, "                {\n");
+    fprintf(fp, "                    x: 0.02,\n");
+    fprintf(fp, "                    y: 0.02,\n");
+    fprintf(fp, "                    xref: 'paper',\n");
+    fprintf(fp, "                    yref: 'paper',\n");
+    fprintf(fp, "                    text: 'Posterior Cutoff: %.3f',\n", posterior_cutoff);
+    fprintf(fp, "                    showarrow: false,\n");
+    fprintf(fp, "                    font: { size: 12, color: 'black' },\n");
+    fprintf(fp, "                    bgcolor: 'rgba(255,255,255,0.9)',\n");
+    fprintf(fp, "                    bordercolor: 'black',\n");
+    fprintf(fp, "                    borderwidth: 1\n");
+    fprintf(fp, "                }\n");
+    fprintf(fp, "            ]\n");
+    fprintf(fp, "        };\n");
+
+    // Combine all traces
+    fprintf(fp, "        var data = [histogram_trace, fit_trace");
+    for (int comp = 0; comp < em_fit.n_comp; comp++) {
+        fprintf(fp, ", comp%d_trace", comp);
+    }
+    fprintf(fp, ", min_cutoff_trace, max_cutoff_trace, min_counts_trace];\n");
+    
+    fprintf(fp, "        Plotly.newPlot('plot', data, layout);\n");
+
+    fprintf(fp, "    </script>\n");
+    fprintf(fp, "</body>\n");
+    fprintf(fp, "</html>\n");
+
+    fclose(fp);
+    
+    // Free allocated memory
+    free(fit_values);
+    for (int comp = 0; comp < em_fit.n_comp; comp++) {
+        free(component_values[comp]);
+    }
+    free(component_values);
+    
+    fprintf(stderr, "Cumulative histogram plot with individual components saved to: %s\n", filename);
+}
+
+void plot_cumulative_histogram_with_em(const char *directory, 
+                                       GArray *histogram, 
+                                       NBSignalCut em_fit, 
+                                       uint16_t min_counts,
+                                       double posterior_cutoff) {
+    if (!histogram || histogram->len == 0) {
+        fprintf(stderr, "Warning: Empty histogram provided for plotting\n");
+        return;
+    }
+
+    // Create output filename
+    char filename[FILENAME_LENGTH];
+    sprintf(filename, "%s/cumulative_histogram_with_em_fit.html", directory);
+
+    // Generate the plot
+    generate_plotly_html(filename, (uint32_t*)histogram->data, histogram->len, em_fit, min_counts, posterior_cutoff);
+}

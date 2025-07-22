@@ -14,7 +14,7 @@ CAIRO_LIBS :=
 DEFINES :=
 
 # Source files (basenames only)
-SRCS_BASE=main.c assignBarcodes.c queue.c globals.c utils.c memory.c io.c EMfit.c
+SRCS_BASE=main.c assignBarcodes.c queue.c globals.c utils.c memory.c io.c EMfit.c plot_histogram.c
 SRCS = $(SRCS_BASE)
 
 # Add cairo flags and define if NO_HEATMAP is not set to 1

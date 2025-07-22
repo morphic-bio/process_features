@@ -1,0 +1,26 @@
+#ifndef PLOT_HISTOGRAM_H
+#define PLOT_HISTOGRAM_H
+
+#include "common.h"
+
+// Function to plot cumulative dedupe histogram with EM fit and cutoffs
+void plot_cumulative_histogram_with_em(const char *directory, 
+                                       GArray *histogram, 
+                                       NBSignalCut em_fit, 
+                                       uint16_t min_counts,
+                                       double posterior_cutoff);
+
+// Helper function to generate Plotly HTML file
+void generate_plotly_html(const char *filename, 
+                         const uint32_t *hist_data, 
+                         int hist_len,
+                         NBSignalCut em_fit, 
+                         uint16_t min_counts,
+                         double posterior_cutoff);
+
+// Helper function to calculate theoretical fit values
+void calculate_theoretical_fit(NBSignalCut em_fit, 
+                              int max_count, 
+                              double *fit_values);
+
+#endif // PLOT_HISTOGRAM_H

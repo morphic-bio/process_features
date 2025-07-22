@@ -20,6 +20,7 @@ void initcode2seq();
 void initdiff2hamming(unsigned char *difference);
 void free_feature_arrays(feature_arrays *features);
 void initialize_unit_sizes();
+void plot_cumulative_histogram_with_em(const char *directory, GArray *histogram, NBSignalCut em_fit, uint16_t min_counts, double posterior_cutoff);
 NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double gposterior, int max_iter, double tol, uint16_t min_counts);
 int is_directory(const char *path);
 void read_unmatched_barcodes_features_block(unmatched_barcodes_features_block *entry_block, unmatched_barcodes_features *entry);
