@@ -1945,6 +1945,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
                     // Use the fitted model parameters from cumulative fit
                     // but recalculate cutoffs for this feature's histogram
                     fit = cumulative_fit; // Copy the model parameters
+                    fit.total_counts_in_hist = total_counts_in_hist;
                     
                     // Recalculate signal cutoffs using the cumulative model
                     // but applied to this feature's histogram length

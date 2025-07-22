@@ -75,6 +75,7 @@ typedef struct {
     int     reverted_from_3_to_2;  /* flag for user warning     */
     int     k_min_signal, k_max_signal;
     double  bic;
+    long    total_counts_in_hist;  /* total observations in histogram */
     /* parameters for up to 3 components                       *
      *    weight[k]  – prior π_k                               *
      *    r[k], p[k] – NB parameters                           */

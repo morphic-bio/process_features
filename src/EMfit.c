@@ -298,7 +298,7 @@ fit_nb_model_to_histogram(const uint32_t *hist, int len,
                          int max_iter, double tol)
 {
     /* ---------- 1. decompress hist → vector<int> counts ---------- */
-    int n_cells = 0;
+    long n_cells = 0;
     for(int k=0;k<len;++k) n_cells += hist[k];
     if (n_cells == 0) {
         NBSignalCut out = {0};
@@ -343,6 +343,7 @@ fit_nb_model_to_histogram(const uint32_t *hist, int len,
     }
 
     NBSignalCut out = {0};
+    out.total_counts_in_hist = n_cells;
     out.reverted_from_3_to_2 = reverted;
     out.bic           = best->bic;
     out.n_comp        = best->n_components;
@@ -445,6 +446,12 @@ determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposterior,
                 if (j != bg_idx) num += fit->weight[j]*pk;
             }
         }
+        
+        // If the expected frequency drops below 1, stop extending the signal range.
+        if (fit->total_counts_in_hist > 0 && den * fit->total_counts_in_hist < 1.0) {
+            break;
+        }
+
         double post = den? num/den : 0.0;
         if(post >= gposterior){
             if(first<0) first=k;
