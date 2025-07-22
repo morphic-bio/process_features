@@ -216,6 +216,7 @@ typedef struct sample_args {
     int feature_constant_offset;
     int parallel_by_file;
     double min_posterior;
+    double gposterior;
     int consumer_threads_per_set;
 } sample_args;
 

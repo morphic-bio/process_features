@@ -293,10 +293,10 @@ typedef struct {
  *   For 2/3 components, the first is Poisson (noise), the others are NB.
  * Decide by BIC, then calculate the contiguous range of k whose
  * posterior probability of originating from “signal” components
- * (all but the one with the smallest mean) exceeds `cut_off`.
+ * (all but the one with the smallest mean) exceeds `gposterior`.
  * ----------------------------------------------------------------*/
 NBSignalCut
-em_nb_signal_cut(const uint32_t *hist, int len, double cut_off,
+em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
                  int max_iter, double tol, uint16_t min_counts)
 {
     /* ---------- 1. decompress hist → vector<int> counts ---------- */
@@ -384,7 +384,7 @@ em_nb_signal_cut(const uint32_t *hist, int len, double cut_off,
             }
         }
         double post = den? num/den : 0.0;
-        if(post >= cut_off){
+        if(post >= gposterior){
             if(first<0) first=k;
             last = k;
         }

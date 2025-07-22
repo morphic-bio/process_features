@@ -34,6 +34,7 @@ int main(int argc, char *argv[])
     int feature_constant_offset=0;
     int barcode_constant_offset=0;
     double min_posterior=MIN_POSTERIOR;
+    double gposterior = 0.9;
 
     int max_concurrent_processes=8;
     int consumer_threads_per_set=1;
@@ -73,6 +74,7 @@ int main(int argc, char *argv[])
         {"reverse_fastq_pattern", required_argument, 0, 8},
         {"max_reads", required_argument, 0, 9},
         {"limit_search", required_argument, 0, 10},
+        {"gposterior", required_argument, 0, 11},
         {0, 0, 0, 0}
     };
 
@@ -111,6 +113,7 @@ int main(int argc, char *argv[])
             case 8: strcpy(reverse_pattern, optarg); break;
             case 9: max_reads=atoll(optarg); break;
             case 10: limit_search = atoi(optarg); break;
+            case 11: gposterior = atof(optarg); break;
             default: fprintf(stderr, "Usage: %s [options]\n", argv[0]); return 1;
         }
     }
@@ -187,7 +190,24 @@ int main(int argc, char *argv[])
             // data_structures hashes;
             // initialize_data_structures(&hashes);
             // initialize_statistics(&stats);
-            populate_sample_args(&args,i, sample_directory, &fastq_files, features, maxHammingDistance, search_threads_per_consumer, NULL, NULL, NULL, stringency, min_counts, barcode_constant_offset, feature_constant_offset, read_buffer_lines, average_read_length,min_posterior,consumer_threads_per_set);
+            args.sample_index = i;
+            args.directory = sample_directory;
+            args.fastq_files = &fastq_files;
+            args.features = features;
+            args.maxHammingDistance = maxHammingDistance;
+            args.nThreads = search_threads_per_consumer;
+            args.pools = NULL;
+            args.stats = NULL;
+            args.hashes = NULL;
+            args.stringency = stringency;
+            args.min_counts = min_counts;
+            args.barcode_constant_offset = barcode_constant_offset;
+            args.feature_constant_offset = feature_constant_offset;
+            args.read_buffer_lines = read_buffer_lines;
+            args.average_read_length = average_read_length;
+            args.min_posterior = min_posterior;
+            args.gposterior = gposterior;
+            args.consumer_threads_per_set = consumer_threads_per_set;
             process_files_in_sample(&args);
             // cleanup_sample is handled within process_files_in_sample
             atomic_fetch_add(thread_counter, -threads_per_set);

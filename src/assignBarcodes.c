@@ -1721,7 +1721,7 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
 }
 
 
-void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior){
+void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, double gposterior){
     process_pending_barcodes(hashes, pools, stats,min_posterior);
     double elapsed_time = get_time_in_seconds() - stats->start_time;
     fprintf(stderr, "Finished processing %ld reads in %.2f seconds (%.1f thousand reads/second)\n", stats->number_of_reads, elapsed_time, stats->number_of_reads / (double)elapsed_time / 1000.0);
@@ -1841,7 +1841,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     memset(feature_printed, 0, features->number_of_features * sizeof(int));
 
     // Define constants for the EM fitting
-    const double em_cutoff = 0.95;
+    const double em_cutoff = gposterior;
     const int em_max_iter = 200;
     const double em_tol = 1e-6;
 
@@ -2622,6 +2622,7 @@ void process_files_in_sample(sample_args *args) {
     //allocate buffers here
     //number of lines to read into the buffer
     double  min_posterior=args->min_posterior;
+    double  gposterior=args->gposterior;
     const int sample_index = args->sample_index;
     const int nconsumers = args->consumer_threads_per_set;
     fastq_processor processor_args[nconsumers]; // Array of processor args
@@ -2728,7 +2729,7 @@ void process_files_in_sample(sample_args *args) {
         //[i] = NULL; // Avoid double-free in later cleanup
     }
     // Since merging is not required, finalize using the first thread's data.
-    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior);
+    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior, gposterior);
    
     // Free the reader sets
     for (int i = 0; i < sample_size; ++i)
