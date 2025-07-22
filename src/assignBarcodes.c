@@ -1793,6 +1793,27 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     DEBUG_PRINT( "Number of pending reads that were successfully matched to a barcode %ld\n", stats->pending_recovered);
     
     print_feature_sequences(features, total_feature_counts, directory, hashes);
+    char deduped_hist_filename[FILENAME_LENGTH];
+    sprintf(deduped_hist_filename, "%s/deduped_counts_histograms.txt", directory);
+    FILE *deduped_hist_fp = fopen(deduped_hist_filename, "w");
+    if (deduped_hist_fp == NULL) {
+        perror("Failed to open deduped counts histograms file");
+        exit(EXIT_FAILURE);
+    }
+    fprintf(deduped_hist_fp, "FeatureName\tDedupedCount\tFrequency\n");
+    for (int i = 0; i < features->number_of_features; i++) {
+        GArray *h = feature_hist[i + 1]; // Histograms are 1-indexed
+        if (h && h->len > 0) {
+            for (unsigned int j = 0; j < h->len; j++) {
+                uint32_t frequency = g_array_index(h, uint32_t, j);
+                if (frequency > 0) {
+                    fprintf(deduped_hist_fp, "%s\t%d\t%u\n", features->feature_names[i], j, frequency);
+                }
+            }
+        }
+    }
+    fclose(deduped_hist_fp);
+
     char feature_stats_filename[FILENAME_LENGTH];
     sprintf(feature_stats_filename, "%s/features.txt", directory);
     FILE *feature_statsfp = fopen(feature_stats_filename, "w");
