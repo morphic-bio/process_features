@@ -1739,37 +1739,35 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     //coexpression matrix will store the total counts for each feature (also when there are no others - in the 0 field) in cells with feature i starting with 1
     //for simplicity we also hava a zero line so that all the indices are 1 based
     //store the total counts in the zero line
-    if (features->number_of_features >10000){
-        printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, feature_hist, directory, hashes, stats, stringency, min_counts);
-        return;
-    }
-    coExpressionStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-    if (coExpressionStorage == NULL) {
-        perror("Failed to allocate memory for coexpression matrix");
-        exit(EXIT_FAILURE);
-    }
-    memset(coExpressionStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-    coExpression = malloc((features->number_of_features + 1) * sizeof(int *));
-    if (coExpression == NULL) {
-        perror("Failed to allocate memory for coexpression matrix");
-        exit(EXIT_FAILURE);
-    }
-    for (int i = 0; i < features->number_of_features + 1; i++) {
-        coExpression[i] = coExpressionStorage + i * (features->number_of_features + 1);
-    }
-    histogramsStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-    if (histogramsStorage == NULL) {
-        perror("Failed to allocate memory for coexpression histograms");
-        exit(EXIT_FAILURE);
-    }
-    memset(histogramsStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-    coexpression_histograms = malloc((features->number_of_features + 1) * sizeof(int *));
-    if (coexpression_histograms == NULL) {
-        perror("Failed to allocate memory for coexpression histograms");
-        exit(EXIT_FAILURE);
-    }
-    for (int i = 0; i < features->number_of_features + 1; i++) {
-        coexpression_histograms[i] = histogramsStorage + i * (features->number_of_features + 1);
+    if (features->number_of_features <= 10000){
+        coExpressionStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
+        if (coExpressionStorage == NULL) {
+            perror("Failed to allocate memory for coexpression matrix");
+            exit(EXIT_FAILURE);
+        }
+        memset(coExpressionStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
+        coExpression = malloc((features->number_of_features + 1) * sizeof(int *));
+        if (coExpression == NULL) {
+            perror("Failed to allocate memory for coexpression matrix");
+            exit(EXIT_FAILURE);
+        }
+        for (int i = 0; i < features->number_of_features + 1; i++) {
+            coExpression[i] = coExpressionStorage + i * (features->number_of_features + 1);
+        }
+        histogramsStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
+        if (histogramsStorage == NULL) {
+            perror("Failed to allocate memory for coexpression histograms");
+            exit(EXIT_FAILURE);
+        }
+        memset(histogramsStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
+        coexpression_histograms = malloc((features->number_of_features + 1) * sizeof(int *));
+        if (coexpression_histograms == NULL) {
+            perror("Failed to allocate memory for coexpression histograms");
+            exit(EXIT_FAILURE);
+        }
+        for (int i = 0; i < features->number_of_features + 1; i++) {
+            coexpression_histograms[i] = histogramsStorage + i * (features->number_of_features + 1);
+        }
     }
     //DEBUG_PRINT( "Number of reads matched to a feature %ld\n", valid);
     printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, feature_hist, directory, hashes, stats, stringency, min_counts);
@@ -1810,6 +1808,15 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     }
     fprintf(feature_statsfp, "Feature total_deduped_counts total_barcoded_counts total_feature_counts kmin_signal kmax_signal nComp BIC\n");
 
+    char signal_range_filename[FILENAME_LENGTH];
+    sprintf(signal_range_filename, "%s/signal_range.txt", directory);
+    FILE *signal_range_fp = fopen(signal_range_filename, "w");
+    if (signal_range_fp == NULL) {
+        perror("Failed to open signal range file");
+        exit(EXIT_FAILURE);
+    }
+    fprintf(signal_range_fp, "FeatureName\tMinSignalCount\tMaxSignalCount\n");
+
     char feature_coexpression_filename[FILENAME_LENGTH];
     sprintf(feature_coexpression_filename, "%s/feature_coexpression.txt", directory);
     FILE *feature_coexpression_fp = fopen(feature_coexpression_filename, "w");
@@ -1843,11 +1850,11 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
             GArray *h = feature_hist[i + 1]; // Histograms are 1-indexed
             if (h && h->len > 0) {
                 // Ensure histogram is zero-padded if necessary
-                for(int j=0; j<h->len; ++j) if(!g_array_index(h,uint32_t,j))
+                for(unsigned int j=0; j<h->len; ++j) if(!g_array_index(h,uint32_t,j))
                                                g_array_index(h,uint32_t,j) = 0;
 
                 NBSignalCut fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
-                                                   em_cutoff, em_max_iter, em_tol);
+                                                   em_cutoff, em_max_iter, em_tol, min_counts);
                 fprintf(feature_statsfp, "%s %d %d %d %d %d %d %.2f\n",
                         features->feature_names[i],
                         total_deduped_counts[i],
@@ -1857,6 +1864,8 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
                         fit.k_max_signal,
                         fit.n_comp,
                         fit.bic);
+
+                fprintf(signal_range_fp, "%s\t%d\t%d\n", features->feature_names[i], fit.k_min_signal, fit.k_max_signal);
 
                 fprintf(mixfp, "%s\t%d", features->feature_names[i], fit.n_comp);
                 for (int k=0; k < fit.n_comp; ++k) {
@@ -1872,15 +1881,19 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
                         total_deduped_counts[i],
                         total_barcoded_counts[i],
                         total_feature_counts[i]);
+
+                fprintf(signal_range_fp, "%s\t0\t0\n", features->feature_names[i]);
             }
             feature_printed[i] = 1;
         }
     }
-    for (int i = 0; i <= features->number_of_features; i++) {
-        for (int j = 0; j < features->number_of_features + 1; j++) {
-            fprintf(feature_coexpression_fp, "%d ", coExpression[i][j]);
+    if (coExpression) {
+        for (int i = 0; i <= features->number_of_features; i++) {
+            for (int j = 0; j < features->number_of_features + 1; j++) {
+                fprintf(feature_coexpression_fp, "%d ", coExpression[i][j]);
+            }
+            fprintf(feature_coexpression_fp, "\n");
         }
-        fprintf(feature_coexpression_fp, "\n");
     }
     char feature_histograms_filename[FILENAME_LENGTH];
     sprintf(feature_histograms_filename, "%s/feature_histograms.txt", directory);
@@ -1890,22 +1903,26 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         exit(EXIT_FAILURE);
     }
     //the 0 indices of the histograms to find the rightmost non-zero index
-    for (int i = 1; i < features->number_of_features + 1; i++) {
-        coexpression_histograms[i][0] = 0;
-        for (int j = 1; j < features->number_of_features + 1; j++) {
-            if (coexpression_histograms[i][j] > 0) {
-                coexpression_histograms[i][0] = j;
+    if (coexpression_histograms) {
+        for (int i = 1; i < features->number_of_features + 1; i++) {
+            coexpression_histograms[i][0] = 0;
+            for (int j = 1; j < features->number_of_features + 1; j++) {
+                if (coexpression_histograms[i][j] > 0) {
+                    coexpression_histograms[i][0] = j;
+                }
             }
         }
-    }
-    for (int i = 1; i < features->number_of_features + 1; i++) {
-        for (int j = 1; j < features->number_of_features + 1; j++) {
-            fprintf(feature_histograms_fp, "%d ", coexpression_histograms[i][j]);
+        for (int i = 1; i < features->number_of_features + 1; i++) {
+            for (int j = 1; j < features->number_of_features + 1; j++) {
+                fprintf(feature_histograms_fp, "%d ", coexpression_histograms[i][j]);
+            }
+            fprintf(feature_histograms_fp, "\n");
         }
-        fprintf(feature_histograms_fp, "\n");
     }
     #ifndef NO_HEATMAP
-    generate_heatmap(directory, features, coexpression_histograms);
+    if (coexpression_histograms) {
+        generate_heatmap(directory, features, coexpression_histograms);
+    }
     #endif
 
     // Free the feature histogram arrays
@@ -1921,6 +1938,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     fclose(feature_coexpression_fp);
     fclose(feature_histograms_fp);
     fclose(mixfp);
+    fclose(signal_range_fp);
 }
 
 void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz) {

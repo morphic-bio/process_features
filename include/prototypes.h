@@ -51,7 +51,8 @@ void reverse_complement_in_place(char *seq);
 void reverse_complement_sequence(char *sequence,  char *reverse, int length);
 void reverse_in_place(char *str);
 void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order);
-NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double cut_off, int max_iter, double tol);
+NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double cut_off,
+                 int max_iter, double tol, uint16_t min_counts);
 int string2code(char *string, int sequence_length, unsigned char *code);
 void update_feature_counts_from_code(unsigned char *code, char *umi, uint32_t feature_index, data_structures *hashes, memory_pool_collection *pools);
 void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,data_structures *hashes, memory_pool_collection *pools);

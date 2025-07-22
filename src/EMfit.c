@@ -288,11 +288,17 @@ static inline double nb_mean(const NBParam *p){ return p->r*(1.0-p->p)/p->p; }
  * ----------------------------------------------------------------*/
 NBSignalCut
 em_nb_signal_cut(const uint32_t *hist, int len, double cut_off,
-                 int max_iter, double tol)
+                 int max_iter, double tol, uint16_t min_counts)
 {
     /* ---------- 1. decompress hist → vector<int> counts ---------- */
     int n_cells = 0;
     for(int k=0;k<len;++k) n_cells += hist[k];
+    if (n_cells == 0) {
+        NBSignalCut out = {0};
+        out.n_comp = 1;
+        out.k_min_signal = len;
+        return out;
+    }
     int *vec = malloc(n_cells*sizeof(int));
     int idx = 0;
     for(int k=0;k<len;++k)
@@ -301,62 +307,96 @@ em_nb_signal_cut(const uint32_t *hist, int len, double cut_off,
     int **cnt = malloc(n_cells*sizeof(int*));
     for(int i=0;i<n_cells;++i) cnt[i] = &vec[i];
 
-    /* ---------- 2. fit 2- and 3-component models ----------------- */
+    /* ---------- 2. fit 1, 2, and 3-component models ----------------- */
+    MixtureEM *em1 = fit_model(cnt,n_cells,1,1,&NB_OPS ,max_iter,tol);
     MixtureEM *em2 = fit_model(cnt,n_cells,1,2,&NB_OPS ,max_iter,tol);
     MixtureEM *em3 = fit_model(cnt,n_cells,1,3,&NB_OPS ,max_iter,tol);
 
-    MixtureEM *best = (em3->bic < em2->bic) ? em3 : em2;
-
-    /* ---------- 3. identify background (lowest mean) ------------- */
-    int K = best->n_components;
-    double means[3];
-    for(int k=0;k<K;++k)
-        means[k] = nb_mean((NBParam*)PARAM(best,k,0));
-
-    int bg = 0;
-    for(int k=1;k<K;++k)
-        if(means[k] < means[bg]) bg = k;
-
-    /* ---------- 4. posterior P(signal|k) on the grid ------------- */
-    double pri[3]; for(int k=0;k<K;++k) pri[k] = best->priors[k][0];
-
-    double r[3], p[3];
-    for(int k=0;k<K;++k){
-        NBParam *pp = (NBParam*)PARAM(best,k,0);
-        r[k]=pp->r; p[k]=pp->p;
-    }
-
-    int first=-1,last=-1;
-    for(int k=0;k<len;++k){
-        double num = 0, den = 0;
-        for(int j=0;j<K;++j){
-            double lp = lgamma(k + r[j]) - lgamma(k+1) - lgamma(r[j])
-                      + r[j]*log(p[j]) + k*log(1.0-p[j]);
-            double pk = exp(lp);
-            den += pri[j]*pk;
-            if(j!=bg) num += pri[j]*pk;       /* signal = all but bg */
-        }
-        double post = den? num/den : 0.0;
-        if(post >= cut_off){
-            if(first<0) first=k;
-            last = k;
-        }
-    }
+    MixtureEM *best = em1;
+    if (em2->bic < best->bic) best = em2;
+    if (em3->bic < best->bic) best = em3;
 
     NBSignalCut out = {0};
-    out.n_comp        = K;
-    out.k_min_signal  = first<0 ? len : first;
-    out.k_max_signal  = last;
     out.bic           = best->bic;
-    for(int k=0;k<K;++k){
-        out.weight[k] = pri[k];
-        out.r[k]      = r[k];
-        out.p[k]      = p[k];
+    out.n_comp        = best->n_components;
+    for(int k=0;k<out.n_comp;++k){
+        NBParam *pp = (NBParam*)PARAM(best,k,0);
+        out.weight[k] = best->priors[k][0];
+        out.r[k]      = pp->r;
+        out.p[k]      = pp->p;
+    }
+
+    if (best->n_components == 1) {
+        // For a single component, signal is anything above user-defined min_counts.
+        out.k_min_signal = min_counts;
+        out.k_max_signal = (len > 0) ? (len - 1) : 0;
+    } else {
+        /* ---------- 3. identify noise, signal, and multiplet components ------------- */
+        int K = best->n_components;
+        double means[3] = {0,0,0};
+        for(int k=0;k<K;++k)
+            means[k] = nb_mean((NBParam*)PARAM(best,k,0));
+
+        int bg_idx = 0;
+        int multiplet_idx = -1; // Only used for K=3
+
+        if (K == 3) {
+            // In a 3-component model, identify background (lowest mean)
+            // and multiplet (highest mean). The middle is signal.
+            int max_idx = 0;
+            for (int k = 1; k < K; k++) {
+                if (means[k] < means[bg_idx]) bg_idx = k;
+                if (means[k] > means[max_idx]) max_idx = k;
+            }
+            multiplet_idx = max_idx;
+        } else { // K == 2
+            // In a 2-component model, the one with the lower mean is background.
+            for(int k=1;k<K;++k)
+                if(means[k] < means[bg_idx]) bg_idx = k;
+        }
+
+        /* ---------- 4. posterior P(signal|k) on the grid ------------- */
+        double pri[3]; for(int k=0;k<K;++k) pri[k] = best->priors[k][0];
+
+        double r[3], p[3];
+        for(int k=0;k<K;++k){
+            NBParam *pp = (NBParam*)PARAM(best,k,0);
+            r[k]=pp->r; p[k]=pp->p;
+        }
+
+        int first=-1,last=-1;
+        for(int k=0;k<len;++k){
+            double num = 0, den = 0;
+            for(int j=0;j<K;++j){
+                double lp = lgamma(k + r[j]) - lgamma(k+1) - lgamma(r[j])
+                          + r[j]*log(p[j]) + k*log(1.0 - p[j]);
+                double pk = exp(lp);
+                den += pri[j]*pk;
+                if (K == 3) {
+                    // Signal is the middle component (not background and not multiplet)
+                    if (j != bg_idx && j != multiplet_idx) num += pri[j]*pk;
+                } else { // K == 2
+                    // Signal is the non-background component
+                    if (j != bg_idx) num += pri[j]*pk;
+                }
+            }
+            double post = den? num/den : 0.0;
+            if(post >= cut_off){
+                if(first<0) first=k;
+                last = k;
+            }
+        }
+
+        out.k_min_signal  = first<0 ? len : first;
+        out.k_max_signal  = last;
     }
 
     /* ---------- 5. cleanup & return ------------------------------ */
-    free_em(em2); free_em(em3);
-    free(cnt); free(vec);
+    free_em(em1);
+    free_em(em2);
+    free_em(em3);
+    free(cnt);
+    free(vec);
     return out;
 }
 
