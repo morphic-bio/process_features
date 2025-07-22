@@ -3,456 +3,394 @@
 #include <math.h>
 #include <float.h>
 #include <string.h>
+#include <stdint.h>
 
-// Forward declarations
-typedef struct NBParams NBParams;
-typedef struct MixtureEM MixtureEM;
 
-// Negative Binomial parameters
-struct NBParams {
-    double r;  // dispersion
-    double p;  // success probability
-    double mean;  // cached mean = r(1-p)/p
-};
+typedef enum { DIST_NB, DIST_POISSON, DIST_GAUSSIAN } DistType;
 
-// Complete mixture EM structure
-struct MixtureEM {
-    // Data
-    int n_cells;
-    int n_guides;
-    int** counts;  // [cell][guide]
+typedef double (*logf_fn)(const void *param, double x);
+typedef void   (*mstep_fn)(void *param,
+                           double sw, double swx, double swx2); /* ∑w, ∑wx, ∑wx² */
+typedef void   (*init_fn)(void *param, double rough_mean);       /* quick seed   */
 
-    // Model parameters
-    int n_components;
-    NBParams** params;      // [component][guide]
-    double** priors;        // [component][guide] mixing proportions
+typedef struct {
+    size_t      param_size;    /* sizeof(param-struct)              */
+    int         n_params;      /* free parameters (AIC/BIC)         */
+    logf_fn     logf;          /* log-density / log-pmf             */
+    mstep_fn    mstep;         /* M-step updater                    */
+    init_fn     init;          /* small helper for seeding          */
+    const char *name;
+} DistOps;
+// ---------------------------------------------------------------------
 
-    // Working arrays
-    double*** posteriors;   // [cell][guide][component]
-    double log_likelihood;
 
-    // Model selection
-    double bic;
-    double aic;
-    int converged;
-};
-
-// Calculate mean from NB parameters
-double nb_mean(const NBParams* params) {
-    return params->r * (1.0 - params->p) / params->p;
+// -------------------------  NB SPECIFIC  -----------------------------
+typedef struct { double r, p; } NBParam;
+static double nb_logf(const void *v, double x)
+{
+    const NBParam *p = v;
+    if (x < 0 || p->r <= 0.0 || p->p <= 0.0 || p->p >= 1.0) return -DBL_MAX;
+    return lgamma(x + p->r) - lgamma(x + 1) - lgamma(p->r)
+         + p->r*log(p->p) + x*log(1.0 - p->p);
 }
-
-// Update cached mean
-void nb_update_mean(NBParams* params) {
-    params->mean = nb_mean(params);
-}
-
-// Robust negative binomial log PMF
-double nb_logpmf(int k, const NBParams* params) {
-    if (k < 0 || params->r <= 0 || params->p <= 0 || params->p >= 1) {
-        return -DBL_MAX;
+static void nb_mstep(void *v,double sw,double swx,double swx2)
+{
+    NBParam *p = v;
+    double mean = swx / sw;
+    double var  = swx2/sw - mean*mean;
+    if (var > mean) {
+        p->p = mean/var;
+        p->r = mean*mean/(var-mean);
+        if (p->p < .01) p->p = .01;
+        if (p->p > .99) p->p = .99;
+        if (p->r < .1)  p->r = .1;
     }
-
-    return lgamma(k + params->r) - lgamma(k + 1) - lgamma(params->r) +
-           params->r * log(params->p) + k * log(1 - params->p);
 }
+static void nb_init(void *v,double m){ NBParam *p=v; p->p=.5; p->r=m; }
+static const DistOps NB_OPS = { sizeof(NBParam), 2, nb_logf, nb_mstep,
+                                nb_init, "Negative Binomial" };
 
-// Initialize parameters using k-means style approach
-void initialize_parameters(MixtureEM* em) {
-    // For each guide, find min/max/median counts
-    for (int g = 0; g < em->n_guides; g++) {
-        double* guide_counts = (double*)malloc(em->n_cells * sizeof(double));
-        int n_nonzero = 0;
 
-        // Collect non-zero counts
-        for (int c = 0; c < em->n_cells; c++) {
-            if (em->counts[c][g] > 0) {
-                guide_counts[n_nonzero++] = (double)em->counts[c][g];
-            }
+// -------------------------  POISSON  ---------------------------------
+typedef struct { double lambda; } PoisParam;
+static double pois_logf(const void *v,double x)
+{
+    const PoisParam *p = v;
+    if (x < 0 || p->lambda <= 0) return -DBL_MAX;
+    return x*log(p->lambda) - p->lambda - lgamma(x+1);
+}
+static void pois_mstep(void *v,double sw,double swx,double swx2)
+{ ((PoisParam*)v)->lambda = swx / sw; }
+static void pois_init(void *v,double m){ ((PoisParam*)v)->lambda = m > 0 ? m : .1; }
+static const DistOps POIS_OPS = { sizeof(PoisParam), 1,
+                                  pois_logf, pois_mstep, pois_init,
+                                  "Poisson" };
+
+
+// -------------------------  GAUSSIAN  --------------------------------
+typedef struct { double mu, var; } GauParam;
+static double gau_logf(const void *v,double x)
+{
+    const GauParam *p=v;
+    if (p->var <= 0) return -DBL_MAX;
+    return -0.5*(log(2*M_PI*p->var) + (x-p->mu)*(x-p->mu)/p->var);
+}
+static void gau_mstep(void *v,double sw,double swx,double swx2)
+{
+    GauParam *p=v;
+    p->mu  = swx / sw;
+    p->var = swx2/sw - p->mu*p->mu;
+    if (p->var < 1e-6) p->var = 1e-6;
+}
+static void gau_init(void *v,double m){ GauParam *p=v; p->mu=m; p->var=m ? m : 1; }
+static const DistOps GAU_OPS  = { sizeof(GauParam), 2,
+                                  gau_logf, gau_mstep, gau_init,
+                                  "Gaussian" };
+
+// ----------------------  Generic mixture  ----------------------------
+typedef struct {
+    /* data */
+    int           n_cells, n_guides;
+    int         **counts;             /* [cell][guide] */
+
+    /* configuration */
+    int           n_components;
+    const DistOps *ops;               /* chosen distribution */
+
+    /* parameters – flat blob ---------------------------------------- */
+    void         *params_blob;        /* size = n_comp*n_guides*param_size */
+
+    double      **priors;             /* [comp][guide] */
+
+    /* working space */
+    double     ***post;               /* [cell][guide][comp] */
+    double        logL;
+    int            converged;
+    double         bic, aic;
+} MixtureEM;
+
+/* helper to access (component,guide) parameter */
+#define PARAM(em,k,g) ((void*) ((char*)(em)->params_blob + \
+                       ((k)*(em)->n_guides + (g))*(em)->ops->param_size))
+
+/* ------------  Quick initialisation (moment-based)  --------------- */
+static void seed_params(MixtureEM *em)
+{
+    for(int g=0; g<em->n_guides; ++g){
+        /* crude guide-level mean for initialisation */
+        double mean=0.0;
+        int    nz  =0;
+        for(int c=0;c<em->n_cells;++c){
+            mean += em->counts[c][g];
+            if(em->counts[c][g]) nz++;
         }
+        mean = nz ? mean/nz : 0.1;
 
-        if (n_nonzero == 0) {
-            // Handle guides with all zeros
-            for (int k = 0; k < em->n_components; k++) {
-                em->params[k][g].r = 0.1;
-                em->params[k][g].p = 0.99;
-                nb_update_mean(&em->params[k][g]);
-                em->priors[k][g] = 1.0 / em->n_components;
-            }
-            free(guide_counts);
-            continue;
+        for(int k=0;k<em->n_components;++k){
+            em->ops->init(PARAM(em,k,g), mean * (k+1)); /* stagger means */
+            em->priors[k][g] = 1.0/em->n_components;
         }
-
-        // Sort counts
-        for (int i = 0; i < n_nonzero - 1; i++) {
-            for (int j = i + 1; j < n_nonzero; j++) {
-                if (guide_counts[i] > guide_counts[j]) {
-                    double temp = guide_counts[i];
-                    guide_counts[i] = guide_counts[j];
-                    guide_counts[j] = temp;
-                }
-            }
-        }
-
-        // Calculate quantiles for initialization
-        double q25 = guide_counts[n_nonzero / 4];
-        double q50 = guide_counts[n_nonzero / 2];
-        double q75 = guide_counts[3 * n_nonzero / 4];
-
-        if (em->n_components == 2) {
-            // Component 0: Ambient (lower counts)
-            double mean0 = q25;
-            em->params[0][g].p = 0.8;
-            em->params[0][g].r = mean0 * em->params[0][g].p / (1 - em->params[0][g].p);
-            nb_update_mean(&em->params[0][g]);
-
-            // Component 1: True signal (higher counts)
-            double mean1 = q75;
-            em->params[1][g].p = 0.3;
-            em->params[1][g].r = mean1 * em->params[1][g].p / (1 - em->params[1][g].p);
-            nb_update_mean(&em->params[1][g]);
-
-            // Initial mixing proportions
-            em->priors[0][g] = 0.7;
-            em->priors[1][g] = 0.3;
-        } else if (em->n_components == 3) {
-            // Component 0: Ambient
-            double mean0 = q25;
-            em->params[0][g].p = 0.8;
-            em->params[0][g].r = mean0 * em->params[0][g].p / (1 - em->params[0][g].p);
-            nb_update_mean(&em->params[0][g]);
-
-            // Component 1: Singlet
-            double mean1 = q50;
-            em->params[1][g].p = 0.4;
-            em->params[1][g].r = mean1 * em->params[1][g].p / (1 - em->params[1][g].p);
-            nb_update_mean(&em->params[1][g]);
-
-            // Component 2: Doublet (approximately 2x singlet)
-            double mean2 = q75;
-            em->params[2][g].p = 0.3;
-            em->params[2][g].r = mean2 * em->params[2][g].p / (1 - em->params[2][g].p);
-            nb_update_mean(&em->params[2][g]);
-
-            // Initial mixing proportions
-            em->priors[0][g] = 0.6;
-            em->priors[1][g] = 0.35;
-            em->priors[2][g] = 0.05;
-        }
-
-        free(guide_counts);
     }
 }
 
-// E-step: compute posteriors
-void em_e_step(MixtureEM* em) {
-    em->log_likelihood = 0.0;
+/* ------------  E-step (distribution-agnostic)  -------------------- */
+static void e_step(MixtureEM *em)
+{
+    const int K = em->n_components;
+    em->logL = 0.0;
 
-    for (int i = 0; i < em->n_cells; i++) {
-        for (int j = 0; j < em->n_guides; j++) {
-            double log_probs[em->n_components];
-            double max_log_prob = -DBL_MAX;
+    for(int i=0;i<em->n_cells;++i){
+        for(int g=0;g<em->n_guides;++g){
+            double max_lp = -DBL_MAX;
+            double lp[K];
 
-            // Compute log probabilities for each component
-            for (int k = 0; k < em->n_components; k++) {
-                log_probs[k] = nb_logpmf(em->counts[i][j], &em->params[k][j]) +
-                              log(em->priors[k][j]);
-                if (log_probs[k] > max_log_prob) {
-                    max_log_prob = log_probs[k];
-                }
+            for(int k=0;k<K;++k){
+                lp[k] = em->ops->logf(PARAM(em,k,g), em->counts[i][g])
+                      + log(em->priors[k][g]);
+                if(lp[k] > max_lp) max_lp = lp[k];
             }
-
-            // Compute posteriors using log-sum-exp trick
             double sum_exp = 0.0;
-            for (int k = 0; k < em->n_components; k++) {
-                sum_exp += exp(log_probs[k] - max_log_prob);
-            }
-            double log_sum = max_log_prob + log(sum_exp);
+            for(int k=0;k<K;++k){ sum_exp += exp(lp[k]-max_lp); }
+            double log_sum = max_lp + log(sum_exp);
+            em->logL += log_sum;
 
-            // Store posteriors
-            for (int k = 0; k < em->n_components; k++) {
-                em->posteriors[i][j][k] = exp(log_probs[k] - log_sum);
-            }
-
-            em->log_likelihood += log_sum;
+            for(int k=0;k<K;++k)
+                em->post[i][g][k] = exp(lp[k]-log_sum);
         }
     }
 }
 
-// M-step: update parameters
-void em_m_step(MixtureEM* em) {
-    // For each guide and component
-    for (int g = 0; g < em->n_guides; g++) {
-        for (int k = 0; k < em->n_components; k++) {
-            double sum_posterior = 0.0;
-            double weighted_sum = 0.0;
-            double weighted_sum_sq = 0.0;
+/* ------------  M-step (delegates to plug-in)  ---------------------- */
+static void m_step(MixtureEM *em)
+{
+    const int K = em->n_components;
 
-            // Calculate sufficient statistics
-            for (int c = 0; c < em->n_cells; c++) {
-                double w = em->posteriors[c][g][k];
-                double x = (double)em->counts[c][g];
-
-                sum_posterior += w;
-                weighted_sum += w * x;
-                weighted_sum_sq += w * x * x;
+    for(int g=0; g<em->n_guides; ++g){
+        for(int k=0;k<K;++k){
+            double sw=0, swx=0, swx2=0;
+            for(int c=0;c<em->n_cells;++c){
+                double w  = em->post[c][g][k];
+                double x  = em->counts[c][g];
+                sw   += w;
+                swx  += w*x;
+                swx2 += w*x*x;
             }
-
-            // Update mixing proportion
-            em->priors[k][g] = sum_posterior / em->n_cells;
-
-            // Update NB parameters using method of moments
-            if (sum_posterior > 1e-10) {
-                double mean = weighted_sum / sum_posterior;
-                double var = (weighted_sum_sq / sum_posterior) - mean * mean;
-
-                // Ensure variance > mean for NB
-                if (var > mean + 1e-10) {
-                    em->params[k][g].p = mean / var;
-                    em->params[k][g].r = mean * mean / (var - mean);
-
-                    // Bounds checking
-                    if (em->params[k][g].p <= 0) em->params[k][g].p = 0.01;
-                    if (em->params[k][g].p >= 1) em->params[k][g].p = 0.99;
-                    if (em->params[k][g].r <= 0) em->params[k][g].r = 0.1;
-                    if (em->params[k][g].r > 1000) em->params[k][g].r = 1000;
-                } else {
-                    // Handle underdispersion (approximate with high r)
-                    em->params[k][g].p = 0.5;
-                    em->params[k][g].r = mean * 2;
-                }
-
-                nb_update_mean(&em->params[k][g]);
-            }
+            em->priors[k][g] = sw / em->n_cells;
+            if(sw>1e-12) em->ops->mstep(PARAM(em,k,g), sw, swx, swx2);
         }
     }
 }
 
-// Calculate BIC and AIC for model selection
-void calculate_model_criteria(MixtureEM* em) {
-    // Number of parameters per guide: 
-    // - (r, p) for each component
-    // - (k-1) mixing proportions
-    int params_per_guide = em->n_components * 2 + (em->n_components - 1);
-    int total_params = params_per_guide * em->n_guides;
-    int n_observations = em->n_cells * em->n_guides;
+/* ------------  Model criteria  ------------------------------------ */
+static void compute_ic(MixtureEM *em)
+{
+    int p_per_guide = em->n_components * em->ops->n_params
+                    + (em->n_components-1);          /* priors */
+    int total_p     = p_per_guide * em->n_guides;
+    int N           = em->n_cells * em->n_guides;
 
-    em->aic = -2 * em->log_likelihood + 2 * total_params;
-    em->bic = -2 * em->log_likelihood + total_params * log(n_observations);
+    em->aic = -2*em->logL + 2*total_p;
+    em->bic = -2*em->logL + total_p*log(N);
 }
 
-// Run EM algorithm
-void run_em(MixtureEM* em, int max_iter, double tol) {
-    double prev_ll = -DBL_MAX;
+/* ------------  Driver  -------------------------------------------- */
+static void run_em(MixtureEM *em,int max_iter,double tol)
+{
+    double prev = -DBL_MAX;
     em->converged = 0;
-
-    initialize_parameters(em);
-
-    for (int iter = 0; iter < max_iter; iter++) {
-        // E-step
-        em_e_step(em);
-
-        // Check convergence
-        double ll_change = fabs(em->log_likelihood - prev_ll);
-        if (ll_change < tol) {
-            em->converged = 1;
-            printf("Converged after %d iterations (LL change: %.6f)\n", 
-                   iter + 1, ll_change);
-            break;
-        }
-
-        // M-step
-        em_m_step(em);
-
-        prev_ll = em->log_likelihood;
-
-        if ((iter + 1) % 10 == 0) {
-            printf("Iteration %d: LL = %.2f\n", iter + 1, em->log_likelihood);
-        }
+    seed_params(em);
+    for(int it=0; it<max_iter; ++it){
+        e_step(em);
+        if(fabs(em->logL - prev) < tol){ em->converged=1; break; }
+        m_step(em);
+        prev = em->logL;
     }
-
-    calculate_model_criteria(em);
+    compute_ic(em);
 }
 
-// Create EM structure
-MixtureEM* create_mixture_em(int n_cells, int n_guides, int n_components) {
-    MixtureEM* em = (MixtureEM*)calloc(1, sizeof(MixtureEM));
+/* ------------  Construction / Destruction  ------------------------ */
+static MixtureEM* create_em(int cells,int guides,int comp,
+                            const DistOps *ops)
+{
+    MixtureEM *em = calloc(1,sizeof(*em));
+    em->n_cells=cells; em->n_guides=guides; em->n_components=comp; em->ops=ops;
 
-    em->n_cells = n_cells;
-    em->n_guides = n_guides;
-    em->n_components = n_components;
+    /* parameter blob */
+    em->params_blob = calloc(comp*guides, ops->param_size);
 
-    // Allocate parameters
-    em->params = (NBParams**)calloc(n_components, sizeof(NBParams*));
-    em->priors = (double**)calloc(n_components, sizeof(double*));
-
-    for (int k = 0; k < n_components; k++) {
-        em->params[k] = (NBParams*)calloc(n_guides, sizeof(NBParams));
-        em->priors[k] = (double*)calloc(n_guides, sizeof(double));
+    /* priors */
+    em->priors = malloc(comp*sizeof(double*));
+    for(int k=0;k<comp;++k){
+        em->priors[k] = calloc(guides, sizeof(double));
     }
 
-    // Allocate posteriors
-    em->posteriors = (double***)calloc(n_cells, sizeof(double**));
-    for (int i = 0; i < n_cells; i++) {
-        em->posteriors[i] = (double**)calloc(n_guides, sizeof(double*));
-        for (int j = 0; j < n_guides; j++) {
-            em->posteriors[i][j] = (double*)calloc(n_components, sizeof(double));
-        }
+    /* posterior cube */
+    em->post = malloc(cells*sizeof(double**));
+    for(int i=0;i<cells;++i){
+        em->post[i] = malloc(guides*sizeof(double*));
+        for(int g=0;g<guides;++g)
+            em->post[i][g] = calloc(comp,sizeof(double));
     }
 
     return em;
 }
 
-// Model selection: fit both 2 and 3 component models and choose best
-MixtureEM* fit_best_model(int** counts, int n_cells, int n_guides,
-                         int max_iter, double tol) {
-    printf("Fitting 2-component model...\n");
-    MixtureEM* em2 = create_mixture_em(n_cells, n_guides, 2);
-    em2->counts = counts;
-    run_em(em2, max_iter, tol);
-
-    printf("\nFitting 3-component model...\n");
-    MixtureEM* em3 = create_mixture_em(n_cells, n_guides, 3);
-    em3->counts = counts;
-    run_em(em3, max_iter, tol);
-
-    printf("\nModel Selection:\n");
-    printf("2-component: LL=%.2f, AIC=%.2f, BIC=%.2f\n", 
-           em2->log_likelihood, em2->aic, em2->bic);
-    printf("3-component: LL=%.2f, AIC=%.2f, BIC=%.2f\n", 
-           em3->log_likelihood, em3->aic, em3->bic);
-
-    // Choose model with lower BIC
-    if (em2->bic < em3->bic) {
-        printf("Selected: 2-component model (lower BIC)\n");
-        // Free em3
-        free_mixture_em(em3);
-        return em2;
-    } else {
-        printf("Selected: 3-component model (lower BIC)\n");
-        // Free em2
-        free_mixture_em(em2);
-        return em3;
-    }
-}
-
-// Get guide assignments for a cell
-void classify_cell_guides(MixtureEM* em, int cell_idx, double threshold) {
-    printf("\nCell %d guide assignments:\n", cell_idx);
-
-    for (int g = 0; g < em->n_guides; g++) {
-        // Find component with highest posterior
-        int best_comp = 0;
-        double max_post = 0.0;
-
-        for (int k = 0; k < em->n_components; k++) {
-            if (em->posteriors[cell_idx][g][k] > max_post) {
-                max_post = em->posteriors[cell_idx][g][k];
-                best_comp = k;
-            }
-        }
-
-        // Only report if count > 0 and posterior > threshold
-        if (em->counts[cell_idx][g] > 0 && max_post > threshold) {
-            const char* comp_names[] = {"Ambient", "Signal/Singlet", "Doublet"};
-            printf("  Guide %d: count=%d, assigned to %s (posterior=%.3f)\n",
-                   g, em->counts[cell_idx][g], 
-                   comp_names[best_comp], max_post);
-        }
-    }
-}
-
-// Summary statistics
-void print_em_summary(MixtureEM* em) {
-    printf("\nFitted Model Summary:\n");
-    printf("Components: %d\n", em->n_components);
-    printf("Log-likelihood: %.2f\n", em->log_likelihood);
-    printf("BIC: %.2f\n", em->bic);
-    printf("AIC: %.2f\n\n", em->aic);
-
-    // Average parameters across guides
+static void free_em(MixtureEM* em) {
+    free(em->params_blob);
     for (int k = 0; k < em->n_components; k++) {
-        double avg_mean = 0.0;
-        double avg_disp = 0.0;
-        double avg_prior = 0.0;
-
-        for (int g = 0; g < em->n_guides; g++) {
-            avg_mean += em->params[k][g].mean;
-            avg_disp += em->params[k][g].r;
-            avg_prior += em->priors[k][g];
-        }
-
-        avg_mean /= em->n_guides;
-        avg_disp /= em->n_guides;
-        avg_prior /= em->n_guides;
-
-        printf("Component %d:\n", k);
-        printf("  Average mean: %.2f\n", avg_mean);
-        printf("  Average dispersion: %.2f\n", avg_disp);
-        printf("  Average prior: %.3f\n", avg_prior);
-    }
-}
-
-// Free memory
-void free_mixture_em(MixtureEM* em) {
-    for (int k = 0; k < em->n_components; k++) {
-        free(em->params[k]);
         free(em->priors[k]);
     }
-    free(em->params);
     free(em->priors);
-
     for (int i = 0; i < em->n_cells; i++) {
         for (int j = 0; j < em->n_guides; j++) {
-            free(em->posteriors[i][j]);
+            free(em->post[i][j]);
         }
-        free(em->posteriors[i]);
+        free(em->post[i]);
     }
-    free(em->posteriors);
-
+    free(em->post);
     free(em);
 }
 
-// Example usage
-int main() {
-    int n_cells = 1000;
-    int n_guides = 20;
+/* -----------------  Public helper to fit a model  ----------------- */
+MixtureEM* fit_model(int **counts,int cells,int guides,
+                            int components,const DistOps *ops,
+                            int max_iter,double tol)
+{
+    MixtureEM *em = create_em(cells,guides,components,ops);
+    em->counts = counts;
+    run_em(em,max_iter,tol);
+    return em;
+}
 
-    // Allocate and populate count matrix (example with simulated data)
-    int** counts = (int**)calloc(n_cells, sizeof(int*));
-    for (int i = 0; i < n_cells; i++) {
-        counts[i] = (int*)calloc(n_guides, sizeof(int));
 
-        // Simulate some data
-        for (int j = 0; j < n_guides; j++) {
-            double r = (double)rand() / RAND_MAX;
-            if (r < 0.7) {
-                counts[i][j] = rand() % 3;  // Ambient
-            } else if (r < 0.95) {
-                counts[i][j] = 5 + rand() % 20;  // Signal
-            } else {
-                counts[i][j] = 20 + rand() % 40;  // Doublet
-            }
+// -----------------------------------------------------
+// PUBLIC HELPER – fit 2-vs-3 NB mixture on a *histogram*
+// -----------------------------------------------------
+typedef struct {
+    int     n_comp;                /* chosen K (2 or 3)         */
+    int     k_min_signal, k_max_signal;
+    double  bic;
+    /* parameters for up to 3 components                       *
+     *    weight[k]  – prior π_k                               *
+     *    r[k], p[k] – NB parameters                           */
+    double  weight[3], r[3], p[3];
+} NBSignalCut;
+
+/* Convenience: NB mean given our (r,p) parametrisation             */
+static inline double nb_mean(const NBParam *p){ return p->r*(1.0-p->p)/p->p; }
+
+/* -----------------------------------------------------------------
+ * Fit 2- and 3-component NB mixtures to a histogram of counts
+ *   hist[k] = frequency of observing exactly k reads
+ * Decide by BIC, then calculate the contiguous range of k whose
+ * posterior probability of originating from “signal” components
+ * (all but the one with the smallest mean) exceeds `cut_off`.
+ * ----------------------------------------------------------------*/
+NBSignalCut
+em_nb_signal_cut(const uint32_t *hist, int len, double cut_off,
+                 int max_iter, double tol)
+{
+    /* ---------- 1. decompress hist → vector<int> counts ---------- */
+    int n_cells = 0;
+    for(int k=0;k<len;++k) n_cells += hist[k];
+    int *vec = malloc(n_cells*sizeof(int));
+    int idx = 0;
+    for(int k=0;k<len;++k)
+        for(uint32_t f=0;f<hist[k];++f) vec[idx++] = k;
+
+    int **cnt = malloc(n_cells*sizeof(int*));
+    for(int i=0;i<n_cells;++i) cnt[i] = &vec[i];
+
+    /* ---------- 2. fit 2- and 3-component models ----------------- */
+    MixtureEM *em2 = fit_model(cnt,n_cells,1,2,&NB_OPS ,max_iter,tol);
+    MixtureEM *em3 = fit_model(cnt,n_cells,1,3,&NB_OPS ,max_iter,tol);
+
+    MixtureEM *best = (em3->bic < em2->bic) ? em3 : em2;
+
+    /* ---------- 3. identify background (lowest mean) ------------- */
+    int K = best->n_components;
+    double means[3];
+    for(int k=0;k<K;++k)
+        means[k] = nb_mean((NBParam*)PARAM(best,k,0));
+
+    int bg = 0;
+    for(int k=1;k<K;++k)
+        if(means[k] < means[bg]) bg = k;
+
+    /* ---------- 4. posterior P(signal|k) on the grid ------------- */
+    double pri[3]; for(int k=0;k<K;++k) pri[k] = best->priors[k][0];
+
+    double r[3], p[3];
+    for(int k=0;k<K;++k){
+        NBParam *pp = (NBParam*)PARAM(best,k,0);
+        r[k]=pp->r; p[k]=pp->p;
+    }
+
+    int first=-1,last=-1;
+    for(int k=0;k<len;++k){
+        double num = 0, den = 0;
+        for(int j=0;j<K;++j){
+            double lp = lgamma(k + r[j]) - lgamma(k+1) - lgamma(r[j])
+                      + r[j]*log(p[j]) + k*log(1.0-p[j]);
+            double pk = exp(lp);
+            den += pri[j]*pk;
+            if(j!=bg) num += pri[j]*pk;       /* signal = all but bg */
+        }
+        double post = den? num/den : 0.0;
+        if(post >= cut_off){
+            if(first<0) first=k;
+            last = k;
         }
     }
 
-    // Fit best model
-    MixtureEM* best_model = fit_best_model(counts, n_cells, n_guides, 100, 1e-6);
-
-    // Print summary
-    print_em_summary(best_model);
-
-    // Classify some cells
-    for (int i = 0; i < 5; i++) {
-        classify_cell_guides(best_model, i, 0.5);
+    NBSignalCut out = {0};
+    out.n_comp        = K;
+    out.k_min_signal  = first<0 ? len : first;
+    out.k_max_signal  = last;
+    out.bic           = best->bic;
+    for(int k=0;k<K;++k){
+        out.weight[k] = pri[k];
+        out.r[k]      = r[k];
+        out.p[k]      = p[k];
     }
 
-    // Cleanup
-    free_mixture_em(best_model);
-    for (int i = 0; i < n_cells; i++) {
-        free(counts[i]);
+    /* ---------- 5. cleanup & return ------------------------------ */
+    free_em(em2); free_em(em3);
+    free(cnt); free(vec);
+    return out;
+}
+
+
+/* -------------------------  Main demo  ---------------------------- */
+int demo(void)
+{
+    const int N=400, G=10;
+    /* make a tiny fake data-set */
+    int **cnt = calloc(N,sizeof(int*));
+    for(int i=0;i<N;++i){
+        cnt[i]=calloc(G,sizeof(int));
+        for(int g=0;g<G;++g){
+            double r = (double)rand()/RAND_MAX;
+            cnt[i][g] = r<0.8 ? rand()%4 : 10+rand()%15;
+        }
     }
-    free(counts);
+
+    /* Fit the three candidate laws */
+    MixtureEM *em_nb  = fit_model(cnt,N,G,2,&NB_OPS  ,200,1e-6);
+    MixtureEM *em_po  = fit_model(cnt,N,G,2,&POIS_OPS,200,1e-6);
+    MixtureEM *em_ga  = fit_model(cnt,N,G,2,&GAU_OPS ,200,1e-6);
+
+    printf("\n%-18s  LL=%.2f  BIC=%.2f\n", NB_OPS.name , em_nb->logL,  em_nb->bic);
+    printf("%-18s  LL=%.2f  BIC=%.2f\n",   POIS_OPS.name, em_po->logL, em_po->bic);
+    printf("%-18s  LL=%.2f  BIC=%.2f\n",   GAU_OPS.name , em_ga->logL, em_ga->bic);
+
+    /* … choose the best, inspect, etc … */
+    free_em(em_nb);
+    free_em(em_po);
+    free_em(em_ga);
+
+    for(int i=0;i<N;++i) free(cnt[i]);
+    free(cnt);
 
     return 0;
 }

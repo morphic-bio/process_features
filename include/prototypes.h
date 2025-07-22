@@ -1,7 +1,18 @@
 #ifndef PROTOTYPES_H
 #define PROTOTYPES_H
 
+#include <stdint.h>
 #include "../include/common.h"
+
+// Define a struct for NBSignalCut
+typedef struct {
+    int n_comp;
+    int k_min_signal;
+    int k_max_signal;
+    double bic;
+    double weight[3], r[3], p[3];
+} NBSignalCut;
+
 
 // Function prototypes from assignBarcodes.c
 void add_deduped_count(GHashTable* temp_deduped_hash, uint32_t *clique_counts, uint16_t stringency, uint16_t min_counts);
@@ -40,6 +51,7 @@ void reverse_complement_in_place(char *seq);
 void reverse_complement_sequence(char *sequence,  char *reverse, int length);
 void reverse_in_place(char *str);
 void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order);
+NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double cut_off, int max_iter, double tol);
 int string2code(char *string, int sequence_length, unsigned char *code);
 void update_feature_counts_from_code(unsigned char *code, char *umi, uint32_t feature_index, data_structures *hashes, memory_pool_collection *pools);
 void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,data_structures *hashes, memory_pool_collection *pools);
@@ -50,5 +62,6 @@ int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned cha
 int split_line(char *line, char *fields[], const char *split_string);
 
 void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms);
+void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts);
 
 #endif // PROTOTYPES_H
