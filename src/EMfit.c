@@ -291,15 +291,11 @@ MixtureEM* fit_model(int **counts,int cells,int guides,
 // PUBLIC HELPER – fit 2-vs-3 NB mixture on a *histogram*
 // -----------------------------------------------------
 /* -----------------------------------------------------------------
- * Fit 1, 2, and 3-component models to a histogram of counts
- *   For 2/3 components, the first is Poisson (noise), the others are NB.
- * Decide by BIC, then calculate the contiguous range of k whose
- * posterior probability of originating from “signal” components
- * (all but the one with the smallest mean) exceeds `gposterior`.
+ * Fit NB mixture models to histogram data and return the best fit
  * ----------------------------------------------------------------*/
 NBSignalCut
-em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
-                 int max_iter, double tol, uint16_t min_counts)
+fit_nb_model_to_histogram(const uint32_t *hist, int len, 
+                         int max_iter, double tol)
 {
     /* ---------- 1. decompress hist → vector<int> counts ---------- */
     int n_cells = 0;
@@ -307,8 +303,6 @@ em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
     if (n_cells == 0) {
         NBSignalCut out = {0};
         out.n_comp = 1; // Default to 1-component if no data
-        out.k_min_signal = len;
-        out.k_max_signal = len;
         return out;
     }
     int *vec = malloc(n_cells*sizeof(int));
@@ -348,7 +342,6 @@ em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
         }
     }
 
-
     NBSignalCut out = {0};
     out.reverted_from_3_to_2 = reverted;
     out.bic           = best->bic;
@@ -366,11 +359,41 @@ em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
         }
     }
 
-    /* ---------- 3. identify noise, signal, and multiplet components ------------- */
-    int K = best->n_components;
+    /* ---------- cleanup ---------- */
+    free_em(em2);
+    free_em(em3);
+    free(cnt);
+    free(vec);
+    return out;
+}
+
+/* -----------------------------------------------------------------
+ * Determine signal cutoffs from a fitted model
+ * ----------------------------------------------------------------*/
+void
+determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposterior,
+                                uint16_t min_counts)
+{
+    if (fit->n_comp <= 1) {
+        fit->k_min_signal = len;
+        fit->k_max_signal = len;
+        return;
+    }
+
+    /* ---------- identify noise, signal, and multiplet components ------------- */
+    int K = fit->n_comp;
     double means[3] = {0,0,0};
-    for(int k=0;k<K;++k)
-        means[k] = best->ops[k]->mean(PARAM(best,k,0));
+    
+    // Calculate means from stored parameters
+    for(int k=0;k<K;++k) {
+        if (fit->p[k] < 0) {
+            // Poisson component
+            means[k] = fit->r[k];
+        } else {
+            // NB component: mean = r*(1-p)/p
+            means[k] = fit->r[k] * (1.0 - fit->p[k]) / fit->p[k];
+        }
+    }
 
     int bg_idx = 0;
     int multiplet_idx = -1; // Only used for K=3
@@ -390,22 +413,36 @@ em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
             if(means[k] < means[bg_idx]) bg_idx = k;
     }
 
-    /* ---------- 4. posterior P(signal|k) on the grid ------------- */
-    double pri[3]; for(int k=0;k<K;++k) pri[k] = best->priors[k][0];
-
+    /* ---------- posterior P(signal|k) on the grid ------------- */
     int first=-1,last=-1;
     for(int k=0;k<len;++k){
         double num = 0, den = 0;
         for(int j=0;j<K;++j){
-            double lp = best->ops[j]->logf(PARAM(best, j, 0), k);
-            double pk = exp(lp);
-            den += pri[j]*pk;
+            double lp, pk;
+            
+            // Calculate log probability based on component type
+            if (fit->p[j] < 0) {
+                // Poisson component
+                if (k < 0 || fit->r[j] <= 0) lp = -DBL_MAX;
+                else lp = k*log(fit->r[j]) - fit->r[j] - lgamma(k+1);
+            } else {
+                // NB component  
+                if (k < 0 || fit->r[j] <= 0.0 || fit->p[j] <= 0.0 || fit->p[j] >= 1.0) {
+                    lp = -DBL_MAX;
+                } else {
+                    lp = lgamma(k + fit->r[j]) - lgamma(k + 1) - lgamma(fit->r[j])
+                       + fit->r[j]*log(fit->p[j]) + k*log(1.0 - fit->p[j]);
+                }
+            }
+            
+            pk = exp(lp);
+            den += fit->weight[j]*pk;
             if (K == 3) {
                 // Signal is the middle component (not background and not multiplet)
-                if (j != bg_idx && j != multiplet_idx) num += pri[j]*pk;
+                if (j != bg_idx && j != multiplet_idx) num += fit->weight[j]*pk;
             } else { // K == 2
                 // Signal is the non-background component
-                if (j != bg_idx) num += pri[j]*pk;
+                if (j != bg_idx) num += fit->weight[j]*pk;
             }
         }
         double post = den? num/den : 0.0;
@@ -415,15 +452,20 @@ em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
         }
     }
 
-    out.k_min_signal  = first<0 ? len : first;
-    out.k_max_signal  = last;
+    fit->k_min_signal  = first<0 ? len : first;
+    fit->k_max_signal  = last;
+}
 
-    /* ---------- 5. cleanup & return ------------------------------ */
-    free_em(em2);
-    free_em(em3);
-    free(cnt);
-    free(vec);
-    return out;
+/* -----------------------------------------------------------------
+ * Original wrapper function for backward compatibility
+ * ----------------------------------------------------------------*/
+NBSignalCut
+em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
+                 int max_iter, double tol, uint16_t min_counts)
+{
+    NBSignalCut fit = fit_nb_model_to_histogram(hist, len, max_iter, tol);
+    determine_signal_cutoff_from_fit(&fit, len, gposterior, min_counts);
+    return fit;
 }
 
 

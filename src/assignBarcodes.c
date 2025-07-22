@@ -1942,7 +1942,19 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
                 }
 
                 if (total_counts_in_hist < min_em_counts) {
-                    fit = cumulative_fit; // Use the stored cumulative fit
+                    // Use the fitted model parameters from cumulative fit
+                    // but recalculate cutoffs for this feature's histogram
+                    fit = cumulative_fit; // Copy the model parameters
+                    
+                    // Recalculate signal cutoffs using the cumulative model
+                    // but applied to this feature's histogram length
+                    if (h && h->len > 0) {
+                        determine_signal_cutoff_from_fit(&fit, h->len, em_cutoff, min_counts);
+                    } else {
+                        // If no histogram data, set cutoffs to end of range
+                        fit.k_min_signal = 0;
+                        fit.k_max_signal = 0;
+                    }
                 } else {
                     // This feature has enough data, so perform its own fit
                     for(unsigned int j=0; j<h->len; ++j) if(!g_array_index(h,uint32_t,j))

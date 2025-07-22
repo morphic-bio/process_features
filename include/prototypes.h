@@ -90,4 +90,15 @@ void reverse_complement_in_place(char *seq);
 void reverse_complement_sequence(char *sequence,  char *reverse, int length);
 void cleanup_sample(memory_pool_collection *pools, data_structures *hashes);
 void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order);
+
+// New functions for separated fitting and cutoff determination
+NBSignalCut fit_nb_model_to_histogram(const uint32_t *hist, int len, 
+                                     int max_iter, double tol);
+void determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposterior,
+                                     uint16_t min_counts);
+
+// Original function (now a wrapper)
+NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double gposterior, 
+                            int max_iter, double tol, uint16_t min_counts);
+
 #endif // PROTOTYPES_H
