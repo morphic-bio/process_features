@@ -17,6 +17,7 @@ int main(int argc, char *argv[])
     char *barcodeFastqFilesString=0;
     char *forwardFastqFilesString=0;
     char *reverseFastqFilesString=0;
+    char *filtered_barcodes_filename=0;
     char barcode_pattern[LINE_LENGTH], forward_pattern[LINE_LENGTH], reverse_pattern[LINE_LENGTH];
     strcpy(barcode_pattern, "_R1_");
     strcpy(forward_pattern, "_R2_");
@@ -75,6 +76,7 @@ int main(int argc, char *argv[])
         {"max_reads", required_argument, 0, 9},
         {"limit_search", required_argument, 0, 10},
         {"gposterior", required_argument, 0, 11},
+        {"filtered_barcodes", required_argument, 0, 12},
         {0, 0, 0, 0}
     };
 
@@ -114,6 +116,7 @@ int main(int argc, char *argv[])
             case 9: max_reads=atoll(optarg); break;
             case 10: limit_search = atoi(optarg); break;
             case 11: gposterior = atof(optarg); break;
+            case 12: filtered_barcodes_filename = strdup(optarg); break;
             default: fprintf(stderr, "Usage: %s [options]\n", argv[0]); return 1;
         }
     }
@@ -136,6 +139,11 @@ int main(int argc, char *argv[])
         organize_fastq_files_by_type(positional_arg_count, argc, argv,optind, barcodeFastqFilesString, forwardFastqFilesString, reverseFastqFilesString, &fastq_files, barcode_pattern, forward_pattern, reverse_pattern,sample_flag);
     }
     whitelist_hash = g_hash_table_new(hash_int32, equal_int32 );
+    GHashTable *filtered_barcodes_hash = NULL;
+    if (filtered_barcodes_filename) {
+        filtered_barcodes_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+        read_barcodes_into_hash(filtered_barcodes_filename, filtered_barcodes_hash);
+    }
     read_whiteList(whitelist_filename, whitelist_hash, reverse_complement_whitelist);
     initialize_unit_sizes();
     const int nSamples=fastq_files.nsamples;
@@ -208,6 +216,7 @@ int main(int argc, char *argv[])
             args.min_posterior = min_posterior;
             args.gposterior = gposterior;
             args.consumer_threads_per_set = consumer_threads_per_set;
+            args.filtered_barcodes_hash = filtered_barcodes_hash;
             process_files_in_sample(&args);
             // cleanup_sample is handled within process_files_in_sample
             atomic_fetch_add(thread_counter, -threads_per_set);
@@ -225,6 +234,8 @@ int main(int argc, char *argv[])
     if (barcodeFastqFilesString) free(barcodeFastqFilesString);
     if (forwardFastqFilesString) free(forwardFastqFilesString);
     if (reverseFastqFilesString) free(reverseFastqFilesString);
+    if (filtered_barcodes_filename) free(filtered_barcodes_filename);
+    if (filtered_barcodes_hash) g_hash_table_destroy(filtered_barcodes_hash);
     free_feature_arrays(features);
     free_fastq_files_collection(&fastq_files);
     return 0;

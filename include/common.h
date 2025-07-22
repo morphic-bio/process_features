@@ -218,6 +218,7 @@ typedef struct sample_args {
     double min_posterior;
     double gposterior;
     int consumer_threads_per_set;
+    GHashTable *filtered_barcodes_hash;
 } sample_args;
 
 typedef struct fastq_reader {

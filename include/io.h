@@ -23,6 +23,7 @@ void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order
 int find_number_of_fastq_files(int positional_arg_count,char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString);
 int file_exists(const char *filename);
 void find_file_type(char* concatenated_patterns,int nPatterns);
+void read_barcodes_into_hash(char *filename, GHashTable *hash);
 const char* get_basename(const char *path);
 
 #endif // IO_H

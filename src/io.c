@@ -646,6 +646,20 @@ void organize_fastq_files_by_type(int positional_arg_count, int argc, char *argv
     //check that memory allocations are non null and free them
 }
 
+void read_barcodes_into_hash(char *filename, GHashTable *hash) {
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        fprintf(stderr, "Failed to open barcode file %s\n", filename);
+        exit(EXIT_FAILURE);
+    }
+    char line[LINE_LENGTH];
+    while (fgets(line, LINE_LENGTH, file) != NULL) {
+        line[strcspn(line, "\r\n")] = 0;
+        g_hash_table_insert(hash, g_strdup(line), GUINT_TO_POINTER(1));
+    }
+    fclose(file);
+}
+
 int find_number_of_fastq_files(int positional_arg_count,char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString){
     if (positional_arg_count){
         return positional_arg_count;

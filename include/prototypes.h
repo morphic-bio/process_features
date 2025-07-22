@@ -63,10 +63,11 @@ void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,d
 void destroy_data_structures(data_structures *hashes);
 void free_unmatched_barcodes_features_list(unmatched_barcodes_features_block_list *list);
 unsigned char* read_whiteList(char *whitelist_filename,GHashTable *hash, int reverse_complement_flag);
+void read_barcodes_into_hash(char *filename, GHashTable *hash);
 int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned char hamming_distance, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools);
 int split_line(char *line, char *fields[], const char *split_string);
 
 void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms);
-void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts);
+void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts, GHashTable *filtered_barcodes_hash);
 
 #endif // PROTOTYPES_H

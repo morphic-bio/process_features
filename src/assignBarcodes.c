@@ -1233,7 +1233,7 @@ void code2string(unsigned char *code, char *string, int length){
     string[4*length]='\0';
 }
 
-void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts){
+void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts, GHashTable *filtered_barcodes_hash){
     int total_deduped_counts = 0;
     int total_raw_counts = 0;
     char barcodes_file[FILENAME_LENGTH];
@@ -1339,6 +1339,9 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
             // Write barcode string to barcodes.txt
             char barcode[barcode_length + 1];
             code2string(entry->sequence_code, barcode, barcode_code_length);
+            if (filtered_barcodes_hash && g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL) {
+                continue;
+            }
             fprintf(barcodesfp, "%s\n", barcode);
                     // --- Populate total_barcoded_counts (raw counts) ---
         GHashTableIter raw_iter;
@@ -1721,7 +1724,7 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
 }
 
 
-void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, double gposterior){
+void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, double gposterior, GHashTable *filtered_barcodes_hash){
     process_pending_barcodes(hashes, pools, stats,min_posterior);
     double elapsed_time = get_time_in_seconds() - stats->start_time;
     fprintf(stderr, "Finished processing %ld reads in %.2f seconds (%.1f thousand reads/second)\n", stats->number_of_reads, elapsed_time, stats->number_of_reads / (double)elapsed_time / 1000.0);
@@ -1770,7 +1773,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         }
     }
     //DEBUG_PRINT( "Number of reads matched to a feature %ld\n", valid);
-    printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, feature_hist, directory, hashes, stats, stringency, min_counts);
+    printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, feature_hist, directory, hashes, stats, stringency, min_counts, filtered_barcodes_hash);
     //DEBUG_PRINT( "Percentage of reads matched to a feature %.2f\n", (valid / (double)number_of_reads * 100.0));
 
     DEBUG_PRINT( "Number of mismatched reads that are matched to a nearest barcode unambiguously  %ld\n", stats->recovered);
@@ -2729,7 +2732,7 @@ void process_files_in_sample(sample_args *args) {
         //[i] = NULL; // Avoid double-free in later cleanup
     }
     // Since merging is not required, finalize using the first thread's data.
-    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior, gposterior);
+    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior, gposterior, args->filtered_barcodes_hash);
    
     // Free the reader sets
     for (int i = 0; i < sample_size; ++i)
