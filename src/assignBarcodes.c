@@ -1253,18 +1253,6 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     FILE *matrixfp = fopen(matrix_file, "w");
     if (matrixfp == NULL) { /* ... error handling ... */ }
 
-    char mix_file[FILENAME_LENGTH];
-    sprintf(mix_file, "%s/feature_mixture_params.txt", directory);
-    FILE *mixfp = fopen(mix_file, "w");
-    if (!mixfp) { perror("mixture param file"); exit(EXIT_FAILURE); }
-    fprintf(mixfp,
-            "Feature\t"
-            "nComp\t"
-            "w1\tr1\tp1\t"
-            "w2\tr2\tp2\t"
-            "w3\tr3\tp3\t"
-            "BIC\n");
-
     // --- Step 1: Create and populate the temporary hash for deduped counts ---
     //
     // CRITICAL FIX: Use the SAME hash and equal functions as filtered_hash
@@ -1393,7 +1381,6 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     
     fclose(barcodesfp);
     fclose(matrixfp);
-    fclose(mixfp);
     fprintf(stderr,"closing matrix file\n");
     fprintf(stderr,"writing stats file\n");
     FILE *statsfp = fopen(stats_file, "w");
@@ -1830,6 +1817,19 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         perror("Failed to open feature coexpression file");
         exit(EXIT_FAILURE);
     }
+
+    char mix_file[FILENAME_LENGTH];
+    sprintf(mix_file, "%s/feature_mixture_params.txt", directory);
+    FILE *mixfp = fopen(mix_file, "w");
+    if (!mixfp) { perror("mixture param file"); exit(EXIT_FAILURE); }
+    fprintf(mixfp,
+            "Feature\t"
+            "nComp\t"
+            "w1\tr1\tp1\t"
+            "w2\tr2\tp2\t"
+            "w3\tr3\tp3\t"
+            "BIC\n");
+
     int feature_printed[features->number_of_features];
     memset(feature_printed, 0, features->number_of_features * sizeof(int));
 
@@ -1857,6 +1857,15 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
                         fit.k_max_signal,
                         fit.n_comp,
                         fit.bic);
+
+                fprintf(mixfp, "%s\t%d", features->feature_names[i], fit.n_comp);
+                for (int k=0; k < fit.n_comp; ++k) {
+                    fprintf(mixfp, "\t%.4f\t%.4f\t%.4f", fit.weight[k], fit.r[k], fit.p[k]);
+                }
+                for (int k=fit.n_comp; k < 3; ++k) {
+                    fprintf(mixfp, "\t0.0\t0.0\t0.0");
+                }
+                fprintf(mixfp, "\t%.2f\n", fit.bic);
             } else {
                 fprintf(feature_statsfp,"%s %d %d %d 0 0 0 0.0\n",
                         features->feature_names[i],
@@ -1911,6 +1920,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     fclose(feature_statsfp);
     fclose(feature_coexpression_fp);
     fclose(feature_histograms_fp);
+    fclose(mixfp);
 }
 
 void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz) {
