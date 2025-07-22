@@ -36,7 +36,7 @@ int main(int argc, char *argv[])
     int barcode_constant_offset=0;
     double min_posterior=MIN_POSTERIOR;
     double gposterior = 0.9;
-    double em_cumulative_limit = 3.0;
+    double em_cumulative_limit = 0.0;
 
     int max_concurrent_processes=8;
     int consumer_threads_per_set=1;

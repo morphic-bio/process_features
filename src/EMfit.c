@@ -487,7 +487,7 @@ determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposterior,
                 signal_var = signal_mean / fit->p[signal_idx];
             }
             
-            if (signal_var > 0) {
+            if (signal_var > 0 && em_cumulative_limit > 0) {
                 int std_dev_limit = (int)round(signal_mean + em_cumulative_limit * sqrt(signal_var));
                 if (fit->k_max_signal == -1 || std_dev_limit < fit->k_max_signal) {
                     fit->k_max_signal = std_dev_limit;
