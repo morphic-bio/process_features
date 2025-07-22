@@ -36,6 +36,7 @@ int main(int argc, char *argv[])
     int barcode_constant_offset=0;
     double min_posterior=MIN_POSTERIOR;
     double gposterior = 0.9;
+    double em_cumulative_limit = 3.0;
 
     int max_concurrent_processes=8;
     int consumer_threads_per_set=1;
@@ -79,6 +80,7 @@ int main(int argc, char *argv[])
         {"gposterior", required_argument, 0, 11},
         {"filtered_barcodes", required_argument, 0, 12},
         {"min_EM_counts", required_argument, 0, 13},
+        {"em_cumulative_limit", required_argument, 0, 14},
         {0, 0, 0, 0}
     };
 
@@ -120,6 +122,7 @@ int main(int argc, char *argv[])
             case 11: gposterior = atof(optarg); break;
             case 12: filtered_barcodes_filename = strdup(optarg); break;
             case 13: min_em_counts = atoi(optarg); break;
+            case 14: em_cumulative_limit = atof(optarg); break;
             default: fprintf(stderr, "Usage: %s [options]\n", argv[0]); return 1;
         }
     }
@@ -221,6 +224,7 @@ int main(int argc, char *argv[])
             args.consumer_threads_per_set = consumer_threads_per_set;
             args.filtered_barcodes_hash = filtered_barcodes_hash;
             args.min_em_counts = min_em_counts;
+            args.em_cumulative_limit = em_cumulative_limit;
             process_files_in_sample(&args);
             // cleanup_sample is handled within process_files_in_sample
             atomic_fetch_add(thread_counter, -threads_per_set);

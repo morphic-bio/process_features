@@ -1751,7 +1751,7 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
 }
 
 
-void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, double gposterior, GHashTable *filtered_barcodes_hash, int min_em_counts){
+void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, double gposterior, GHashTable *filtered_barcodes_hash, int min_em_counts, double em_cumulative_limit){
     process_pending_barcodes(hashes, pools, stats,min_posterior);
     double elapsed_time = get_time_in_seconds() - stats->start_time;
     fprintf(stderr, "Finished processing %ld reads in %.2f seconds (%.1f thousand reads/second)\n", stats->number_of_reads, elapsed_time, stats->number_of_reads / (double)elapsed_time / 1000.0);
@@ -1892,7 +1892,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
             fprintf(stderr, "Warning: Cumulative counts (%ld) are below the minimum of %d. Skipping all EM fitting.\n", total_counts_in_hist, min_em_counts);
         } else {
             cumulative_fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
-                                               em_cutoff, em_max_iter, em_tol, min_counts);
+                                               em_cutoff, em_max_iter, em_tol, min_counts, em_cumulative_limit);
             cumulative_fit_done = 1;
 
             if (cumulative_fit.reverted_from_3_to_2) {
@@ -1950,7 +1950,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
                     // Recalculate signal cutoffs using the cumulative model
                     // but applied to this feature's histogram length
                     if (h && h->len > 0) {
-                        determine_signal_cutoff_from_fit(&fit, h->len, em_cutoff, min_counts);
+                        determine_signal_cutoff_from_fit(&fit, h->len, em_cutoff, min_counts, em_cumulative_limit);
                     } else {
                         // If no histogram data, set cutoffs to end of range
                         fit.k_min_signal = 0;
@@ -1961,7 +1961,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
                     for(unsigned int j=0; j<h->len; ++j) if(!g_array_index(h,uint32_t,j))
                                                    g_array_index(h,uint32_t,j) = 0;
                     fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
-                                                       em_cutoff, em_max_iter, em_tol, min_counts);
+                                                       em_cutoff, em_max_iter, em_tol, min_counts, em_cumulative_limit);
                 }
             }
 
@@ -2832,7 +2832,7 @@ void process_files_in_sample(sample_args *args) {
         //[i] = NULL; // Avoid double-free in later cleanup
     }
     // Since merging is not required, finalize using the first thread's data.
-    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior, gposterior, args->filtered_barcodes_hash, args->min_em_counts);
+    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior, gposterior, args->filtered_barcodes_hash, args->min_em_counts, args->em_cumulative_limit);
    
     // Free the reader sets
     for (int i = 0; i < sample_size; ++i)

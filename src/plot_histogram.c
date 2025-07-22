@@ -236,6 +236,17 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "            showlegend: true\n");
     fprintf(fp, "        };\n");
 
+    // Dummy trace for posterior cutoff
+    fprintf(fp, "        var posterior_trace = {\n");
+    fprintf(fp, "            x: [null],\n");
+    fprintf(fp, "            y: [null],\n");
+    fprintf(fp, "            type: 'scatter',\n");
+    fprintf(fp, "            mode: 'markers',\n");
+    fprintf(fp, "            name: 'Posterior Cutoff: %.3f',\n", posterior_cutoff);
+    fprintf(fp, "            marker: { size: 0 },\n");
+    fprintf(fp, "            showlegend: true\n");
+    fprintf(fp, "        };\n");
+
     // Layout
     fprintf(fp, "        var layout = {\n");
     fprintf(fp, "            title: {\n");
@@ -248,7 +259,7 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "            },\n");
     fprintf(fp, "            yaxis: {\n");
     fprintf(fp, "                title: 'Frequency',\n");
-    fprintf(fp, "                type: 'log'\n");
+    fprintf(fp, "                type: 'linear'\n");
     fprintf(fp, "            },\n");
     fprintf(fp, "            showlegend: true,\n");
     fprintf(fp, "            legend: {\n");
@@ -260,21 +271,7 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "                bordercolor: 'black',\n");
     fprintf(fp, "                borderwidth: 1\n");
     fprintf(fp, "            },\n");
-    fprintf(fp, "            hovermode: 'x unified',\n");
-    fprintf(fp, "            annotations: [\n");
-    fprintf(fp, "                {\n");
-    fprintf(fp, "                    x: 0.02,\n");
-    fprintf(fp, "                    y: 0.02,\n");
-    fprintf(fp, "                    xref: 'paper',\n");
-    fprintf(fp, "                    yref: 'paper',\n");
-    fprintf(fp, "                    text: 'Posterior Cutoff: %.3f',\n", posterior_cutoff);
-    fprintf(fp, "                    showarrow: false,\n");
-    fprintf(fp, "                    font: { size: 12, color: 'black' },\n");
-    fprintf(fp, "                    bgcolor: 'rgba(255,255,255,0.9)',\n");
-    fprintf(fp, "                    bordercolor: 'black',\n");
-    fprintf(fp, "                    borderwidth: 1\n");
-    fprintf(fp, "                }\n");
-    fprintf(fp, "            ]\n");
+    fprintf(fp, "            hovermode: 'x unified'\n");
     fprintf(fp, "        };\n");
 
     // Combine all traces
@@ -282,7 +279,7 @@ void generate_plotly_html(const char *filename,
     for (int comp = 0; comp < em_fit.n_comp; comp++) {
         fprintf(fp, ", comp%d_trace", comp);
     }
-    fprintf(fp, ", min_cutoff_trace, max_cutoff_trace, min_counts_trace];\n");
+    fprintf(fp, ", min_cutoff_trace, max_cutoff_trace, min_counts_trace, posterior_trace];\n");
     
     fprintf(fp, "        Plotly.newPlot('plot', data, layout);\n");
 

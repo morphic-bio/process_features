@@ -234,6 +234,7 @@ typedef struct sample_args {
     int consumer_threads_per_set;
     GHashTable *filtered_barcodes_hash;
     int min_em_counts;
+    double em_cumulative_limit;
 } sample_args;
 
 typedef struct fastq_reader {

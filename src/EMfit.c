@@ -373,7 +373,7 @@ fit_nb_model_to_histogram(const uint32_t *hist, int len,
  * ----------------------------------------------------------------*/
 void
 determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposterior,
-                                uint16_t min_counts)
+                                uint16_t min_counts, double em_cumulative_limit)
 {
     if (fit->n_comp <= 1) {
         fit->k_min_signal = len;
@@ -461,6 +461,40 @@ determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposterior,
 
     fit->k_min_signal  = first<0 ? len : first;
     fit->k_max_signal  = last;
+
+    if (fit->n_comp > 1) {
+        double signal_mean = 0.0;
+        double signal_var = 0.0;
+        int signal_idx = -1;
+        
+        if (K == 2) {
+            signal_idx = 1 - bg_idx;
+        } else { // K == 3
+            for (int k=0; k<3; ++k) {
+                if (k != bg_idx && k != multiplet_idx) {
+                    signal_idx = k;
+                    break;
+                }
+            }
+        }
+        
+        if (signal_idx != -1) {
+            if (fit->p[signal_idx] < 0) { // Poisson
+                signal_mean = fit->r[signal_idx];
+                signal_var = fit->r[signal_idx];
+            } else { // Negative Binomial
+                signal_mean = fit->r[signal_idx] * (1.0 - fit->p[signal_idx]) / fit->p[signal_idx];
+                signal_var = signal_mean / fit->p[signal_idx];
+            }
+            
+            if (signal_var > 0) {
+                int std_dev_limit = (int)round(signal_mean + em_cumulative_limit * sqrt(signal_var));
+                if (fit->k_max_signal == -1 || std_dev_limit < fit->k_max_signal) {
+                    fit->k_max_signal = std_dev_limit;
+                }
+            }
+        }
+    }
 }
 
 /* -----------------------------------------------------------------
@@ -468,10 +502,10 @@ determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposterior,
  * ----------------------------------------------------------------*/
 NBSignalCut
 em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
-                 int max_iter, double tol, uint16_t min_counts)
+                 int max_iter, double tol, uint16_t min_counts, double em_cumulative_limit)
 {
     NBSignalCut fit = fit_nb_model_to_histogram(hist, len, max_iter, tol);
-    determine_signal_cutoff_from_fit(&fit, len, gposterior, min_counts);
+    determine_signal_cutoff_from_fit(&fit, len, gposterior, min_counts, em_cumulative_limit);
     return fit;
 }
 
