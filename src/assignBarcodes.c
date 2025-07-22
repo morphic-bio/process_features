@@ -4,6 +4,7 @@
 #include "../include/utils.h"
 #include "../include/memory.h"
 #include "../include/io.h"
+#include "heatmap.h"
 
 //will  print if DEBUG is set or debug=1
 //code for feature sequences stats
@@ -1892,6 +1893,10 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
             cumulative_fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
                                                em_cutoff, em_max_iter, em_tol, min_counts);
             cumulative_fit_done = 1;
+
+            if (cumulative_fit.reverted_from_3_to_2) {
+                fprintf(stderr, "Warning: Cumulative fit preferred 3 components by BIC, but reverted to 2 because the multiplet component weight was too low.\n");
+            }
         }
 
         long cumulative_deduped_counts = 0;
@@ -2947,70 +2952,6 @@ void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order
 void cleanup_sample(memory_pool_collection *pools, data_structures *hashes){
     destroy_data_structures(hashes);
     free_memory_pool_collection(pools);
-}
-int calculate_initial_threads(fastq_files_collection *fastq_files, int available_threads, int *consumer_threads_per_set, int *search_threads_per_consumer, int *max_concurrent_processes, int set_consumer_threads_per_set, int set_search_threads_per_consumer){
-    int nsamples=fastq_files->nsamples;
-    int sample_size=fastq_files->max_sample_size;
-    //start off with producer threads
-    int producer_threads=sample_size;
-    int remaining_threads=available_threads-producer_threads; 
-    //search threads should be 4:2:1 depending on the number of consumer threads available - could use 3 but that is a waste
-    //metric for work done is approximately consumer*search
-    double best_value=0;
-    int best_search=4; //default to 1 in worst case
-    int best_consumer=1;
-    int best_concurrent=1;
-    double search_value[3]={3.2,1.9,1.0};
-    int sthreads[3]={4,2,1};
-    double producer_cost=0.6*(double)producer_threads;
-    int start_sthread_index=0;
-    int end_sthread_index=2;
-    int start_consumer=1;
-    int end_consumer=(remaining_threads)?remaining_threads:1;
-    if (set_consumer_threads_per_set){
-        start_consumer=set_consumer_threads_per_set;
-        end_consumer=set_consumer_threads_per_set;
-    }
-    //set the search threads if specified by user
-    if (set_search_threads_per_consumer){
-        if (set_search_threads_per_consumer<=1){
-            start_sthread_index=2;
-            end_sthread_index=2;
-        }
-        else if (set_search_threads_per_consumer<=3){
-            start_sthread_index=1;
-            end_sthread_index=1;
-        }
-        else {
-            start_sthread_index=0;
-            end_sthread_index=0;
-        }
-    }    
-    for (int i=start_sthread_index; i<=end_sthread_index; i++){   
-        for (int consumer=start_consumer; consumer<=end_consumer; consumer++){
-            for (int concurrent=1; concurrent<=*max_concurrent_processes && concurrent <= nsamples; concurrent++){
-                double dconsumer=(double) consumer;
-                double dsearch=(double)search_value[i];
-                double dconcurrent=(double)concurrent;
-                double value=dconsumer*dsearch*dconcurrent-dconsumer*dconsumer/4.0;
-               
-                DEBUG_PRINT( "consumer %d search %d concurrent %d Value %f\n",consumer,sthreads[i],concurrent,value);
-              
-                if (value>best_value){
-                    best_value=value;
-                    best_search=sthreads[i];
-                    best_consumer=consumer;
-                    best_concurrent=concurrent;
-                    DEBUG_PRINT( "Best value %f consumer %d search %d concurrent %d\n", best_value, best_consumer, best_search, best_concurrent);
-                }
-            }
-        }
-    }
-    *consumer_threads_per_set=best_consumer;
-    *search_threads_per_consumer=best_search;
-    *max_concurrent_processes=best_concurrent;
-    DEBUG_PRINT( "Recalculating: Use %d consumer threads, %d search threads\n", best_consumer, best_search );
-    return best_consumer*best_search + producer_cost;
 }
 
 void reverse_in_place(char *str) {

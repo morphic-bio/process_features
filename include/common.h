@@ -68,6 +68,19 @@ typedef struct _storage_block {
     struct _storage_block *next;
     unsigned char *storage;
 } storage_block;
+
+/* result of em_nb_signal_cut */
+typedef struct {
+    int     n_comp;                /* chosen K (2 or 3)         */
+    int     reverted_from_3_to_2;  /* flag for user warning     */
+    int     k_min_signal, k_max_signal;
+    double  bic;
+    /* parameters for up to 3 components                       *
+     *    weight[k]  – prior π_k                               *
+     *    r[k], p[k] – NB parameters                           */
+    double  weight[3], r[3], p[3];
+} NBSignalCut;
+
 typedef struct feature_search_tables{
     struct feature_arrays *features;
     void *feature_code;

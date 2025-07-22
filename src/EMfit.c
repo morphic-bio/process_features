@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdint.h>
 
+#include "../include/common.h"
+
 
 typedef enum { DIST_NB, DIST_POISSON, DIST_GAUSSIAN } DistType;
 
@@ -64,7 +66,17 @@ static double pois_logf(const void *v,double x)
     return x*log(p->lambda) - p->lambda - lgamma(x+1);
 }
 static void pois_mstep(void *v,double sw,double swx,double swx2)
-{ ((PoisParam*)v)->lambda = swx / sw; }
+{
+    PoisParam *p = v;
+    double mean = swx / sw;
+    double var = swx2/sw - mean*mean;
+
+    if (var > 1.5*mean) { // Data assigned is overdispersed
+        p->lambda = 0.9 * p->lambda + 0.1 * mean;
+    } else {
+        p->lambda = mean;
+    }
+}
 static void pois_init(void *v,double m){ ((PoisParam*)v)->lambda = m > 0 ? m : .1; }
 static const DistOps POIS_OPS = { sizeof(PoisParam), 1,
                                   pois_logf, pois_mstep, pois_init,
@@ -278,16 +290,6 @@ MixtureEM* fit_model(int **counts,int cells,int guides,
 // -----------------------------------------------------
 // PUBLIC HELPER – fit 2-vs-3 NB mixture on a *histogram*
 // -----------------------------------------------------
-typedef struct {
-    int     n_comp;                /* chosen K (2 or 3)         */
-    int     k_min_signal, k_max_signal;
-    double  bic;
-    /* parameters for up to 3 components                       *
-     *    weight[k]  – prior π_k                               *
-     *    r[k], p[k] – NB parameters                           */
-    double  weight[3], r[3], p[3];
-} NBSignalCut;
-
 /* -----------------------------------------------------------------
  * Fit 1, 2, and 3-component models to a histogram of counts
  *   For 2/3 components, the first is Poisson (noise), the others are NB.
@@ -324,9 +326,31 @@ em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
     MixtureEM *em2 = fit_model(cnt,n_cells,1,2, ops2, max_iter,tol);
     MixtureEM *em3 = fit_model(cnt,n_cells,1,3, ops3, max_iter,tol);
 
-    MixtureEM *best = (em3->bic < em2->bic) ? em3 : em2;
+    int reverted = 0;
+    MixtureEM *best = em2;
+    if (em3->bic < em2->bic) {
+        // 3-comp has better BIC. But is the multiplet component substantial?
+        double means[3];
+        for (int k = 0; k < 3; k++)
+            means[k] = em3->ops[k]->mean(PARAM(em3, k, 0));
+
+        int max_idx = 0;
+        for (int k = 1; k < 3; k++)
+            if (means[k] > means[max_idx]) max_idx = k;
+
+        // If multiplet component has very low weight, it's likely overfitting.
+        // In that case, we revert to the 2-component model.
+        const double MIN_MULTIPLET_WEIGHT = 0.05; // 5% threshold
+        if (em3->priors[max_idx][0] >= MIN_MULTIPLET_WEIGHT) {
+            best = em3;
+        } else {
+            reverted = 1;
+        }
+    }
+
 
     NBSignalCut out = {0};
+    out.reverted_from_3_to_2 = reverted;
     out.bic           = best->bic;
     out.n_comp        = best->n_components;
     for(int k=0;k<out.n_comp;++k){
