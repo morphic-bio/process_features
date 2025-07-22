@@ -12,6 +12,7 @@ typedef double (*logf_fn)(const void *param, double x);
 typedef void   (*mstep_fn)(void *param,
                            double sw, double swx, double swx2); /* ∑w, ∑wx, ∑wx² */
 typedef void   (*init_fn)(void *param, double rough_mean);       /* quick seed   */
+typedef double (*mean_fn)(const void *param);
 
 typedef struct {
     size_t      param_size;    /* sizeof(param-struct)              */
@@ -19,6 +20,7 @@ typedef struct {
     logf_fn     logf;          /* log-density / log-pmf             */
     mstep_fn    mstep;         /* M-step updater                    */
     init_fn     init;          /* small helper for seeding          */
+    mean_fn     mean;          /* calculate mean from params        */
     const char *name;
 } DistOps;
 // ---------------------------------------------------------------------
@@ -26,6 +28,7 @@ typedef struct {
 
 // -------------------------  NB SPECIFIC  -----------------------------
 typedef struct { double r, p; } NBParam;
+static double nb_mean(const void *v) { const NBParam *p=v; return p->r*(1.0-p->p)/p->p; }
 static double nb_logf(const void *v, double x)
 {
     const NBParam *p = v;
@@ -48,11 +51,12 @@ static void nb_mstep(void *v,double sw,double swx,double swx2)
 }
 static void nb_init(void *v,double m){ NBParam *p=v; p->p=.5; p->r=m; }
 static const DistOps NB_OPS = { sizeof(NBParam), 2, nb_logf, nb_mstep,
-                                nb_init, "Negative Binomial" };
+                                nb_init, nb_mean, "Negative Binomial" };
 
 
 // -------------------------  POISSON  ---------------------------------
 typedef struct { double lambda; } PoisParam;
+static double pois_mean(const void* v) { return ((PoisParam*)v)->lambda; }
 static double pois_logf(const void *v,double x)
 {
     const PoisParam *p = v;
@@ -64,11 +68,12 @@ static void pois_mstep(void *v,double sw,double swx,double swx2)
 static void pois_init(void *v,double m){ ((PoisParam*)v)->lambda = m > 0 ? m : .1; }
 static const DistOps POIS_OPS = { sizeof(PoisParam), 1,
                                   pois_logf, pois_mstep, pois_init,
-                                  "Poisson" };
+                                  pois_mean, "Poisson" };
 
 
 // -------------------------  GAUSSIAN  --------------------------------
 typedef struct { double mu, var; } GauParam;
+static double gau_mean(const void* v) { return ((GauParam*)v)->mu; }
 static double gau_logf(const void *v,double x)
 {
     const GauParam *p=v;
@@ -85,7 +90,7 @@ static void gau_mstep(void *v,double sw,double swx,double swx2)
 static void gau_init(void *v,double m){ GauParam *p=v; p->mu=m; p->var=m ? m : 1; }
 static const DistOps GAU_OPS  = { sizeof(GauParam), 2,
                                   gau_logf, gau_mstep, gau_init,
-                                  "Gaussian" };
+                                  gau_mean, "Gaussian" };
 
 // ----------------------  Generic mixture  ----------------------------
 typedef struct {
@@ -95,10 +100,10 @@ typedef struct {
 
     /* configuration */
     int           n_components;
-    const DistOps *ops;               /* chosen distribution */
+    const DistOps **ops;              /* array of chosen distributions */
 
     /* parameters – flat blob ---------------------------------------- */
-    void         *params_blob;        /* size = n_comp*n_guides*param_size */
+    void         **params_per_component; /* [comp] -> blob of size n_guides*param_size */
 
     double      **priors;             /* [comp][guide] */
 
@@ -110,8 +115,8 @@ typedef struct {
 } MixtureEM;
 
 /* helper to access (component,guide) parameter */
-#define PARAM(em,k,g) ((void*) ((char*)(em)->params_blob + \
-                       ((k)*(em)->n_guides + (g))*(em)->ops->param_size))
+#define PARAM(em,k,g) ((void*) ((char*)(em)->params_per_component[k] + \
+                       (g)*(em)->ops[k]->param_size))
 
 /* ------------  Quick initialisation (moment-based)  --------------- */
 static void seed_params(MixtureEM *em)
@@ -127,7 +132,7 @@ static void seed_params(MixtureEM *em)
         mean = nz ? mean/nz : 0.1;
 
         for(int k=0;k<em->n_components;++k){
-            em->ops->init(PARAM(em,k,g), mean * (k+1)); /* stagger means */
+            em->ops[k]->init(PARAM(em,k,g), mean * (k+1)); /* stagger means */
             em->priors[k][g] = 1.0/em->n_components;
         }
     }
@@ -145,7 +150,7 @@ static void e_step(MixtureEM *em)
             double lp[K];
 
             for(int k=0;k<K;++k){
-                lp[k] = em->ops->logf(PARAM(em,k,g), em->counts[i][g])
+                lp[k] = em->ops[k]->logf(PARAM(em,k,g), em->counts[i][g])
                       + log(em->priors[k][g]);
                 if(lp[k] > max_lp) max_lp = lp[k];
             }
@@ -176,7 +181,7 @@ static void m_step(MixtureEM *em)
                 swx2 += w*x*x;
             }
             em->priors[k][g] = sw / em->n_cells;
-            if(sw>1e-12) em->ops->mstep(PARAM(em,k,g), sw, swx, swx2);
+            if(sw>1e-12) em->ops[k]->mstep(PARAM(em,k,g), sw, swx, swx2);
         }
     }
 }
@@ -184,8 +189,10 @@ static void m_step(MixtureEM *em)
 /* ------------  Model criteria  ------------------------------------ */
 static void compute_ic(MixtureEM *em)
 {
-    int p_per_guide = em->n_components * em->ops->n_params
-                    + (em->n_components-1);          /* priors */
+    int p_per_guide = 0;
+    for (int k=0; k < em->n_components; ++k)
+        p_per_guide += em->ops[k]->n_params;
+    p_per_guide += (em->n_components-1);          /* priors */
     int total_p     = p_per_guide * em->n_guides;
     int N           = em->n_cells * em->n_guides;
 
@@ -210,13 +217,16 @@ static void run_em(MixtureEM *em,int max_iter,double tol)
 
 /* ------------  Construction / Destruction  ------------------------ */
 static MixtureEM* create_em(int cells,int guides,int comp,
-                            const DistOps *ops)
+                            const DistOps **ops)
 {
     MixtureEM *em = calloc(1,sizeof(*em));
     em->n_cells=cells; em->n_guides=guides; em->n_components=comp; em->ops=ops;
 
     /* parameter blob */
-    em->params_blob = calloc(comp*guides, ops->param_size);
+    em->params_per_component = malloc(comp*sizeof(void*));
+    for (int k=0; k < comp; ++k) {
+        em->params_per_component[k] = calloc(guides, ops[k]->param_size);
+    }
 
     /* priors */
     em->priors = malloc(comp*sizeof(double*));
@@ -236,7 +246,9 @@ static MixtureEM* create_em(int cells,int guides,int comp,
 }
 
 static void free_em(MixtureEM* em) {
-    free(em->params_blob);
+    for (int k=0; k < em->n_components; ++k)
+        free(em->params_per_component[k]);
+    free(em->params_per_component);
     for (int k = 0; k < em->n_components; k++) {
         free(em->priors[k]);
     }
@@ -253,7 +265,7 @@ static void free_em(MixtureEM* em) {
 
 /* -----------------  Public helper to fit a model  ----------------- */
 MixtureEM* fit_model(int **counts,int cells,int guides,
-                            int components,const DistOps *ops,
+                            int components,const DistOps **ops,
                             int max_iter,double tol)
 {
     MixtureEM *em = create_em(cells,guides,components,ops);
@@ -276,12 +288,9 @@ typedef struct {
     double  weight[3], r[3], p[3];
 } NBSignalCut;
 
-/* Convenience: NB mean given our (r,p) parametrisation             */
-static inline double nb_mean(const NBParam *p){ return p->r*(1.0-p->p)/p->p; }
-
 /* -----------------------------------------------------------------
- * Fit 2- and 3-component NB mixtures to a histogram of counts
- *   hist[k] = frequency of observing exactly k reads
+ * Fit 1, 2, and 3-component models to a histogram of counts
+ *   For 2/3 components, the first is Poisson (noise), the others are NB.
  * Decide by BIC, then calculate the contiguous range of k whose
  * posterior probability of originating from “signal” components
  * (all but the one with the smallest mean) exceeds `cut_off`.
@@ -295,7 +304,7 @@ em_nb_signal_cut(const uint32_t *hist, int len, double cut_off,
     for(int k=0;k<len;++k) n_cells += hist[k];
     if (n_cells == 0) {
         NBSignalCut out = {0};
-        out.n_comp = 1;
+        out.n_comp = 2; // Default to 2-component if no data
         out.k_min_signal = len;
         return out;
     }
@@ -307,92 +316,84 @@ em_nb_signal_cut(const uint32_t *hist, int len, double cut_off,
     int **cnt = malloc(n_cells*sizeof(int*));
     for(int i=0;i<n_cells;++i) cnt[i] = &vec[i];
 
-    /* ---------- 2. fit 1, 2, and 3-component models ----------------- */
-    MixtureEM *em1 = fit_model(cnt,n_cells,1,1,&NB_OPS ,max_iter,tol);
-    MixtureEM *em2 = fit_model(cnt,n_cells,1,2,&NB_OPS ,max_iter,tol);
-    MixtureEM *em3 = fit_model(cnt,n_cells,1,3,&NB_OPS ,max_iter,tol);
+    /* ---------- 2. fit 2 and 3-component models ----------------- */
+    const DistOps* ops2[2] = { &POIS_OPS, &NB_OPS };
+    const DistOps* ops3[3] = { &POIS_OPS, &NB_OPS, &NB_OPS };
 
-    MixtureEM *best = em1;
-    if (em2->bic < best->bic) best = em2;
-    if (em3->bic < best->bic) best = em3;
+    MixtureEM *em2 = fit_model(cnt,n_cells,1,2, ops2, max_iter,tol);
+    MixtureEM *em3 = fit_model(cnt,n_cells,1,3, ops3, max_iter,tol);
+
+    MixtureEM *best = (em3->bic < em2->bic) ? em3 : em2;
 
     NBSignalCut out = {0};
     out.bic           = best->bic;
     out.n_comp        = best->n_components;
     for(int k=0;k<out.n_comp;++k){
-        NBParam *pp = (NBParam*)PARAM(best,k,0);
         out.weight[k] = best->priors[k][0];
-        out.r[k]      = pp->r;
-        out.p[k]      = pp->p;
-    }
-
-    if (best->n_components == 1) {
-        // For a single component, signal is anything above user-defined min_counts.
-        out.k_min_signal = min_counts;
-        out.k_max_signal = (len > 0) ? (len - 1) : 0;
-    } else {
-        /* ---------- 3. identify noise, signal, and multiplet components ------------- */
-        int K = best->n_components;
-        double means[3] = {0,0,0};
-        for(int k=0;k<K;++k)
-            means[k] = nb_mean((NBParam*)PARAM(best,k,0));
-
-        int bg_idx = 0;
-        int multiplet_idx = -1; // Only used for K=3
-
-        if (K == 3) {
-            // In a 3-component model, identify background (lowest mean)
-            // and multiplet (highest mean). The middle is signal.
-            int max_idx = 0;
-            for (int k = 1; k < K; k++) {
-                if (means[k] < means[bg_idx]) bg_idx = k;
-                if (means[k] > means[max_idx]) max_idx = k;
-            }
-            multiplet_idx = max_idx;
-        } else { // K == 2
-            // In a 2-component model, the one with the lower mean is background.
-            for(int k=1;k<K;++k)
-                if(means[k] < means[bg_idx]) bg_idx = k;
-        }
-
-        /* ---------- 4. posterior P(signal|k) on the grid ------------- */
-        double pri[3]; for(int k=0;k<K;++k) pri[k] = best->priors[k][0];
-
-        double r[3], p[3];
-        for(int k=0;k<K;++k){
+        if (best->ops[k] == &NB_OPS) {
             NBParam *pp = (NBParam*)PARAM(best,k,0);
-            r[k]=pp->r; p[k]=pp->p;
+            out.r[k]      = pp->r;
+            out.p[k]      = pp->p;
+        } else {
+            PoisParam *pp = (PoisParam*)PARAM(best,k,0);
+            out.r[k]      = pp->lambda;
+            out.p[k]      = -1.0; // Sentinel for Poisson
         }
-
-        int first=-1,last=-1;
-        for(int k=0;k<len;++k){
-            double num = 0, den = 0;
-            for(int j=0;j<K;++j){
-                double lp = lgamma(k + r[j]) - lgamma(k+1) - lgamma(r[j])
-                          + r[j]*log(p[j]) + k*log(1.0 - p[j]);
-                double pk = exp(lp);
-                den += pri[j]*pk;
-                if (K == 3) {
-                    // Signal is the middle component (not background and not multiplet)
-                    if (j != bg_idx && j != multiplet_idx) num += pri[j]*pk;
-                } else { // K == 2
-                    // Signal is the non-background component
-                    if (j != bg_idx) num += pri[j]*pk;
-                }
-            }
-            double post = den? num/den : 0.0;
-            if(post >= cut_off){
-                if(first<0) first=k;
-                last = k;
-            }
-        }
-
-        out.k_min_signal  = first<0 ? len : first;
-        out.k_max_signal  = last;
     }
+
+    /* ---------- 3. identify noise, signal, and multiplet components ------------- */
+    int K = best->n_components;
+    double means[3] = {0,0,0};
+    for(int k=0;k<K;++k)
+        means[k] = best->ops[k]->mean(PARAM(best,k,0));
+
+    int bg_idx = 0;
+    int multiplet_idx = -1; // Only used for K=3
+
+    if (K == 3) {
+        // In a 3-component model, identify background (lowest mean)
+        // and multiplet (highest mean). The middle is signal.
+        int max_idx = 0;
+        for (int k = 1; k < K; k++) {
+            if (means[k] < means[bg_idx]) bg_idx = k;
+            if (means[k] > means[max_idx]) max_idx = k;
+        }
+        multiplet_idx = max_idx;
+    } else { // K == 2
+        // In a 2-component model, the one with the lower mean is background.
+        for(int k=1;k<K;++k)
+            if(means[k] < means[bg_idx]) bg_idx = k;
+    }
+
+    /* ---------- 4. posterior P(signal|k) on the grid ------------- */
+    double pri[3]; for(int k=0;k<K;++k) pri[k] = best->priors[k][0];
+
+    int first=-1,last=-1;
+    for(int k=0;k<len;++k){
+        double num = 0, den = 0;
+        for(int j=0;j<K;++j){
+            double lp = best->ops[j]->logf(PARAM(best, j, 0), k);
+            double pk = exp(lp);
+            den += pri[j]*pk;
+            if (K == 3) {
+                // Signal is the middle component (not background and not multiplet)
+                if (j != bg_idx && j != multiplet_idx) num += pri[j]*pk;
+            } else { // K == 2
+                // Signal is the non-background component
+                if (j != bg_idx) num += pri[j]*pk;
+            }
+        }
+        double post = den? num/den : 0.0;
+        if(post >= cut_off){
+            if(first<0) first=k;
+            last = k;
+        }
+    }
+
+    out.k_min_signal  = first<0 ? len : first;
+    out.k_max_signal  = last;
 
     /* ---------- 5. cleanup & return ------------------------------ */
-    free_em(em1);
     free_em(em2);
     free_em(em3);
     free(cnt);
@@ -416,9 +417,14 @@ int demo(void)
     }
 
     /* Fit the three candidate laws */
-    MixtureEM *em_nb  = fit_model(cnt,N,G,2,&NB_OPS  ,200,1e-6);
-    MixtureEM *em_po  = fit_model(cnt,N,G,2,&POIS_OPS,200,1e-6);
-    MixtureEM *em_ga  = fit_model(cnt,N,G,2,&GAU_OPS ,200,1e-6);
+    const DistOps* ops_nb[2] = {&NB_OPS, &NB_OPS};
+    MixtureEM *em_nb  = fit_model(cnt,N,G,2,ops_nb,200,1e-6);
+
+    const DistOps* ops_po[2] = {&POIS_OPS, &POIS_OPS};
+    MixtureEM *em_po  = fit_model(cnt,N,G,2,ops_po,200,1e-6);
+
+    const DistOps* ops_ga[2] = {&GAU_OPS, &GAU_OPS};
+    MixtureEM *em_ga  = fit_model(cnt,N,G,2,ops_ga,200,1e-6);
 
     printf("\n%-18s  LL=%.2f  BIC=%.2f\n", NB_OPS.name , em_nb->logL,  em_nb->bic);
     printf("%-18s  LL=%.2f  BIC=%.2f\n",   POIS_OPS.name, em_po->logL, em_po->bic);
