@@ -13,20 +13,22 @@ CAIRO_CFLAGS :=
 CAIRO_LIBS :=
 DEFINES :=
 
+# Source files (basenames only)
+SRCS_BASE=main.c assignBarcodes.c queue.c globals.c utils.c memory.c io.c
+SRCS = $(SRCS_BASE)
+
 # Add cairo flags and define if NO_HEATMAP is not set to 1
 ifeq ($(NO_HEATMAP), 1)
 	DEFINES += -DNO_HEATMAP
 else
 	CAIRO_CFLAGS := $(shell pkg-config --cflags cairo)
 	CAIRO_LIBS := $(shell pkg-config --libs cairo)
+	SRCS += heatmap.c
 endif
 
 # Combine all flags
 CFLAGS=-g -Wall -O3 -I$(INCDIR) -fopenmp $(GLIB_CFLAGS) $(CAIRO_CFLAGS) $(DEFINES)
 LDFLAGS=-lm -lpthread -lz -fopenmp $(GLIB_LIBS) $(CAIRO_LIBS)
-
-# Source files (basenames only)
-SRCS=main.c assignBarcodes.c queue.c globals.c utils.c memory.c io.c
 
 # Object files
 OBJS=$(SRCS:.c=.o)

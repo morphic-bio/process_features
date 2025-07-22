@@ -3,7 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <hdf5.h>
+#include "../include/common.h"
+#include "../include/globals.h"
 #include "plasma_colormap_16.h"
 #include "plasma_colormap_64.h"
 #include "plasma_colormap_256.h"
@@ -12,111 +13,6 @@
 #define BAR_WIDTH 20  // Width of the color bar
 #define BASE_PADDING 10  // Base padding for additional adjustments
 #define BAR_GRAPH_HEIGHT 100   // Height of the bar graph area
-typedef struct {
-    int n_obs;               // Number of rows
-    int n_vars;              // Number of columns
-    double **matrix;         // 2D array to hold the matrix values
-    char **obs_names;        // Array to hold row (obs) names
-    char **var_names;        // Array to hold column (var) names
-} H5ADData;
-void check_hdf5_error(hid_t status, const char *message) {
-    if (status < 0) {
-        fprintf(stderr, "HDF5 Error: %s\n", message);
-        exit(EXIT_FAILURE);
-    }
-}
-
-char **read_hdf5_string_array(hid_t file_id, const char *dataset_name, int *num_elements) {
-    hid_t dataset_id = H5Dopen(file_id, dataset_name, H5P_DEFAULT);
-    check_hdf5_error(dataset_id, "Failed to open dataset");
-
-    hid_t dataspace_id = H5Dget_space(dataset_id);
-    hsize_t dims[1];
-    H5Sget_simple_extent_dims(dataspace_id, dims, NULL);
-    *num_elements = (int)dims[0];
-
-    // Read the string data
-    char **string_array = (char **)malloc(*num_elements * sizeof(char *));
-    for (int i = 0; i < *num_elements; i++) {
-        string_array[i] = (char *)malloc(1024 * sizeof(char)); // Allocate memory for each string
-    }
-
-    hid_t memtype = H5Tcopy(H5T_C_S1);
-    H5Tset_size(memtype, H5T_VARIABLE);
-    H5Dread(dataset_id, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, string_array);
-
-    // Close HDF5 resources
-    H5Tclose(memtype);
-    H5Sclose(dataspace_id);
-    H5Dclose(dataset_id);
-
-    return string_array;
-}
-
-double **read_hdf5_matrix(hid_t file_id, const char *dataset_name, int *n_obs, int *n_vars) {
-    hid_t dataset_id = H5Dopen(file_id, dataset_name, H5P_DEFAULT);
-    check_hdf5_error(dataset_id, "Failed to open dataset");
-
-    // Get the dimensions of the matrix
-    hid_t dataspace_id = H5Dget_space(dataset_id);
-    hsize_t dims[2];
-    H5Sget_simple_extent_dims(dataspace_id, dims, NULL);
-    *n_obs = (int)dims[0];
-    *n_vars = (int)dims[1];
-
-    // Allocate memory for the matrix
-    double **matrix = (double **)malloc(*n_obs * sizeof(double *));
-    double *data = (double *)malloc((*n_obs) * (*n_vars) * sizeof(double));
-
-    for (int i = 0; i < *n_obs; i++) {
-        matrix[i] = data + i * (*n_vars);
-    }
-
-    // Read the matrix data
-    H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
-
-    // Close HDF5 resources
-    H5Sclose(dataspace_id);
-    H5Dclose(dataset_id);
-
-    return matrix;
-}
-
-H5ADData *read_h5ad(const char *filename) {
-    H5ADData *h5ad_data = (H5ADData *)malloc(sizeof(H5ADData));
-
-    // Open the file
-    hid_t file_id = H5Fopen(filename, H5F_ACC_RDONLY, H5P_DEFAULT);
-    check_hdf5_error(file_id, "Failed to open file");
-
-    // Read row (obs) names
-    h5ad_data->obs_names = read_hdf5_string_array(file_id, "obs/_index", &(h5ad_data->n_obs));
-
-    // Read column (var) names
-    h5ad_data->var_names = read_hdf5_string_array(file_id, "var/_index", &(h5ad_data->n_vars));
-
-    // Read the matrix
-    h5ad_data->matrix = read_hdf5_matrix(file_id, "X/data", &(h5ad_data->n_obs), &(h5ad_data->n_vars));
-
-    // Close the HDF5 file
-    H5Fclose(file_id);
-
-    return h5ad_data;
-}
-
-void free_h5ad_data(H5ADData *h5ad_data) {
-    for (int i = 0; i < h5ad_data->n_obs; i++) {
-        free(h5ad_data->obs_names[i]);
-    }
-    for (int i = 0; i < h5ad_data->n_vars; i++) {
-        free(h5ad_data->var_names[i]);
-    }
-    free(h5ad_data->obs_names);
-    free(h5ad_data->var_names);
-    free(h5ad_data->matrix[0]); // Free the flattened matrix
-    free(h5ad_data->matrix);
-    free(h5ad_data);
-}
 
 const double (*select_colormap(int dynamic_range, int *colormap_size))[3] {
     if (dynamic_range < 20) {
@@ -156,7 +52,7 @@ double normalize(int value, int max_value) {
     return (double)value / max_value;
 }
 
-/* // Function to generate heatmap with dynamic padding
+// Function to generate heatmap with dynamic padding
 void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms) {
     char output_file[1024];
     if (directory[strlen(directory) - 1] == '/') {
@@ -313,6 +209,6 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
     // Clean up
     cairo_destroy(cr);
     cairo_surface_destroy(surface);
-} */
+} 
 
 

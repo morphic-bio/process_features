@@ -49,4 +49,6 @@ unsigned char* read_whiteList(char *whitelist_filename,GHashTable *hash, int rev
 int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned char hamming_distance, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools);
 int split_line(char *line, char *fields[], const char *split_string);
 
+void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms);
+
 #endif // PROTOTYPES_H
