@@ -1361,6 +1361,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
                 int deduped_count = GPOINTER_TO_INT(dedup_value);
 
                 int f_idx = GPOINTER_TO_INT(dedup_key);          /* 1-based          */
+                deduped_counts[f_idx - 1] += deduped_count;      /* This was missing */
                 int c     = deduped_count;                       /* 0,1,2,…          */
 
                 GArray *h = feature_hist[f_idx];
@@ -1377,6 +1378,30 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
 
     }
     
+    // --- Step 3.5: Create cumulative histogram at index 0 ---
+    feature_hist[0] = g_array_new(FALSE, TRUE, sizeof(uint32_t));
+    if (feature_hist[0]) {
+        size_t max_len = 0;
+        for (int i = 1; i <= features->number_of_features; i++) {
+            if (feature_hist[i] && feature_hist[i]->len > max_len) {
+                max_len = feature_hist[i]->len;
+            }
+        }
+        g_array_set_size(feature_hist[0], max_len);
+        for (unsigned int j = 0; j < max_len; j++) {
+            g_array_index(feature_hist[0], uint32_t, j) = 0;
+        }
+
+        for (int i = 1; i <= features->number_of_features; i++) {
+            GArray *h = feature_hist[i];
+            if (h) {
+                for (guint j = 0; j < h->len; j++) {
+                    g_array_index(feature_hist[0], uint32_t, j) += g_array_index(h, uint32_t, j);
+                }
+            }
+        }
+    }
+
     // --- Step 4: Final Cleanup ---
     // This single call will now correctly destroy the outer hash table
     // AND trigger g_hash_table_destroy on each of the inner hash tables.
@@ -1724,7 +1749,7 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
 }
 
 
-void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, double gposterior, GHashTable *filtered_barcodes_hash){
+void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, double gposterior, GHashTable *filtered_barcodes_hash, int min_em_counts){
     process_pending_barcodes(hashes, pools, stats,min_posterior);
     double elapsed_time = get_time_in_seconds() - stats->start_time;
     fprintf(stderr, "Finished processing %ld reads in %.2f seconds (%.1f thousand reads/second)\n", stats->number_of_reads, elapsed_time, stats->number_of_reads / (double)elapsed_time / 1000.0);
@@ -1848,45 +1873,96 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     const int em_max_iter = 200;
     const double em_tol = 1e-6;
 
+    NBSignalCut cumulative_fit = {0};
+    int cumulative_fit_done = 0;
+
+    // Process cumulative histogram first
+    {
+        GArray *h = feature_hist[0];
+        long total_counts_in_hist = 0;
+        if (h && h->len > 0) {
+            for(unsigned int j=0; j<h->len; ++j) {
+                total_counts_in_hist += g_array_index(h, uint32_t, j);
+            }
+        }
+
+        if (total_counts_in_hist < min_em_counts) {
+            fprintf(stderr, "Warning: Cumulative counts (%ld) are below the minimum of %d. Skipping all EM fitting.\n", total_counts_in_hist, min_em_counts);
+        } else {
+            cumulative_fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
+                                               em_cutoff, em_max_iter, em_tol, min_counts);
+            cumulative_fit_done = 1;
+        }
+
+        long cumulative_deduped_counts = 0;
+        long cumulative_barcoded_counts = 0;
+        long cumulative_feature_counts = 0;
+        for (int i = 0; i < features->number_of_features; i++) {
+            cumulative_deduped_counts += total_deduped_counts[i];
+            cumulative_barcoded_counts += total_barcoded_counts[i];
+            cumulative_feature_counts += total_feature_counts[i];
+        }
+
+        NBSignalCut fit_to_print = cumulative_fit_done ? cumulative_fit : (NBSignalCut){0};
+        fprintf(feature_statsfp, "cumulative %ld %ld %ld %d %d %d %.2f\n",
+                cumulative_deduped_counts, cumulative_barcoded_counts, cumulative_feature_counts,
+                fit_to_print.k_min_signal, fit_to_print.k_max_signal, fit_to_print.n_comp, fit_to_print.bic);
+        fprintf(signal_range_fp, "cumulative\t%d\t%d\n", fit_to_print.k_min_signal, fit_to_print.k_max_signal);
+        fprintf(mixfp, "cumulative\t%d", fit_to_print.n_comp);
+        for (int k=0; k < fit_to_print.n_comp; ++k) {
+            fprintf(mixfp, "\t%.4f\t%.4f\t%.4f", fit_to_print.weight[k], fit_to_print.r[k], fit_to_print.p[k]);
+        }
+        for (int k=fit_to_print.n_comp; k < 3; ++k) {
+            fprintf(mixfp, "\t0.0\t0.0\t0.0");
+        }
+        fprintf(mixfp, "\t%.2f\n", fit_to_print.bic);
+    }
+
     for (int i = 0; i < features->number_of_features; i++) {
         if (!feature_printed[i]) {
-            GArray *h = feature_hist[i + 1]; // Histograms are 1-indexed
-            if (h && h->len > 0) {
-                // Ensure histogram is zero-padded if necessary
-                for(unsigned int j=0; j<h->len; ++j) if(!g_array_index(h,uint32_t,j))
-                                               g_array_index(h,uint32_t,j) = 0;
-
-                NBSignalCut fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
-                                                   em_cutoff, em_max_iter, em_tol, min_counts);
-                fprintf(feature_statsfp, "%s %d %d %d %d %d %d %.2f\n",
-                        features->feature_names[i],
-                        total_deduped_counts[i],
-                        total_barcoded_counts[i],
-                        total_feature_counts[i],
-                        fit.k_min_signal,
-                        fit.k_max_signal,
-                        fit.n_comp,
-                        fit.bic);
-
-                fprintf(signal_range_fp, "%s\t%d\t%d\n", features->feature_names[i], fit.k_min_signal, fit.k_max_signal);
-
-                fprintf(mixfp, "%s\t%d", features->feature_names[i], fit.n_comp);
-                for (int k=0; k < fit.n_comp; ++k) {
-                    fprintf(mixfp, "\t%.4f\t%.4f\t%.4f", fit.weight[k], fit.r[k], fit.p[k]);
+            NBSignalCut fit = {0};
+            if (cumulative_fit_done) {
+                GArray *h = feature_hist[i + 1]; // Histograms are 1-indexed
+                long total_counts_in_hist = 0;
+                if (h && h->len > 0) {
+                    for(unsigned int j=0; j<h->len; ++j) {
+                        total_counts_in_hist += g_array_index(h, uint32_t, j);
+                    }
                 }
-                for (int k=fit.n_comp; k < 3; ++k) {
-                    fprintf(mixfp, "\t0.0\t0.0\t0.0");
-                }
-                fprintf(mixfp, "\t%.2f\n", fit.bic);
-            } else {
-                fprintf(feature_statsfp,"%s %d %d %d 0 0 0 0.0\n",
-                        features->feature_names[i],
-                        total_deduped_counts[i],
-                        total_barcoded_counts[i],
-                        total_feature_counts[i]);
 
-                fprintf(signal_range_fp, "%s\t0\t0\n", features->feature_names[i]);
+                if (total_counts_in_hist < min_em_counts) {
+                    fit = cumulative_fit; // Use the stored cumulative fit
+                } else {
+                    // This feature has enough data, so perform its own fit
+                    for(unsigned int j=0; j<h->len; ++j) if(!g_array_index(h,uint32_t,j))
+                                                   g_array_index(h,uint32_t,j) = 0;
+                    fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
+                                                       em_cutoff, em_max_iter, em_tol, min_counts);
+                }
             }
+
+            // Now, print the results for this feature
+            fprintf(feature_statsfp, "%s %d %d %d %d %d %d %.2f\n",
+                    features->feature_names[i],
+                    total_deduped_counts[i],
+                    total_barcoded_counts[i],
+                    total_feature_counts[i],
+                    fit.k_min_signal,
+                    fit.k_max_signal,
+                    fit.n_comp,
+                    fit.bic);
+
+            fprintf(signal_range_fp, "%s\t%d\t%d\n", features->feature_names[i], fit.k_min_signal, fit.k_max_signal);
+
+            fprintf(mixfp, "%s\t%d", features->feature_names[i], fit.n_comp);
+            for (int k=0; k < fit.n_comp; ++k) {
+                fprintf(mixfp, "\t%.4f\t%.4f\t%.4f", fit.weight[k], fit.r[k], fit.p[k]);
+            }
+            for (int k=fit.n_comp; k < 3; ++k) {
+                fprintf(mixfp, "\t0.0\t0.0\t0.0");
+            }
+            fprintf(mixfp, "\t%.2f\n", fit.bic);
+
             feature_printed[i] = 1;
         }
     }
@@ -2732,7 +2808,7 @@ void process_files_in_sample(sample_args *args) {
         //[i] = NULL; // Avoid double-free in later cleanup
     }
     // Since merging is not required, finalize using the first thread's data.
-    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior, gposterior, args->filtered_barcodes_hash);
+    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior, gposterior, args->filtered_barcodes_hash, args->min_em_counts);
    
     // Free the reader sets
     for (int i = 0; i < sample_size; ++i)

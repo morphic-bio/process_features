@@ -304,8 +304,9 @@ em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
     for(int k=0;k<len;++k) n_cells += hist[k];
     if (n_cells == 0) {
         NBSignalCut out = {0};
-        out.n_comp = 2; // Default to 2-component if no data
+        out.n_comp = 1; // Default to 1-component if no data
         out.k_min_signal = len;
+        out.k_max_signal = len;
         return out;
     }
     int *vec = malloc(n_cells*sizeof(int));

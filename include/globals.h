@@ -34,4 +34,6 @@ extern int umi_code_length;
 extern long long max_reads;
 extern int limit_search;
 
+extern int min_em_counts;
+
 #endif // GLOBALS_H
