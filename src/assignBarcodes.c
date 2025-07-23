@@ -1428,7 +1428,11 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     fprintf (statsfp, "Percentage reads assigned to barcode %.4f\n", 100.0*(total_raw_counts/(double) (total_raw_counts+stats->total_unmatched_features)));
     fclose(statsfp);
 
+    // After writing the text files, generate the heatmaps
+    generate_heatmap(directory, features, coexpression_histograms);
+    generate_deduped_heatmap(directory, features, feature_hist, deduped_counts, min_counts);
 }
+
 int find_closest_barcodes(unsigned char* code,unsigned char *corrected_codes, unsigned char *indices){
     int number_of_variants=0;
     for (int i=0; i<barcode_length; i++){

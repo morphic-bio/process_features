@@ -44,6 +44,7 @@ int main(int argc, char *argv[])
     int set_consumer_threads_per_set=0;
     int set_search_threads_per_consumer=0;
     int min_em_counts = 100;
+    uint16_t min_prediction = 1;
 
     static struct option long_options[] = {
         {"whitelist", required_argument, 0, 'w'},
@@ -81,6 +82,7 @@ int main(int argc, char *argv[])
         {"filtered_barcodes", required_argument, 0, 12},
         {"min_EM_counts", required_argument, 0, 13},
         {"em_cumulative_limit", required_argument, 0, 14},
+        {"min_prediction", required_argument, 0, 15},
         {0, 0, 0, 0}
     };
 
@@ -123,6 +125,7 @@ int main(int argc, char *argv[])
             case 12: filtered_barcodes_filename = strdup(optarg); break;
             case 13: min_em_counts = atoi(optarg); break;
             case 14: em_cumulative_limit = atof(optarg); break;
+            case 15: min_prediction = atoi(optarg); break;
             default: fprintf(stderr, "Usage: %s [options]\n", argv[0]); return 1;
         }
     }
@@ -225,6 +228,7 @@ int main(int argc, char *argv[])
             args.filtered_barcodes_hash = filtered_barcodes_hash;
             args.min_em_counts = min_em_counts;
             args.em_cumulative_limit = em_cumulative_limit;
+            args.min_prediction = min_prediction;
             process_files_in_sample(&args);
             // cleanup_sample is handled within process_files_in_sample
             atomic_fetch_add(thread_counter, -threads_per_set);

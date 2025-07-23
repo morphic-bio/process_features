@@ -235,6 +235,8 @@ typedef struct sample_args {
     GHashTable *filtered_barcodes_hash;
     int min_em_counts;
     double em_cumulative_limit;
+    int heatmap_minimum_counts;
+    int min_prediction;
 } sample_args;
 
 typedef struct fastq_reader {

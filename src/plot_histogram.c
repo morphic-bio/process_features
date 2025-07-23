@@ -173,7 +173,7 @@ void generate_plotly_html(const char *filename,
 
     // Individual component traces
     for (int comp = 0; comp < em_fit.n_comp; comp++) {
-        const char* dist_type = (em_fit.p[comp] == -1.0) ? "Poisson" : "NB";
+        //const char* dist_type = (em_fit.p[comp] == -1.0) ? "Poisson" : "NB";
         const char* component_name = "";
         
         // Determine component name based on distribution and parameters
