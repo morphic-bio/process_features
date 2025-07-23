@@ -124,7 +124,7 @@ The tool can accept input FASTQ files in two ways:
     /path/to/sample1_fastqs/ \
     /path/to/sample2_fastqs/
 ```
-This command processes two samples located in separate directories. It uses 32 available threads, forking up to 8 sample-processing jobs at a time. It looks for feature sequences with up to 5 mismatches, starting at base 26 and searching 5 bases upstream and downstream.
+This command processes two samples located in separate directories. It uses 32 available threads, forking up to 8 sample-processing jobs at a time.
 
 ## Search methodology
 #### Initial fixed position search
@@ -142,17 +142,28 @@ To handle sequencing errors, the user specifies a maximum Hamming distance (`-m`
 
 ## Feature Assignment by Expectation-Maximization
 
-For barcodes that are associated with multiple features, an Expectation-Maximization (EM) algorithm can be used to refine feature assignments. This is particularly useful in cases of ambiguity, such as high-background data or when multiple feature sequences are very similar.
+For barcodes associated with multiple features, an Expectation-Maximization (EM) algorithm is used to probabilistically assign reads to their most likely source feature. This is particularly effective for resolving ambiguity in high-background datasets or when feature sequences are highly similar.
 
-The EM algorithm models the observed read counts for each barcode using a mixture of probability distributions. The user can choose between two models:
-1.  **Poisson Distribution**: Suitable for data with low to moderate dispersion.
-2.  **Negative Binomial Distribution**: Recommended for overdispersed count data, which is common in single-cell sequencing.
+The core of this process is a sophisticated mixture model that describes the distribution of read counts for each feature.
 
-The fitting process can be configured to run in two or three phases:
--   **Two-Phase Fitting**: In the first phase, a model is fitted to the top features that constitute a bulk of the reads (e.g., 80%). In the second phase, the remaining features are fitted.
--   **Three-Phase Fitting**: This adds a preliminary phase to identify and exclude outlier features that may be due to contamination or other artifacts before proceeding with the two-phase fitting.
+### Mixture Model Components
 
-Based on the final model, the algorithm calculates the posterior probability of each feature being the true source of the reads for a given barcode. A feature is assigned a count if its posterior probability exceeds the threshold set by `--gposterior`.
+The algorithm fits the observed count data to a mixture of distributions, with each component representing a distinct biological or technical phenomenon:
+
+1.  **Noise Component (Poisson Distribution):** A Poisson distribution is used to model the background noise, which typically consists of low-frequency, randomly occurring reads.
+2.  **Signal Component (Negative Binomial Distribution):** The primary signal from correctly identified feature barcodes is modeled using a Negative Binomial (NB) distribution. The NB distribution is well-suited for the overdispersed nature of single-cell count data.
+3.  **Multiplet Component (Negative Binomial Distribution):** An optional third component, also an NB distribution, is used to model multiplets—barcodes that have captured more than one distinct feature.
+
+### Model Selection and Safeguards
+
+To ensure a robust and accurate fit, `assignBarcodes` incorporates several safeguards:
+
+*   **Model Selection with BIC:** The tool fits both a 2-component (Noise + Signal) and a 3-component (Noise + Signal + Multiplet) model. The optimal model is selected based on the **Bayesian Information Criterion (BIC)**, which penalizes model complexity to prevent overfitting.
+*   **Multiplet Component Safeguard:** A 3-component model is chosen only if it has a better BIC score *and* the multiplet component accounts for a significant portion of the reads (default: >5% weight). This prevents the model from fitting a spurious multiplet component to noise.
+*   **Overdispersion Guard for Poisson:** The algorithm includes a check to prevent the Poisson (noise) component from fitting overdispersed data. If the variance of the data assigned to the noise component is much larger than its mean, the parameter updates are dampened, ensuring that this component correctly models only the background.
+*   **Global Default Distribution:** A global count histogram is first used to create a general-purpose model. This model serves as a scaled default for features with too few reads to derive a stable, independent fit.
+
+Based on the final fitted model, the algorithm calculates the posterior probability that a read belongs to the "signal" component. A feature is assigned a count if this probability exceeds the threshold set by `--gposterior`.
 
 ## UMI de-duplication
 
