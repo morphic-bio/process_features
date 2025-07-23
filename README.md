@@ -47,6 +47,7 @@ The tool can accept input FASTQ files in two ways:
 | `-w`, `--whitelist` | `[filename]` | Whitelist file for sequence barcodes. | (required) |
 | `-f`, `--featurelist` | `[filename]` | Feature list file (CSV with 'name' and 'sequence' columns). | (required) |
 | `-d`, `--directory` | `[path]` | Base output directory. A subdirectory will be created for each sample. | (required) |
+| `--filtered_barcodes` | `[filename]` | A file containing a list of barcodes to process, one per line. If provided, only these barcodes will be processed. | |
 | `--barcode_fastqs` | `[string]` | Comma-separated list of barcode FASTQ files. | |
 | `--forward_fastqs` | `[string]` | Comma-separated list of forward read FASTQ files. | |
 | `--reverse_fastqs` | `[string]` | Comma-separated list of reverse read FASTQ files. | |
@@ -80,16 +81,21 @@ The tool can accept input FASTQ files in two ways:
 | `--barcode_n` | `[int]` | Maximum number of 'N' bases allowed in a sequence barcode. | `1` |
 | `--max_reads` | `[long]` | Maximum number of reads to process from each FASTQ file. | `0` (all) |
 
+### EM Fitting
+
+| Flag | Argument | Description | Default |
+| :--- | :--- | :--- | :--- |
+| `--gposterior` | `[float]` | Global posterior probability threshold for the EM algorithm. | `0.9` |
+| `--min_EM_counts` | `[int]` | Minimum total counts for a barcode to be included in the EM fitting process. | `100` |
+| `--em_cumulative_limit` | `[float]` | Cumulative probability limit for including features in the EM model. | `0.0` |
 
 ### Performance & Parallelism
 
 | Flag | Argument | Description | Default |
 | :--- | :--- | :--- | :--- |
 | `-t`, `--threads` | `[int]` | Maximum number of concurrent processes (samples to process in parallel). | `8` |
-| `-T`, `--available_threads` | `[int]` | Total number of threads available to the program. `assignBarcodes` will attempt to optimally distribute them. | `8` |
 | `-S`, `--search_threads` | `[int]` | Manually set the number of threads for the feature search step (per consumer thread). Overrides automatic allocation. | `4` |
 | `-c`, `--consumer_threads_per_set`| `[int]` | Manually set the number of consumer threads per sample. Overrides automatic allocation. | `1` |
-| `-P`, `--parallel_by_file` | | Use one producer thread per FASTQ file instead of one per set of files. Can be faster for many small files. | `false` |
 | `-R`, `--read_buffer_lines` | `[int]` | Number of lines for the read buffer. | `1024` |
 | `-L`, `--average_read_length` | `[int]` | Estimated average read length for buffer allocation. | `300` |
 
@@ -134,6 +140,20 @@ To handle N's the user specifies a maximum number of Ns (`--barcode_n`) that are
 ### Feature barcodes
 To handle sequencing errors, the user specifies a maximum Hamming distance (`-m`). If a sequence matches a feature barcode within the Hamming distance and uniquely to a sequence with a minimum distance then it is assigned to that feature barcode. For N's up to a maximum specified by the user (`--feature_n`), all possible variations are generated for the N's and checked against the possible sequences. If there is a unique best match (minimum Hamming distance) that is less or equal to the maximum Hamming distance then it is assigned to that feature barcode. Assignments are tentative, pending the completion of the comprehensive search (unless there is an exact match). If there is no exact match, the comprehensive search attempts to find a better match.
 
+## Feature Assignment by Expectation-Maximization
+
+For barcodes that are associated with multiple features, an Expectation-Maximization (EM) algorithm can be used to refine feature assignments. This is particularly useful in cases of ambiguity, such as high-background data or when multiple feature sequences are very similar.
+
+The EM algorithm models the observed read counts for each barcode using a mixture of probability distributions. The user can choose between two models:
+1.  **Poisson Distribution**: Suitable for data with low to moderate dispersion.
+2.  **Negative Binomial Distribution**: Recommended for overdispersed count data, which is common in single-cell sequencing.
+
+The fitting process can be configured to run in two or three phases:
+-   **Two-Phase Fitting**: In the first phase, a model is fitted to the top features that constitute a bulk of the reads (e.g., 80%). In the second phase, the remaining features are fitted.
+-   **Three-Phase Fitting**: This adds a preliminary phase to identify and exclude outlier features that may be due to contamination or other artifacts before proceeding with the two-phase fitting.
+
+Based on the final model, the algorithm calculates the posterior probability of each feature being the true source of the reads for a given barcode. A feature is assigned a count if its posterior probability exceeds the threshold set by `--gposterior`.
+
 ## UMI de-duplication
 
 #### Introduction
@@ -152,19 +172,13 @@ Once the connected component is formed. The counts are aggregated based on two v
 
 ### Parallelization
 
-There are 3 levels of parallelization. The user can completely control the number of threads used in each parallelization process or can just assign the number of threads (`-T`) and allow `assignBarcodes` to apportion them out optimally. The different levels of parallelization used are:
-1.  **A producer-consumer model** that allows the reading of fastq files to take place simultaneously with the processing.
-2. **Parallelization of the hamming search** for features within reads.
-3. **Forking off separate processes** for multiple samples.
+There are two main levels of parallelization used in `assignBarcodes`:
+1.  **Process-Level Parallelism**: For handling multiple samples, `assignBarcodes` can fork a separate process for each sample. The maximum number of concurrent processes is controlled by `-t`. This is highly efficient for processing large datasets with many samples.
+2.  **Thread-Level Parallelism**: Within each sample's process, a multi-threaded producer-consumer model is used.
+    -   **Producer-Consumer Model**: One thread reads the FASTQ files (barcode, forward, and reverse reads) and populates a buffer. Multiple consumer threads pull data from this buffer to perform barcode processing and feature assignment.
+    -   **Parallel Hamming Search**: The exhaustive search for feature sequences is parallelized using OpenMP. The search is broken down into four independent sub-searches that are executed concurrently. The number of threads for this search can be controlled with `-S`.
 
-#### Fastq input and processing
-This is done using pthreads. The default strategy is to have one thread read the barcode file, the forward file and if it exists the reverse read file. The user also has the option to use a thread for each fastq file (`-P`). Though this has more overhead, it can be faster when there is are only a few samples that are split into many files and/or there are many processors available with a fast SSD. One or more consumer threads pull reads from the buffer and processes them while the fastq reader(s) populate them from the files.
-
-#### Hamming search parallelization
-The search function proceeds using 4 independent search frames. OpenMP is used to assign up to 4 threads to parallelize and increase the search speed. The number of threads can be controlled with `-S`.
-
-#### Forking off separate processes
-To handle multiple samples, `assignBarcodes` can fork off a separate process for each. The maximum number of concurrent processes is controlled by `-t`. This is considerably faster than using OpenMP with little extra overhead as the memory footprint is very small (often less than 1GB per process - closer to 100 MB for ATAC and scRNA-seq files as most of their reads do not have feature barcodes).
+The number of consumer threads is managed with the `-c` flag. This two-level parallel architecture ensures high performance by maximizing CPU utilization across multiple cores and machines.
 
 ### Feature and sequence file formats
 
@@ -200,6 +214,9 @@ Each of the matched sequences is displayed under the feature index that they are
 #### Feature frequency histogram heatmap
 After deduplication, a histogram of the number of features assigned to each cell barcode is generated. This can be visualized in `heatmap.png`. The perfect scenario would be nearly all cells have 1 feature assigned to them, with a small distribution representing multiplets and another small distribution from empty cells. Underneath is a heatmap where each row is the same histogram, but only showing cells that have that feature in it. The values of the histograms are space separated in `feature_histograms.txt`. There is also another file with the coexpression matrix, i.e. how many times feature i is seen with feature j. This is in `feature_coexpression.txt`.
 
+#### Deduplicated Count Histograms
+For each feature, a histogram of deduplicated counts per barcode is generated and saved to `deduped_feature_histograms.txt`. This file provides insights into the distribution of each feature across the cell population. Additionally, plots for these histograms are generated for the top features, providing a quick visual assessment of their expression levels.
+
 ###### Heatmap example
 ![Heatmap example](./graphics/heatmap.png)
 
@@ -210,6 +227,8 @@ The repository is organized into the following main directories:
 -   **`src/`**: Contains all the C source code files.
     -   `main.c`: The main entry point of the application, handles command-line argument parsing and orchestrates the overall workflow.
     -   `assignBarcodes.c`: Core logic for barcode assignment, error correction, and feature matching.
+    -   `EMfit.c`: Implementation of the Expectation-Maximization algorithm for feature assignment.
+    -   `plot_histogram.c`: Functions for generating QC histograms.
     -   `io.c`: Functions related to reading FASTQ files and handling input.
     -   `memory.c`: Memory management utilities, including memory pools for efficient allocation.
     -   `queue.c`: Implementation of a queue data structure used for parallel processing.
@@ -217,9 +236,14 @@ The repository is organized into the following main directories:
     -   `globals.c`: Definitions of global variables.
     -   `heatmap.c`: Functions for generating the QC heatmap image.
 -   **`include/`**: Contains all the header files.
-    -   `prototypes.h`: Function prototypes for functions defined in the `src` directory.
     -   `common.h`: Common headers, structs, and macros used throughout the project.
-    -   `...`: Other header files defining specific data structures and constants.
+    -   `prototypes.h`: Function prototypes for functions defined in the `src` directory.
+    -   `globals.h`: Header for global variables.
+    -   `io.h`: Header for I/O functions.
+    -   `memory.h`: Header for memory management utilities.
+    -   `queue.h`: Header for the queue data structure.
+    -   `utils.h`: Header for utility functions.
+    -   `plot_histogram.h`: Header for histogram plotting functions.
 -   **`scripts/`**: Contains utility scripts for testing and other purposes.
 -   **`graphics/`**: Contains image files used in the documentation.
 -   **`Makefile`**: The main makefile for compiling the project.
