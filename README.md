@@ -222,11 +222,19 @@ Feature Index Sequence Hamming_distance Counts Feature_name
 ```
 Each of the matched sequences is displayed under the feature index that they are matched to. Mismatches relative to the reference feature are shown in lowercase.
 
+#### Interactive Cumulative Histogram Plot
+An interactive HTML plot file named `cumulative_histogram_with_em_fit.html` is generated in each sample's output directory. This plot displays the cumulative histogram of feature counts per barcode, overlaid with the Expectation-Maximization (EM) model fit.
+
+Key features of this plot include:
+- **Interactive Scales**: A dropdown menu allows switching the Y-axis between linear and logarithmic scales for better visualization of count distributions.
+- **Component Visualization**: The individual components of the EM fit (e.g., noise, signal, multiplets) are plotted as separate lines.
+- **Cutoff Lines**: Vertical lines indicate the minimum and maximum signal cutoffs determined by the EM model, as well as the user-defined minimum counts threshold.
+- **Detailed Information**: Hovering over the plot provides detailed information about the observed counts and the fitted model values.
+
+This plot is crucial for quality control, allowing for a visual assessment of the EM model's performance and the resulting signal-to-noise separation.
+
 #### Feature frequency histogram heatmap
 After deduplication, a histogram of the number of features assigned to each cell barcode is generated. This can be visualized in `heatmap.png`. The perfect scenario would be nearly all cells have 1 feature assigned to them, with a small distribution representing multiplets and another small distribution from empty cells. Underneath is a heatmap where each row is the same histogram, but only showing cells that have that feature in it. The values of the histograms are space separated in `feature_histograms.txt`. There is also another file with the coexpression matrix, i.e. how many times feature i is seen with feature j. This is in `feature_coexpression.txt`.
-
-#### Deduplicated Count Histograms
-For each feature, a histogram of deduplicated counts per barcode is generated and saved to `deduped_feature_histograms.txt`. This file provides insights into the distribution of each feature across the cell population. Additionally, plots for these histograms are generated for the top features, providing a quick visual assessment of their expression levels.
 
 ###### Heatmap example
 ![Heatmap example](./graphics/heatmap.png)

@@ -117,6 +117,11 @@ void generate_plotly_html(const char *filename,
     }
     fprintf(fp, "];\n");
 
+    // Calculate y-axis range for plots
+    fprintf(fp, "        var y_axis_max = Math.max(...hist_y) * 1.1;\n");
+    fprintf(fp, "        var log_y_max = (y_axis_max > 0) ? Math.log10(y_axis_max) : 0;\n");
+
+
     // Theoretical fit data (scaled to match histogram counts)
     fprintf(fp, "        var fit_x = [");
     for (int i = 0; i < hist_len; i++) {
@@ -207,7 +212,7 @@ void generate_plotly_html(const char *filename,
     // Vertical lines for cutoffs
     fprintf(fp, "        var min_cutoff_trace = {\n");
     fprintf(fp, "            x: [%d, %d],\n", em_fit.k_min_signal, em_fit.k_min_signal);
-    fprintf(fp, "            y: [0, Math.max(...hist_y) * 1.1],\n");
+    fprintf(fp, "            y: [0, y_axis_max],\n");
     fprintf(fp, "            type: 'scatter',\n");
     fprintf(fp, "            mode: 'lines',\n");
     fprintf(fp, "            name: 'Min Signal Cutoff (%d)',\n", em_fit.k_min_signal);
@@ -217,7 +222,7 @@ void generate_plotly_html(const char *filename,
 
     fprintf(fp, "        var max_cutoff_trace = {\n");
     fprintf(fp, "            x: [%d, %d],\n", em_fit.k_max_signal, em_fit.k_max_signal);
-    fprintf(fp, "            y: [0, Math.max(...hist_y) * 1.1],\n");
+    fprintf(fp, "            y: [0, y_axis_max],\n");
     fprintf(fp, "            type: 'scatter',\n");
     fprintf(fp, "            mode: 'lines',\n");
     fprintf(fp, "            name: 'Max Signal Cutoff (%d)',\n", em_fit.k_max_signal);
@@ -228,7 +233,7 @@ void generate_plotly_html(const char *filename,
     // Min counts line
     fprintf(fp, "        var min_counts_trace = {\n");
     fprintf(fp, "            x: [%d, %d],\n", min_counts, min_counts);
-    fprintf(fp, "            y: [0, Math.max(...hist_y) * 1.1],\n");
+    fprintf(fp, "            y: [0, y_axis_max],\n");
     fprintf(fp, "            type: 'scatter',\n");
     fprintf(fp, "            mode: 'lines',\n");
     fprintf(fp, "            name: 'Min Counts Threshold (%d)',\n", min_counts);
@@ -259,8 +264,33 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "            },\n");
     fprintf(fp, "            yaxis: {\n");
     fprintf(fp, "                title: 'Frequency',\n");
-    fprintf(fp, "                type: 'linear'\n");
+    fprintf(fp, "                type: 'linear',\n");
+    fprintf(fp, "                autorange: true\n");
     fprintf(fp, "            },\n");
+    fprintf(fp, "            updatemenus: [\n");
+    fprintf(fp, "                {\n");
+    fprintf(fp, "                    buttons: [\n");
+    fprintf(fp, "                        {\n");
+    fprintf(fp, "                            args: [{'yaxis.type': 'linear', 'yaxis.autorange': true}],\n");
+    fprintf(fp, "                            label: 'Linear Y-axis',\n");
+    fprintf(fp, "                            method: 'relayout'\n");
+    fprintf(fp, "                        },\n");
+    fprintf(fp, "                        {\n");
+    fprintf(fp, "                            args: [{'yaxis.type': 'log', 'yaxis.range': [-2, log_y_max]}],\n");
+    fprintf(fp, "                            label: 'Log Y-axis',\n");
+    fprintf(fp, "                            method: 'relayout'\n");
+    fprintf(fp, "                        }\n");
+    fprintf(fp, "                    ],\n");
+    fprintf(fp, "                    direction: 'down',\n");
+    fprintf(fp, "                    pad: {t: 10, r: 10},\n");
+    fprintf(fp, "                    showactive: true,\n");
+    fprintf(fp, "                    type: 'dropdown',\n");
+    fprintf(fp, "                    x: 1.02,\n");
+    fprintf(fp, "                    xanchor: 'left',\n");
+    fprintf(fp, "                    y: 1.12,\n");
+    fprintf(fp, "                    yanchor: 'top'\n");
+    fprintf(fp, "                }\n");
+    fprintf(fp, "            ],\n");
     fprintf(fp, "            showlegend: true,\n");
     fprintf(fp, "            legend: {\n");
     fprintf(fp, "                x: 1.02,\n");
