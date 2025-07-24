@@ -2,17 +2,111 @@
 #include "../include/globals.h"
 #include "../include/EMfit.h"
 #include <math.h>
+#include <string.h>
+#include <stdlib.h>
+
+
+// --- Static Helper Functions for Plotting ---
 
 // Helper function to calculate negative binomial PMF
-double nb_pmf(int k, double r, double p) {
+static double nb_pmf(int k, double r, double p) {
     if (k < 0 || r <= 0.0 || p <= 0.0 || p >= 1.0) return 0.0;
     return exp(lgamma(k + r) - lgamma(k + 1) - lgamma(r) + r*log(p) + k*log(1.0 - p));
 }
 
 // Helper function to calculate Poisson PMF
-double poisson_pmf(int k, double lambda) {
+static double poisson_pmf(int k, double lambda) {
     if (k < 0 || lambda <= 0) return 0.0;
     return exp(k*log(lambda) - lambda - lgamma(k + 1));
+}
+
+// Function to calculate individual component values
+static void calculate_individual_components(NBSignalCut em_fit, int max_count, double **component_values, long total_counts) {
+    for (int comp = 0; comp < em_fit.n_comp; comp++) {
+        for (int k = 0; k <= max_count; k++) {
+            double component_value = 0.0;
+            
+            if (em_fit.p[comp] == -1.0) {
+                // Poisson component
+                component_value = poisson_pmf(k, em_fit.r[comp]);
+            } else {
+                // Negative binomial component
+                component_value = nb_pmf(k, em_fit.r[comp], em_fit.p[comp]);
+            }
+            
+            // Scale by weight and total counts
+            component_values[comp][k] = em_fit.weight[comp] * component_value * total_counts;
+        }
+    }
+}
+
+static void print_js_array_uint32(FILE* f, const char* name, const uint32_t* data, int len) {
+    fprintf(f, "var %s = [", name);
+    for(int i=0; i<len; ++i) {
+        fprintf(f, "%u%s", data[i], (i==len-1 ? "" : ","));
+    }
+    fprintf(f, "];\n");
+}
+
+static void print_js_array_double(FILE* f, const char* name, const double* data, int len) {
+    fprintf(f, "var %s = [", name);
+    for(int i=0; i<len; ++i) {
+        fprintf(f, "%.6f%s", data[i], (i==len-1 ? "" : ","));
+    }
+    fprintf(f, "];\n");
+}
+
+static void generate_traces_for_plotly(FILE *fp, const char* prefix, const uint32_t* hist_data, int hist_len, NBSignalCut fit) {
+    long total_counts = 0;
+    for (int i = 0; i < hist_len; i++) total_counts += hist_data[i];
+    
+    const char* view_name = (strcmp(prefix, "cumulative") == 0) ? "Cumulative" : "Average";
+
+    // --- Histogram Trace ---
+    fprintf(fp, "var %s_hist_trace = { x: x_axis, y: %s_hist_y, type: 'bar', name: 'Observed Histogram', legendgroup: '%s', marker: { color: 'rgba(55, 128, 191, 0.7)', line: { color: 'rgba(55, 128, 191, 1.0)', width: 1 } }, opacity: 0.7 };\n", prefix, prefix, prefix);
+    
+    // --- Overall Fit Trace ---
+    double *fit_values = malloc((hist_len + 1) * sizeof(double));
+    if (!fit_values) { return; }
+    calculate_theoretical_fit(fit, hist_len, fit_values);
+    for (int i = 0; i < hist_len; i++) fit_values[i] *= total_counts;
+    print_js_array_double(fp, "fit_y", fit_values, hist_len);
+    free(fit_values);
+    fprintf(fp, "var %s_fit_trace = { x: x_axis, y: fit_y, type: 'scatter', mode: 'lines', name: '%s EM Fit (%d-comp)', legendgroup: '%s', line: { color: 'red', width: 3 } };\n", prefix, view_name, fit.n_comp, prefix);
+
+    // --- Individual Component Traces ---
+    const char* component_colors[] = {"blue", "green", "orange", "purple"};
+    const char* component_dash[] = {"dot", "dashdot", "longdash", "longdashdot"};
+    if (fit.n_comp > 0) {
+        double **comp_values = malloc(fit.n_comp * sizeof(double*));
+        if (!comp_values) { return; }
+        for (int i = 0; i < fit.n_comp; i++) {
+            comp_values[i] = malloc((hist_len + 1) * sizeof(double));
+            if (!comp_values[i]) { free(comp_values); return; }
+        }
+        calculate_individual_components(fit, hist_len, comp_values, total_counts);
+        for (int i = 0; i < fit.n_comp; i++) {
+            print_js_array_double(fp, "comp_y", comp_values[i], hist_len);
+            
+            const char* component_name = "";
+            if (fit.p[i] == -1.0) {
+                component_name = "Background (Poisson)";
+            } else {
+                double mean = fit.r[i] * (1.0 - fit.p[i]) / fit.p[i];
+                if (i == 0 || mean < 10) component_name = "Signal (NB)";
+                else component_name = "Multiplet (NB)";
+            }
+            
+            fprintf(fp, "var %s_comp%d_trace = { x: x_axis, y: comp_y, type: 'scatter', mode: 'lines', name: 'Comp %d: %s', legendgroup: '%s', line: { color: '%s', width: 2, dash: '%s' }, opacity: 0.8 };\n", prefix, i, i+1, component_name, prefix, component_colors[i % 4], component_dash[i % 4]);
+            free(comp_values[i]);
+        }
+        free(comp_values);
+    }
+    
+    // --- Cutoff Traces ---
+    fprintf(fp, "var %s_y_max = Math.max(...%s_hist_y) * 1.1;\n", prefix, prefix);
+    fprintf(fp, "var %s_min_cutoff = { x: [%d,%d], y: [0,%s_y_max], type:'scatter', mode:'lines', name:'%s Min Signal (%d)', legendgroup: '%s', line: {color: 'darkgreen', width: 2, dash: 'dash'} };\n", prefix, fit.k_min_signal, fit.k_min_signal, prefix, view_name, fit.k_min_signal, prefix);
+    fprintf(fp, "var %s_max_cutoff = { x: [%d,%d], y: [0,%s_y_max], type:'scatter', mode:'lines', name:'%s Max Signal (%d)', legendgroup: '%s', line: {color: 'darkorange', width: 2, dash: 'dash'} };\n", prefix, fit.k_max_signal, fit.k_max_signal, prefix, view_name, fit.k_max_signal, prefix);
 }
 
 void calculate_theoretical_fit(NBSignalCut em_fit, int max_count, double *fit_values) {
@@ -35,312 +129,15 @@ void calculate_theoretical_fit(NBSignalCut em_fit, int max_count, double *fit_va
     }
 }
 
-// New function to calculate individual component values
-void calculate_individual_components(NBSignalCut em_fit, int max_count, double **component_values, long total_counts) {
-    for (int comp = 0; comp < em_fit.n_comp; comp++) {
-        for (int k = 0; k <= max_count; k++) {
-            double component_value = 0.0;
-            
-            if (em_fit.p[comp] == -1.0) {
-                // Poisson component
-                component_value = poisson_pmf(k, em_fit.r[comp]);
-            } else {
-                // Negative binomial component
-                component_value = nb_pmf(k, em_fit.r[comp], em_fit.p[comp]);
-            }
-            
-            // Scale by weight and total counts
-            component_values[comp][k] = em_fit.weight[comp] * component_value * total_counts;
-        }
-    }
-}
+void plot_combined_histogram_with_em(const char *directory,
+                                     GArray *cumulative_histogram,
+                                     NBSignalCut cumulative_em_fit,
+                                     uint16_t min_counts,
+                                     double posterior_cutoff,
+                                     int n_features,
+                                     double em_cumulative_limit) {
 
-void generate_plotly_html(const char *filename, 
-                         const uint32_t *hist_data, 
-                         int hist_len,
-                         NBSignalCut em_fit, 
-                         uint16_t min_counts,
-                         double posterior_cutoff) {
-    FILE *fp = fopen(filename, "w");
-    if (!fp) {
-        fprintf(stderr, "Error: Cannot create file %s\n", filename);
-        return;
-    }
-
-    // Calculate theoretical fit values
-    double *fit_values = malloc((hist_len + 1) * sizeof(double));
-    if (!fit_values) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
-        fclose(fp);
-        return;
-    }
-    
-    // Allocate memory for individual components
-    double **component_values = malloc(em_fit.n_comp * sizeof(double*));
-    for (int comp = 0; comp < em_fit.n_comp; comp++) {
-        component_values[comp] = malloc((hist_len + 1) * sizeof(double));
-    }
-    
-    calculate_theoretical_fit(em_fit, hist_len, fit_values);
-    
-    // Find total counts for scaling the theoretical fit
-    long total_counts = 0;
-    for (int i = 0; i < hist_len; i++) {
-        total_counts += hist_data[i];
-    }
-
-    // Calculate individual component values
-    calculate_individual_components(em_fit, hist_len, component_values, total_counts);
-
-    // Write HTML header
-    fprintf(fp, "<!DOCTYPE html>\n");
-    fprintf(fp, "<html>\n");
-    fprintf(fp, "<head>\n");
-    fprintf(fp, "    <title>Average Feature UMI counts</title>\n");
-    fprintf(fp, "    <script src=\"https://cdn.plot.ly/plotly-latest.min.js\"></script>\n");
-    fprintf(fp, "</head>\n");
-    fprintf(fp, "<body>\n");
-    fprintf(fp, "    <div id=\"plot\" style=\"width:100%%;height:600px;\"></div>\n");
-    fprintf(fp, "    <script>\n");
-
-    // Histogram data
-    fprintf(fp, "        var hist_x = [");
-    for (int i = 0; i < hist_len; i++) {
-        if (i > 0) fprintf(fp, ", ");
-        fprintf(fp, "%d", i);
-    }
-    fprintf(fp, "];\n");
-
-    fprintf(fp, "        var hist_y = [");
-    for (int i = 0; i < hist_len; i++) {
-        if (i > 0) fprintf(fp, ", ");
-        fprintf(fp, "%u", hist_data[i]);
-    }
-    fprintf(fp, "];\n");
-
-    // Calculate y-axis range for plots
-    fprintf(fp, "        var y_axis_max = Math.max(...hist_y) * 1.1;\n");
-    fprintf(fp, "        var log_y_min = Math.log10(0.5);\n");
-    fprintf(fp, "        var log_y_max = (y_axis_max > 0) ? Math.log10(y_axis_max) : 0;\n");
-
-
-    // Find last bin with frequency >= 1 to set x-axis range
-    int last_bin_with_data = 0;
-    for (int i = hist_len - 1; i >= 1; i--) {
-        if (hist_data[i] >= 1) {
-            last_bin_with_data = i;
-            break;
-        }
-    }
-    int x_axis_max = (last_bin_with_data + 4) / 5 * 5;
-    if (x_axis_max == 0) x_axis_max = 5;
-
-
-    // Theoretical fit data (scaled to match histogram counts)
-    fprintf(fp, "        var fit_x = [");
-    for (int i = 0; i < hist_len; i++) {
-        if (i > 0) fprintf(fp, ", ");
-        fprintf(fp, "%d", i);
-    }
-    fprintf(fp, "];\n");
-
-    fprintf(fp, "        var fit_y = [");
-    for (int i = 0; i < hist_len; i++) {
-        if (i > 0) fprintf(fp, ", ");
-        fprintf(fp, "%.6f", fit_values[i] * total_counts);
-    }
-    fprintf(fp, "];\n");
-
-    // Individual component data
-    const char* component_colors[] = {"blue", "green", "orange", "purple"};
-    const char* component_dash[] = {"dot", "dashdot", "longdash", "longdashdot"};
-    
-    for (int comp = 0; comp < em_fit.n_comp; comp++) {
-        fprintf(fp, "        var comp%d_x = [", comp);
-        for (int i = 0; i < hist_len; i++) {
-            if (i > 0) fprintf(fp, ", ");
-            fprintf(fp, "%d", i);
-        }
-        fprintf(fp, "];\n");
-
-        fprintf(fp, "        var comp%d_y = [", comp);
-        for (int i = 0; i < hist_len; i++) {
-            if (i > 0) fprintf(fp, ", ");
-            fprintf(fp, "%.6f", component_values[comp][i]);
-        }
-        fprintf(fp, "];\n");
-    }
-
-    // Define traces
-    fprintf(fp, "        var histogram_trace = {\n");
-    fprintf(fp, "            x: hist_x,\n");
-    fprintf(fp, "            y: hist_y,\n");
-    fprintf(fp, "            type: 'bar',\n");
-    fprintf(fp, "            name: 'Observed Histogram',\n");
-    fprintf(fp, "            marker: { color: 'rgba(55, 128, 191, 0.7)', line: { color: 'rgba(55, 128, 191, 1.0)', width: 1 } },\n");
-    fprintf(fp, "            opacity: 0.7\n");
-    fprintf(fp, "        };\n");
-
-    fprintf(fp, "        var fit_trace = {\n");
-    fprintf(fp, "            x: fit_x,\n");
-    fprintf(fp, "            y: fit_y,\n");
-    fprintf(fp, "            type: 'scatter',\n");
-    fprintf(fp, "            mode: 'lines',\n");
-    fprintf(fp, "            name: 'Overall EM Fit (%d components)',\n", em_fit.n_comp);
-    fprintf(fp, "            line: { color: 'red', width: 3 }\n");
-    fprintf(fp, "        };\n");
-
-    // Individual component traces
-    for (int comp = 0; comp < em_fit.n_comp; comp++) {
-        //const char* dist_type = (em_fit.p[comp] == -1.0) ? "Poisson" : "NB";
-        const char* component_name = "";
-        
-        // Determine component name based on distribution and parameters
-        if (em_fit.p[comp] == -1.0) {
-            component_name = "Background (Poisson)";
-        } else {
-            // For NB components, try to identify based on mean
-            double mean = em_fit.r[comp] * (1.0 - em_fit.p[comp]) / em_fit.p[comp];
-            if (comp == 0 || mean < 10) {
-                component_name = "Signal (NB)";
-            } else {
-                component_name = "Multiplet (NB)";
-            }
-        }
-        
-        fprintf(fp, "        var comp%d_trace = {\n", comp);
-        fprintf(fp, "            x: comp%d_x,\n", comp);
-        fprintf(fp, "            y: comp%d_y,\n", comp);
-        fprintf(fp, "            type: 'scatter',\n");
-        fprintf(fp, "            mode: 'lines',\n");
-        if (em_fit.p[comp] == -1.0) {
-            fprintf(fp, "            name: 'Component %d: %s (λ=%.3f, w=%.3f)',\n", comp + 1, component_name, em_fit.r[comp], em_fit.weight[comp]);
-        } else {
-            fprintf(fp, "            name: 'Component %d: %s (r=%.3f, p=%.3f, w=%.3f)',\n", comp + 1, component_name, em_fit.r[comp], em_fit.p[comp], em_fit.weight[comp]);
-        }
-        fprintf(fp, "            line: { color: '%s', width: 2, dash: '%s' },\n", component_colors[comp % 4], component_dash[comp % 4]);
-        fprintf(fp, "            opacity: 0.8\n");
-        fprintf(fp, "        };\n");
-    }
-
-    // Vertical lines for cutoffs
-    fprintf(fp, "        var min_cutoff_trace = {\n");
-    fprintf(fp, "            x: [%d, %d],\n", em_fit.k_min_signal, em_fit.k_min_signal);
-    fprintf(fp, "            y: [0, y_axis_max],\n");
-    fprintf(fp, "            type: 'scatter',\n");
-    fprintf(fp, "            mode: 'lines',\n");
-    fprintf(fp, "            name: 'Min Signal Cutoff (%d)',\n", em_fit.k_min_signal);
-    fprintf(fp, "            line: { color: 'darkgreen', width: 2, dash: 'dash' },\n");
-    fprintf(fp, "            showlegend: true\n");
-    fprintf(fp, "        };\n");
-
-    fprintf(fp, "        var max_cutoff_trace = {\n");
-    fprintf(fp, "            x: [%d, %d],\n", em_fit.k_max_signal, em_fit.k_max_signal);
-    fprintf(fp, "            y: [0, y_axis_max],\n");
-    fprintf(fp, "            type: 'scatter',\n");
-    fprintf(fp, "            mode: 'lines',\n");
-    fprintf(fp, "            name: 'Max Signal Cutoff (%d)',\n", em_fit.k_max_signal);
-    fprintf(fp, "            line: { color: 'darkorange', width: 2, dash: 'dash' },\n");
-    fprintf(fp, "            showlegend: true\n");
-    fprintf(fp, "        };\n");
-
-    // Dummy trace for posterior cutoff
-    fprintf(fp, "        var posterior_trace = {\n");
-    fprintf(fp, "            x: [null],\n");
-    fprintf(fp, "            y: [null],\n");
-    fprintf(fp, "            type: 'scatter',\n");
-    fprintf(fp, "            mode: 'markers',\n");
-    fprintf(fp, "            name: 'Posterior Cutoff: %.3f',\n", posterior_cutoff);
-    fprintf(fp, "            marker: { size: 0 },\n");
-    fprintf(fp, "            showlegend: true\n");
-    fprintf(fp, "        };\n");
-
-    // Layout
-    fprintf(fp, "        var layout = {\n");
-    fprintf(fp, "            title: {\n");
-    fprintf(fp, "                text: 'Average Feature UMI counts<br><sub>BIC: %.2f, Components: %d</sub>',\n", em_fit.bic, em_fit.n_comp);
-    fprintf(fp, "                x: 0.5\n");
-    fprintf(fp, "            },\n");
-    fprintf(fp, "            xaxis: {\n");
-    fprintf(fp, "                title: 'UMI counts',\n");
-    fprintf(fp, "                type: 'linear',\n");
-    fprintf(fp, "                range: [0.5, %d]\n", x_axis_max);
-    fprintf(fp, "            },\n");
-    fprintf(fp, "            yaxis: {\n");
-    fprintf(fp, "                title: 'Frequency',\n");
-    fprintf(fp, "                type: 'linear',\n");
-    fprintf(fp, "                autorange: true\n");
-    fprintf(fp, "            },\n");
-    fprintf(fp, "            updatemenus: [\n");
-    fprintf(fp, "                {\n");
-    fprintf(fp, "                    buttons: [\n");
-    fprintf(fp, "                        {\n");
-    fprintf(fp, "                            args: [{'yaxis.type': 'linear', 'yaxis.autorange': true}],\n");
-    fprintf(fp, "                            label: 'Linear Y-axis',\n");
-    fprintf(fp, "                            method: 'relayout'\n");
-    fprintf(fp, "                        },\n");
-    fprintf(fp, "                        {\n");
-    fprintf(fp, "                            args: [{'yaxis.type': 'log', 'yaxis.range': [log_y_min, log_y_max]}],\n");
-    fprintf(fp, "                            label: 'Log Y-axis',\n");
-    fprintf(fp, "                            method: 'relayout'\n");
-    fprintf(fp, "                        }\n");
-    fprintf(fp, "                    ],\n");
-    fprintf(fp, "                    direction: 'down',\n");
-    fprintf(fp, "                    pad: {t: 10, r: 10},\n");
-    fprintf(fp, "                    showactive: true,\n");
-    fprintf(fp, "                    type: 'dropdown',\n");
-    fprintf(fp, "                    x: 0.1,\n");
-    fprintf(fp, "                    xanchor: 'left',\n");
-    fprintf(fp, "                    y: 1.15,\n");
-    fprintf(fp, "                    yanchor: 'top'\n");
-    fprintf(fp, "                }\n");
-    fprintf(fp, "            ],\n");
-    fprintf(fp, "            showlegend: true,\n");
-    fprintf(fp, "            legend: {\n");
-    fprintf(fp, "                x: 1.02,\n");
-    fprintf(fp, "                y: 1.0,\n");
-    fprintf(fp, "                xanchor: 'left',\n");
-    fprintf(fp, "                yanchor: 'top',\n");
-    fprintf(fp, "                bgcolor: 'rgba(255,255,255,0.8)',\n");
-    fprintf(fp, "                bordercolor: 'black',\n");
-    fprintf(fp, "                borderwidth: 1\n");
-    fprintf(fp, "            },\n");
-    fprintf(fp, "            hovermode: 'x unified'\n");
-    fprintf(fp, "        };\n");
-
-    // Combine all traces
-    fprintf(fp, "        var data = [histogram_trace, fit_trace");
-    for (int comp = 0; comp < em_fit.n_comp; comp++) {
-        fprintf(fp, ", comp%d_trace", comp);
-    }
-    fprintf(fp, ", min_cutoff_trace, max_cutoff_trace, posterior_trace];\n");
-    
-    fprintf(fp, "        Plotly.newPlot('plot', data, layout);\n");
-
-    fprintf(fp, "    </script>\n");
-    fprintf(fp, "</body>\n");
-    fprintf(fp, "</html>\n");
-
-    fclose(fp);
-    
-    // Free allocated memory
-    free(fit_values);
-    for (int comp = 0; comp < em_fit.n_comp; comp++) {
-        free(component_values[comp]);
-    }
-    free(component_values);
-    
-    fprintf(stderr, "Average histogram plot with individual components saved to: %s\n", filename);
-}
-
-void plot_average_histogram_with_em(const char *directory,
-                                      GArray *histogram,
-                                      NBSignalCut em_fit,
-                                      uint16_t min_counts,
-                                      double posterior_cutoff,
-                                      int n_features,
-                                      double em_cumulative_limit) {
-    if (!histogram || histogram->len == 0) {
+    if (!cumulative_histogram || cumulative_histogram->len == 0) {
         fprintf(stderr, "Warning: Empty histogram provided for plotting\n");
         return;
     }
@@ -348,32 +145,103 @@ void plot_average_histogram_with_em(const char *directory,
         fprintf(stderr, "Warning: Number of features is 0, cannot generate average histogram.\n");
         return;
     }
-
-    // Create a new GArray for the average histogram
-    uint32_t *avg_hist_data = malloc(histogram->len * sizeof(uint32_t));
-    if (!avg_hist_data) {
-        fprintf(stderr, "Error: Memory allocation for average histogram failed.\n");
+    
+    char filename[FILENAME_LENGTH];
+    sprintf(filename, "%s/umi_counts_histogram.html", directory);
+    
+    FILE *fp = fopen(filename, "w");
+    if (!fp) {
+        fprintf(stderr, "Error: Cannot create file %s\n", filename);
         return;
     }
-    
+
+    // --- Prepare Data for Both Plots ---
+    int hist_len = cumulative_histogram->len;
+    uint32_t *cumulative_hist_data = (uint32_t*)cumulative_histogram->data;
+
+    uint32_t *avg_hist_data = malloc(hist_len * sizeof(uint32_t));
+    if (!avg_hist_data) {
+        fprintf(stderr, "Error: Memory allocation for average histogram failed.\n");
+        fclose(fp);
+        return;
+    }
     long total_avg_counts = 0;
-    for (guint i = 0; i < histogram->len; i++) {
-        avg_hist_data[i] = (uint32_t)round((double)g_array_index(histogram, uint32_t, i) / n_features);
+    for (guint i = 0; i < hist_len; i++) {
+        avg_hist_data[i] = (uint32_t)round((double)g_array_index(cumulative_histogram, uint32_t, i) / n_features);
         total_avg_counts += avg_hist_data[i];
     }
     
-    // Recalculate cutoffs using the average histogram
-    NBSignalCut avg_fit = em_fit; // Copy the model parameters
-    avg_fit.total_counts_in_hist = total_avg_counts;
-    determine_signal_cutoff_from_fit(&avg_fit, histogram->len, posterior_cutoff, min_counts, em_cumulative_limit);
+    NBSignalCut avg_em_fit = cumulative_em_fit;
+    avg_em_fit.total_counts_in_hist = total_avg_counts;
+    determine_signal_cutoff_from_fit(&avg_em_fit, hist_len, posterior_cutoff, min_counts, em_cumulative_limit);
 
-    // Create output filename
-    char filename[FILENAME_LENGTH];
-    sprintf(filename, "%s/average_histogram_with_em_fit.html", directory);
+    // --- Write HTML and Plotly JavaScript ---
+    fprintf(fp, "<!DOCTYPE html><html><head><title>UMI Counts Histogram</title>");
+    fprintf(fp, "<script src=\"https://cdn.plot.ly/plotly-latest.min.js\"></script></head>");
+    fprintf(fp, "<body><div id=\"plot\" style=\"width:100%%;height:600px;\"></div><script>\n");
 
-    // Generate the plot using the average data and recalculated cutoffs
-    generate_plotly_html(filename, avg_hist_data, histogram->len, avg_fit, min_counts, posterior_cutoff);
+    // --- Generate Data Variables ---
+    print_js_array_uint32(fp, "cumulative_hist_y", cumulative_hist_data, hist_len);
+    print_js_array_uint32(fp, "avg_hist_y", avg_hist_data, hist_len);
+    fprintf(fp, "var x_axis = [");
+    for(int i=0; i<hist_len; ++i) fprintf(fp, "%d%s", i, (i==hist_len-1?"":","));
+    fprintf(fp, "];\n");
     
-    // Free the allocated memory for the average histogram
+    // --- Generate Trace Objects ---
+    generate_traces_for_plotly(fp, "cumulative", cumulative_hist_data, hist_len, cumulative_em_fit);
+    generate_traces_for_plotly(fp, "avg", avg_hist_data, hist_len, avg_em_fit);
+
+    // --- Combine Data into a single array for Plotly ---
+    fprintf(fp, "var data = [cumulative_hist_trace, cumulative_fit_trace, ");
+    for(int i=0; i<cumulative_em_fit.n_comp; ++i) fprintf(fp, "cumulative_comp%d_trace, ", i);
+    fprintf(fp, "cumulative_min_cutoff, cumulative_max_cutoff, ");
+    
+    fprintf(fp, "avg_hist_trace, avg_fit_trace, ");
+    for(int i=0; i<avg_em_fit.n_comp; ++i) fprintf(fp, "avg_comp%d_trace, ", i);
+    fprintf(fp, "avg_min_cutoff, avg_max_cutoff];\n");
+    
+    // --- Define Visibility Logic ---
+    int n_cumulative_traces = 2 + cumulative_em_fit.n_comp + 2; // hist, fit, n_comp, min_cut, max_cut
+    int n_avg_traces = 2 + avg_em_fit.n_comp + 2;
+
+    // Create visibility arrays using a compatible loop
+    fprintf(fp, "var cumulative_visible = [];\n");
+    fprintf(fp, "for(var i=0; i<%d; ++i) cumulative_visible.push(true);\n", n_cumulative_traces);
+    fprintf(fp, "for(var i=0; i<%d; ++i) cumulative_visible.push(false);\n", n_avg_traces);
+    
+    fprintf(fp, "var avg_visible = [];\n");
+    fprintf(fp, "for(var i=0; i<%d; ++i) avg_visible.push(false);\n", n_cumulative_traces);
+    fprintf(fp, "for(var i=0; i<%d; ++i) avg_visible.push(true);\n", n_avg_traces);
+
+    // Set initial visibility to cumulative
+    fprintf(fp, "for(var i=0; i<data.length; ++i) { data[i].visible = cumulative_visible[i]; }\n");
+
+    // --- Define Layout and Controls ---
+    int last_bin_with_data = 0;
+    for (int i = hist_len - 1; i >= 1; i--) {
+        if (cumulative_hist_data[i] >= 1) { last_bin_with_data = i; break; }
+    }
+    int x_axis_max = (last_bin_with_data + 4) / 5 * 5;
+    if (x_axis_max == 0) x_axis_max = 5;
+
+    fprintf(fp, "var layout = {\n");
+    fprintf(fp, "    title: { text: 'Cumulative UMI Counts<br><sub>BIC: %.2f</sub>', x: 0.5 },\n", cumulative_em_fit.bic);
+    fprintf(fp, "    xaxis: { title: 'UMI Counts', type: 'linear', range: [0.5, %d] },\n", x_axis_max);
+    fprintf(fp, "    yaxis: { title: 'Frequency', type: 'linear', autorange: true },\n");
+    fprintf(fp, "    hovermode: 'x unified',\n");
+    fprintf(fp, "    legend: { traceorder: 'normal', x: 1.02, y: 1.0, xanchor: 'left', yanchor: 'top', bgcolor: 'rgba(255,255,255,0.8)', bordercolor: 'black', borderwidth: 1 },\n");
+    fprintf(fp, "    updatemenus: [\n");
+    fprintf(fp, "        { buttons: [ {method: 'update', args: [{'visible': cumulative_visible}, {'title.text': 'Cumulative UMI Counts<br><sub>BIC: %.2f</sub>'}], label: 'Cumulative'}, {method: 'update', args: [{'visible': avg_visible}, {'title.text': 'Average UMI Counts<br><sub>BIC: %.2f</sub>'}], label: 'Average'} ],\n", cumulative_em_fit.bic, avg_em_fit.bic);
+    fprintf(fp, "          direction: 'down', pad: {t: 10, r: 10}, showactive: true, type: 'dropdown', x: 0.01, xanchor: 'left', y: 1.15, yanchor: 'top' },\n");
+    fprintf(fp, "        { buttons: [ {method: 'relayout', args: [{'yaxis.type': 'linear', 'yaxis.autorange': true}], label: 'Linear Y'}, {method: 'relayout', args: [{'yaxis.type': 'log', 'yaxis.autorange': true}], label: 'Log Y'} ],\n");
+    fprintf(fp, "          direction: 'down', pad: {t: 10, r: 10}, showactive: true, type: 'dropdown', x: 0.2, xanchor: 'left', y: 1.15, yanchor: 'top' }\n");
+    fprintf(fp, "    ]\n};\n");
+    
+    // --- Final Plotting Call ---
+    fprintf(fp, "Plotly.newPlot('plot', data, layout);\n");
+    fprintf(fp, "</script></body></html>\n");
+
+    fclose(fp);
     free(avg_hist_data);
+    fprintf(stderr, "Combined histogram plot saved to: %s\n", filename);
 }

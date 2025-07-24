@@ -1932,7 +1932,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         
         // Generate cumulative histogram plot with EM fit
         if (cumulative_fit_done) {
-            plot_average_histogram_with_em(directory, feature_hist[0], cumulative_fit, min_counts, em_cutoff, features->number_of_features, em_cumulative_limit);
+            plot_combined_histogram_with_em(directory, feature_hist[0], cumulative_fit, min_counts, em_cutoff, features->number_of_features, em_cumulative_limit);
         }
     }
 
