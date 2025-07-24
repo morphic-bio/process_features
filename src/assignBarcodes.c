@@ -1430,7 +1430,9 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     fclose(statsfp);
 
     // After writing the text files, generate the heatmaps
-    generate_heatmap(directory, features, coexpression_histograms);
+    if (coexpression_histograms) {
+        generate_heatmap(directory, features, coexpression_histograms);
+    }
     generate_deduped_heatmap(directory, features, feature_hist, deduped_counts, min_counts);
 }
 
