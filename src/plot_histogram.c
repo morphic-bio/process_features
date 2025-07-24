@@ -230,17 +230,6 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "            showlegend: true\n");
     fprintf(fp, "        };\n");
 
-    // Min counts line
-    fprintf(fp, "        var min_counts_trace = {\n");
-    fprintf(fp, "            x: [%d, %d],\n", min_counts, min_counts);
-    fprintf(fp, "            y: [0, y_axis_max],\n");
-    fprintf(fp, "            type: 'scatter',\n");
-    fprintf(fp, "            mode: 'lines',\n");
-    fprintf(fp, "            name: 'Min Counts Threshold (%d)',\n", min_counts);
-    fprintf(fp, "            line: { color: 'purple', width: 2, dash: 'dot' },\n");
-    fprintf(fp, "            showlegend: true\n");
-    fprintf(fp, "        };\n");
-
     // Dummy trace for posterior cutoff
     fprintf(fp, "        var posterior_trace = {\n");
     fprintf(fp, "            x: [null],\n");
@@ -260,7 +249,8 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "            },\n");
     fprintf(fp, "            xaxis: {\n");
     fprintf(fp, "                title: 'Deduplicated Counts',\n");
-    fprintf(fp, "                type: 'linear'\n");
+    fprintf(fp, "                type: 'linear',\n");
+    fprintf(fp, "                range: [1, %d]\n", hist_len > 1 ? hist_len - 1 : 1);
     fprintf(fp, "            },\n");
     fprintf(fp, "            yaxis: {\n");
     fprintf(fp, "                title: 'Frequency',\n");
@@ -309,7 +299,7 @@ void generate_plotly_html(const char *filename,
     for (int comp = 0; comp < em_fit.n_comp; comp++) {
         fprintf(fp, ", comp%d_trace", comp);
     }
-    fprintf(fp, ", min_cutoff_trace, max_cutoff_trace, min_counts_trace, posterior_trace];\n");
+    fprintf(fp, ", min_cutoff_trace, max_cutoff_trace, posterior_trace];\n");
     
     fprintf(fp, "        Plotly.newPlot('plot', data, layout);\n");
 
