@@ -5,6 +5,7 @@
 #include "../include/memory.h"
 #include "../include/io.h"
 #include "../include/plot_histogram.h"
+#include "../include/EMfit.h"
 #include "heatmap.h"
 
 //will  print if DEBUG is set or debug=1
@@ -1929,7 +1930,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         
         // Generate cumulative histogram plot with EM fit
         if (cumulative_fit_done) {
-            plot_cumulative_histogram_with_em(directory, feature_hist[0], cumulative_fit, min_counts, em_cutoff);
+            plot_average_histogram_with_em(directory, feature_hist[0], cumulative_fit, min_counts, em_cutoff, features->number_of_features, em_cumulative_limit);
         }
     }
 

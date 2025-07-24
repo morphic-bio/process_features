@@ -1,5 +1,6 @@
 #include "../include/plot_histogram.h"
 #include "../include/globals.h"
+#include "../include/EMfit.h"
 #include <math.h>
 
 // Helper function to calculate negative binomial PMF
@@ -95,7 +96,7 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "<!DOCTYPE html>\n");
     fprintf(fp, "<html>\n");
     fprintf(fp, "<head>\n");
-    fprintf(fp, "    <title>Cumulative Dedupe Histogram with EM Fit</title>\n");
+    fprintf(fp, "    <title>Average Feature UMI counts</title>\n");
     fprintf(fp, "    <script src=\"https://cdn.plot.ly/plotly-latest.min.js\"></script>\n");
     fprintf(fp, "</head>\n");
     fprintf(fp, "<body>\n");
@@ -120,6 +121,18 @@ void generate_plotly_html(const char *filename,
     // Calculate y-axis range for plots
     fprintf(fp, "        var y_axis_max = Math.max(...hist_y) * 1.1;\n");
     fprintf(fp, "        var log_y_max = (y_axis_max > 0) ? Math.log10(y_axis_max) : 0;\n");
+
+
+    // Find last bin with frequency >= 1 to set x-axis range
+    int last_bin_with_data = 0;
+    for (int i = hist_len - 1; i >= 1; i--) {
+        if (hist_data[i] >= 1) {
+            last_bin_with_data = i;
+            break;
+        }
+    }
+    int x_axis_max = (last_bin_with_data + 4) / 5 * 5;
+    if (x_axis_max == 0) x_axis_max = 5;
 
 
     // Theoretical fit data (scaled to match histogram counts)
@@ -244,13 +257,13 @@ void generate_plotly_html(const char *filename,
     // Layout
     fprintf(fp, "        var layout = {\n");
     fprintf(fp, "            title: {\n");
-    fprintf(fp, "                text: 'Cumulative Dedupe Histogram with EM Fit and Components<br><sub>BIC: %.2f, Components: %d</sub>',\n", em_fit.bic, em_fit.n_comp);
+    fprintf(fp, "                text: 'Average Feature UMI counts<br><sub>BIC: %.2f, Components: %d</sub>',\n", em_fit.bic, em_fit.n_comp);
     fprintf(fp, "                x: 0.5\n");
     fprintf(fp, "            },\n");
     fprintf(fp, "            xaxis: {\n");
-    fprintf(fp, "                title: 'Deduplicated Counts',\n");
+    fprintf(fp, "                title: 'UMI counts',\n");
     fprintf(fp, "                type: 'linear',\n");
-    fprintf(fp, "                range: [1, %d]\n", hist_len > 1 ? hist_len - 1 : 1);
+    fprintf(fp, "                range: [1, %d]\n", x_axis_max);
     fprintf(fp, "            },\n");
     fprintf(fp, "            yaxis: {\n");
     fprintf(fp, "                title: 'Frequency',\n");
@@ -316,23 +329,50 @@ void generate_plotly_html(const char *filename,
     }
     free(component_values);
     
-    fprintf(stderr, "Cumulative histogram plot with individual components saved to: %s\n", filename);
+    fprintf(stderr, "Average histogram plot with individual components saved to: %s\n", filename);
 }
 
-void plot_cumulative_histogram_with_em(const char *directory, 
-                                       GArray *histogram, 
-                                       NBSignalCut em_fit, 
-                                       uint16_t min_counts,
-                                       double posterior_cutoff) {
+void plot_average_histogram_with_em(const char *directory,
+                                      GArray *histogram,
+                                      NBSignalCut em_fit,
+                                      uint16_t min_counts,
+                                      double posterior_cutoff,
+                                      int n_features,
+                                      double em_cumulative_limit) {
     if (!histogram || histogram->len == 0) {
         fprintf(stderr, "Warning: Empty histogram provided for plotting\n");
         return;
     }
+    if (n_features == 0) {
+        fprintf(stderr, "Warning: Number of features is 0, cannot generate average histogram.\n");
+        return;
+    }
+
+    // Create a new GArray for the average histogram
+    uint32_t *avg_hist_data = malloc(histogram->len * sizeof(uint32_t));
+    if (!avg_hist_data) {
+        fprintf(stderr, "Error: Memory allocation for average histogram failed.\n");
+        return;
+    }
+    
+    long total_avg_counts = 0;
+    for (guint i = 0; i < histogram->len; i++) {
+        avg_hist_data[i] = (uint32_t)round((double)g_array_index(histogram, uint32_t, i) / n_features);
+        total_avg_counts += avg_hist_data[i];
+    }
+    
+    // Recalculate cutoffs using the average histogram
+    NBSignalCut avg_fit = em_fit; // Copy the model parameters
+    avg_fit.total_counts_in_hist = total_avg_counts;
+    determine_signal_cutoff_from_fit(&avg_fit, histogram->len, posterior_cutoff, min_counts, em_cumulative_limit);
 
     // Create output filename
     char filename[FILENAME_LENGTH];
-    sprintf(filename, "%s/cumulative_histogram_with_em_fit.html", directory);
+    sprintf(filename, "%s/average_histogram_with_em_fit.html", directory);
 
-    // Generate the plot
-    generate_plotly_html(filename, (uint32_t*)histogram->data, histogram->len, em_fit, min_counts, posterior_cutoff);
+    // Generate the plot using the average data and recalculated cutoffs
+    generate_plotly_html(filename, avg_hist_data, histogram->len, avg_fit, min_counts, posterior_cutoff);
+    
+    // Free the allocated memory for the average histogram
+    free(avg_hist_data);
 }

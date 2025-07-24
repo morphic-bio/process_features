@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "../include/common.h"
+#include "../include/EMfit.h"
 
 
 typedef enum { DIST_NB, DIST_POISSON, DIST_GAUSSIAN } DistType;
@@ -548,3 +549,4 @@ int demo(void)
 
     return 0;
 }
+

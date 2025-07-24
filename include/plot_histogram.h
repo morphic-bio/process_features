@@ -3,12 +3,14 @@
 
 #include "common.h"
 
-// Function to plot cumulative dedupe histogram with EM fit and cutoffs
-void plot_cumulative_histogram_with_em(const char *directory, 
-                                       GArray *histogram, 
-                                       NBSignalCut em_fit, 
-                                       uint16_t min_counts,
-                                       double posterior_cutoff);
+// Function to plot average dedupe histogram with EM fit and cutoffs
+void plot_average_histogram_with_em(const char *directory,
+                                    GArray *histogram,
+                                    NBSignalCut em_fit,
+                                    uint16_t min_counts,
+                                    double posterior_cutoff,
+                                    int n_features,
+                                    double em_cumulative_limit);
 
 // Helper function to generate Plotly HTML file
 void generate_plotly_html(const char *filename, 
