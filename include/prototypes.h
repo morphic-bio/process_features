@@ -95,11 +95,11 @@ void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order
 NBSignalCut fit_nb_model_to_histogram(const uint32_t *hist, int len,
                                       int max_iter, double tol);
 void determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposterior,
-                                      uint16_t min_counts, double em_cumulative_limit);
+                                      double em_cumulative_limit);
 
 // Original function (now a wrapper)
 NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
-                            int max_iter, double tol, uint16_t min_counts, double em_cumulative_limit);
+                            int max_iter, double tol, double em_cumulative_limit);
 void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms);
 void generate_deduped_heatmap(const char *directory, feature_arrays *features, GArray **feature_hist, int *total_deduped_counts, int histogram_minimum_counts);
 

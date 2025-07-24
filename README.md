@@ -224,7 +224,7 @@ Feature Index Sequence Hamming_distance Counts Feature_name
 Each of the matched sequences is displayed under the feature index that they are matched to. Mismatches relative to the reference feature are shown in lowercase.
 
 #### Interactive Average UMI Histogram Plot
-An interactive HTML plot file named `average_histogram_with_em_fit.html` is generated in each sample's output directory. This plot displays the cumulative histogram of feature counts per barcode, overlaid with the Expectation-Maximization (EM) model fit.
+An interactive HTML plot file named `umi_counts_histogram.html` is generated in each sample's output directory. This plot displays the cumulative histogram of feature counts per barcode, overlaid with the Expectation-Maximization (EM) model fit.
 
 Key features of this plot include:
 - **Interactive Scales**: A dropdown menu allows switching the Y-axis between linear and logarithmic scales for better visualization of count distributions.
@@ -236,7 +236,7 @@ This plot is crucial for quality control, allowing for a visual assessment of th
 
 
 ###### Histogram example
-![Histogram example](./graphics/average_histogram_with_em_fit.html)
+![Histogram example](./graphics/umi_histogram.png)
 
 ## Repository Organization
 
@@ -275,7 +275,7 @@ The repository is organized into the following main directories:
 
 ### Interactive Average UMI Count Plot
 
-An interactive HTML plot (`average_histogram_with_em_fit.html`) is generated in each sample’s output directory. This plot displays the average UMI count histogram per feature, overlaid with the Expectation-Maximization (EM) model fit and its individual components.
+An interactive HTML plot (`umi_counts_histogram.html`) is generated in each sample’s output directory. This plot displays the average UMI count histogram per feature, overlaid with the Expectation-Maximization (EM) model fit and its individual components.
 
 **Key features:**
 - **Histogram:** Shows the average number of UMIs per feature across all barcodes.

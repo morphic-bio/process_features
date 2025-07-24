@@ -1899,7 +1899,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
             fprintf(stderr, "Warning: Cumulative counts (%ld) are below the minimum of %d. Skipping all EM fitting.\n", total_counts_in_hist, min_em_counts);
         } else {
             cumulative_fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
-                                               em_cutoff, em_max_iter, em_tol, min_counts, em_cumulative_limit);
+                                               em_cutoff, em_max_iter, em_tol, em_cumulative_limit);
             cumulative_fit_done = 1;
 
             if (cumulative_fit.reverted_from_3_to_2) {
@@ -1932,7 +1932,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         
         // Generate cumulative histogram plot with EM fit
         if (cumulative_fit_done) {
-            plot_combined_histogram_with_em(directory, feature_hist[0], cumulative_fit, min_counts, em_cutoff, features->number_of_features, em_cumulative_limit);
+            plot_combined_histogram_with_em(directory, feature_hist, cumulative_fit, em_cutoff, features->number_of_features, em_cumulative_limit);
         }
     }
 
@@ -1957,7 +1957,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
                     // Recalculate signal cutoffs using the cumulative model
                     // but applied to this feature's histogram length
                     if (h && h->len > 0) {
-                        determine_signal_cutoff_from_fit(&fit, h->len, em_cutoff, min_counts, em_cumulative_limit);
+                        determine_signal_cutoff_from_fit(&fit, h->len, em_cutoff, em_cumulative_limit);
                     } else {
                         // If no histogram data, set cutoffs to end of range
                         fit.k_min_signal = 0;
@@ -1968,7 +1968,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
                     for(unsigned int j=0; j<h->len; ++j) if(!g_array_index(h,uint32_t,j))
                                                    g_array_index(h,uint32_t,j) = 0;
                     fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
-                                                       em_cutoff, em_max_iter, em_tol, min_counts, em_cumulative_limit);
+                                                       em_cutoff, em_max_iter, em_tol, em_cumulative_limit);
                 }
             }
 

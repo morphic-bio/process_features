@@ -129,14 +129,32 @@ void calculate_theoretical_fit(NBSignalCut em_fit, int max_count, double *fit_va
     }
 }
 
+static int count_features_with_reads(GArray **feature_hist, int n_features) {
+    int count = 0;
+    for (int i = 1; i <= n_features; i++) {
+        GArray *h = feature_hist[i];
+        if (h && h->len > 0) {
+            long total_counts = 0;
+            for (guint j = 0; j < h->len; j++) {
+                total_counts += g_array_index(h, uint32_t, j);
+            }
+            if (total_counts > 0) {
+                count++;
+            }
+        }
+    }
+    return count > 0 ? count : 1; // Avoid division by zero
+}
+
+
 void plot_combined_histogram_with_em(const char *directory,
-                                     GArray *cumulative_histogram,
+                                     GArray **feature_hist,
                                      NBSignalCut cumulative_em_fit,
-                                     uint16_t min_counts,
                                      double posterior_cutoff,
                                      int n_features,
                                      double em_cumulative_limit) {
 
+    GArray* cumulative_histogram = feature_hist[0];
     if (!cumulative_histogram || cumulative_histogram->len == 0) {
         fprintf(stderr, "Warning: Empty histogram provided for plotting\n");
         return;
@@ -166,14 +184,16 @@ void plot_combined_histogram_with_em(const char *directory,
         return;
     }
     long total_avg_counts = 0;
+    int n_features_with_reads = count_features_with_reads(feature_hist, n_features);
+
     for (guint i = 0; i < hist_len; i++) {
-        avg_hist_data[i] = (uint32_t)round((double)g_array_index(cumulative_histogram, uint32_t, i) / n_features);
+        avg_hist_data[i] = (uint32_t)round((double)g_array_index(cumulative_histogram, uint32_t, i) / n_features_with_reads);
         total_avg_counts += avg_hist_data[i];
     }
     
     NBSignalCut avg_em_fit = cumulative_em_fit;
     avg_em_fit.total_counts_in_hist = total_avg_counts;
-    determine_signal_cutoff_from_fit(&avg_em_fit, hist_len, posterior_cutoff, min_counts, em_cumulative_limit);
+    determine_signal_cutoff_from_fit(&avg_em_fit, hist_len, posterior_cutoff, em_cumulative_limit);
 
     // --- Write HTML and Plotly JavaScript ---
     fprintf(fp, "<!DOCTYPE html><html><head><title>UMI Counts Histogram</title>");

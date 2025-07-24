@@ -2,12 +2,13 @@
 #define PLOT_HISTOGRAM_H
 
 #include "common.h"
+#include <glib.h>
+#include "EMfit.h" // For NBSignalCut
 
 // Function to plot combined cumulative/average dedupe histogram with EM fit and cutoffs
 void plot_combined_histogram_with_em(const char *directory,
-                                     GArray *histogram,
-                                     NBSignalCut em_fit,
-                                     uint16_t min_counts,
+                                     GArray **feature_hist,
+                                     NBSignalCut cumulative_em_fit,
                                      double posterior_cutoff,
                                      int n_features,
                                      double em_cumulative_limit);
