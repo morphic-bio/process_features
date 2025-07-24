@@ -72,7 +72,7 @@ static void pois_mstep(void *v,double sw,double swx,double swx2)
     double mean = swx / sw;
     double var = swx2/sw - mean*mean;
 
-    if (var > 1.5*mean) { // Data assigned is overdispersed
+    if (var > 1.5*mean && p->lambda > mean) { // Data assigned is overdispersed
         p->lambda = 0.9 * p->lambda + 0.1 * mean;
     } else {
         p->lambda = mean;

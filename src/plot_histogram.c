@@ -120,6 +120,7 @@ void generate_plotly_html(const char *filename,
 
     // Calculate y-axis range for plots
     fprintf(fp, "        var y_axis_max = Math.max(...hist_y) * 1.1;\n");
+    fprintf(fp, "        var log_y_min = Math.log10(0.5);\n");
     fprintf(fp, "        var log_y_max = (y_axis_max > 0) ? Math.log10(y_axis_max) : 0;\n");
 
 
@@ -263,7 +264,7 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "            xaxis: {\n");
     fprintf(fp, "                title: 'UMI counts',\n");
     fprintf(fp, "                type: 'linear',\n");
-    fprintf(fp, "                range: [1, %d]\n", x_axis_max);
+    fprintf(fp, "                range: [0.5, %d]\n", x_axis_max);
     fprintf(fp, "            },\n");
     fprintf(fp, "            yaxis: {\n");
     fprintf(fp, "                title: 'Frequency',\n");
@@ -279,7 +280,7 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "                            method: 'relayout'\n");
     fprintf(fp, "                        },\n");
     fprintf(fp, "                        {\n");
-    fprintf(fp, "                            args: [{'yaxis.type': 'log', 'yaxis.range': [-2, log_y_max]}],\n");
+    fprintf(fp, "                            args: [{'yaxis.type': 'log', 'yaxis.range': [log_y_min, log_y_max]}],\n");
     fprintf(fp, "                            label: 'Log Y-axis',\n");
     fprintf(fp, "                            method: 'relayout'\n");
     fprintf(fp, "                        }\n");
@@ -288,9 +289,9 @@ void generate_plotly_html(const char *filename,
     fprintf(fp, "                    pad: {t: 10, r: 10},\n");
     fprintf(fp, "                    showactive: true,\n");
     fprintf(fp, "                    type: 'dropdown',\n");
-    fprintf(fp, "                    x: 1.02,\n");
+    fprintf(fp, "                    x: 0.1,\n");
     fprintf(fp, "                    xanchor: 'left',\n");
-    fprintf(fp, "                    y: 1.12,\n");
+    fprintf(fp, "                    y: 1.15,\n");
     fprintf(fp, "                    yanchor: 'top'\n");
     fprintf(fp, "                }\n");
     fprintf(fp, "            ],\n");
