@@ -54,7 +54,7 @@ void find_deduped_counts(data_structures *hashes, GHashTable* barcode_to_deduped
 void find_connected_component(gpointer start_key, uint32_t *counts, data_structures *hashes);
 void add_deduped_count(GHashTable* temp_deduped_hash, uint32_t *clique_counts, uint16_t stringency, uint16_t min_counts);
 void code2string(unsigned char *code, char *string, int length);
-void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts, GHashTable *filtered_barcodes_hash);
+void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, GHashTable *barcode_to_deduped_hash, GHashTable *filtered_barcodes_hash);
 int find_closest_barcodes(unsigned char* code,unsigned char *corrected_codes, unsigned char *indices);
 int find_variant_match(unsigned char *code, int sequence_index, unsigned char *corrected_bases );
 void process_pending_barcodes( data_structures *hashes, memory_pool_collection *pools, statistics *stats, double min_posterior);

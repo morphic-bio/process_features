@@ -13,6 +13,7 @@ unsigned char *whitelist;
 GHashTable *whitelist_hash; 
 GHashTable *feature_code_hash;
 
+
 int barcode_length=BARCODE_LENGTH;
 int barcode_code_length=BARCODE_CODE_LENGTH;
 int number_of_features;
@@ -26,3 +27,5 @@ int umi_length = UMI_LENGTH;
 int umi_code_length = UMI_CODE_LENGTH;
 long long max_reads = 0;
 int limit_search = -1;
+int min_heatmap = -1;
+int min_em_counts = 100;

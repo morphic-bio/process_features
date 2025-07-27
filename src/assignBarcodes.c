@@ -1236,7 +1236,7 @@ void code2string(unsigned char *code, char *string, int length){
     string[4*length]='\0';
 }
 
-void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, uint16_t stringency, uint16_t min_counts, GHashTable *filtered_barcodes_hash){
+void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, GHashTable *barcode_to_deduped_hash, GHashTable *filtered_barcodes_hash){
     int total_deduped_counts = 0;
     int total_raw_counts = 0;
     char barcodes_file[FILENAME_LENGTH];
@@ -1245,34 +1245,44 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     memset(deduped_counts, 0, features->number_of_features * sizeof(int));
     memset(barcoded_counts, 0, features->number_of_features * sizeof(int));
 
-    mkdir_p(directory);
-    sprintf(barcodes_file, "%s/barcodes.txt", directory);
-    sprintf(stats_file, "%s/stats.txt", directory);
+    char output_directory[FILENAME_LENGTH];
+    strcpy(output_directory, directory);
+    if (filtered_barcodes_hash) {
+        sprintf(output_directory, "%s/filtered", directory);
+    }
+
+    mkdir_p(output_directory);
+    sprintf(barcodes_file, "%s/barcodes.txt", output_directory);
+    sprintf(stats_file, "%s/stats.txt", output_directory);
     FILE *barcodesfp = fopen(barcodes_file, "w");
-    if (barcodesfp == NULL) { /* ... error handling ... */ }
+    if (barcodesfp == NULL) {
+        fprintf(stderr, "Error opening barcodes file %s\n", barcodes_file);
+        exit(1);
+    }
 
     char matrix_file[LINE_LENGTH];
-    sprintf(matrix_file, "%s/features_matrix.mtx", directory);
+    sprintf(matrix_file, "%s/features_matrix.mtx", output_directory);
     FILE *matrixfp = fopen(matrix_file, "w");
-    if (matrixfp == NULL) { /* ... error handling ... */ }
-
-    // --- Step 1: Create and populate the temporary hash for deduped counts ---
-    //
-    // CRITICAL FIX: Use the SAME hash and equal functions as filtered_hash
-    // to ensure keys (the sequence_code pointers) are handled consistently.
-    // Also, tell GLib how to destroy the inner hash tables that are used as values.
-    //
-    GHashTable* barcode_to_deduped_hash = g_hash_table_new_full(hash_int32, equal_int32, NULL, (GDestroyNotify)g_hash_table_destroy);
-
-    find_deduped_counts(hashes, barcode_to_deduped_hash, stringency, min_counts);
-
+    if (matrixfp == NULL) {
+        fprintf(stderr, "Error opening matrix file %s\n", matrix_file);
+        exit(1);
+    }
+    
     // --- Step 2: Calculate stats and write the Matrix Market header ---
     size_t number_of_features_seen = 0;
-    size_t number_of_barcode_entries = g_hash_table_size(barcode_to_deduped_hash);
+    size_t number_of_barcode_entries = 0;
     GHashTableIter iter;
     gpointer key, value;
     g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
+        if (filtered_barcodes_hash) {
+            char barcode[barcode_length + 1];
+            code2string((unsigned char *)key, barcode, barcode_code_length);
+            if (g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL) {
+                continue;
+            }
+        }
+        number_of_barcode_entries++;
         number_of_features_seen += g_hash_table_size((GHashTable*)value);
     }
     
@@ -1282,11 +1292,18 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     
     
     
-    // --- NEW (Restored Logic): Populate Co-expression Matrices ---
-    // This loop must run before we start writing the output file.
+    // --- Populate Co-expression Matrices ---
     if (coexpression_counts != NULL && coexpression_histograms != NULL) {
         g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
         while (g_hash_table_iter_next(&iter, &key, &value)) {
+            if (filtered_barcodes_hash) {
+                char barcode[barcode_length + 1];
+                code2string((unsigned char *)key, barcode, barcode_code_length);
+                if (g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL) {
+                    continue;
+                }
+            }
+
             GHashTable* deduped_hash = (GHashTable*)value;
             int number_of_coexpressors = 0;
             int coCounts[features->number_of_features + 1];
@@ -1339,23 +1356,14 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
         GHashTable* deduped_hash = g_hash_table_lookup(barcode_to_deduped_hash, entry->sequence_code);
         if (deduped_hash && g_hash_table_size(deduped_hash) > 0) {
             
-            // Write barcode string to barcodes.txt
             char barcode[barcode_length + 1];
             code2string(entry->sequence_code, barcode, barcode_code_length);
+            // If a filter is active, skip barcodes that are not in it.
             if (filtered_barcodes_hash && g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL) {
                 continue;
             }
+            
             fprintf(barcodesfp, "%s\n", barcode);
-                    // --- Populate total_barcoded_counts (raw counts) ---
-        GHashTableIter raw_iter;
-        gpointer raw_key, raw_value;
-        g_hash_table_iter_init(&raw_iter, entry->counts);
-        while (g_hash_table_iter_next(&raw_iter, &raw_key, &raw_value)) {
-            int feature_index = GPOINTER_TO_INT(raw_key);
-            if (feature_index > 0) { // Skip the total stored at index 0
-                barcoded_counts[feature_index - 1] += GPOINTER_TO_INT(raw_value);
-            }
-        }
             // Write its matrix entries
             GHashTableIter dedup_iter;
             gpointer dedup_key, dedup_value;
@@ -1404,11 +1412,47 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
             }
         }
     }
-
+    
+    
+    
+    // --- NEW (Restored Logic): Populate Co-expression Matrices ---
+    // This loop must run before we start writing the output file.
+    if (coexpression_counts != NULL && coexpression_histograms != NULL) {
+        g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            GHashTable* deduped_hash = (GHashTable*)value;
+            int number_of_coexpressors = 0;
+            int coCounts[features->number_of_features + 1];
+            int coExpressorsIndices[features->number_of_features];
+            
+            GHashTableIter inner_iter;
+            gpointer inner_key, inner_value;
+            g_hash_table_iter_init(&inner_iter, deduped_hash);
+            while(g_hash_table_iter_next(&inner_iter, &inner_key, &inner_value)) {
+                int feature_index = GPOINTER_TO_INT(inner_key);
+                int count = GPOINTER_TO_INT(inner_value);
+                if (count > 0) {
+                    coCounts[number_of_coexpressors] = count;
+                    coExpressorsIndices[number_of_coexpressors++] = feature_index;
+                }
+            }
+            
+            if (number_of_coexpressors > 1) {
+                for (int i = 0; i < number_of_coexpressors; i++) {
+                    for (int j = 0; j < number_of_coexpressors; j++) {
+                        coexpression_counts[coExpressorsIndices[i]][coExpressorsIndices[j]] += coCounts[i];
+                    }
+                    coexpression_histograms[coExpressorsIndices[i]][number_of_coexpressors]++;
+                }
+            } else if (number_of_coexpressors) {
+                coexpression_counts[coExpressorsIndices[0]][0] += coCounts[0];
+                coexpression_counts[0][coExpressorsIndices[0]] += coCounts[0];
+                coexpression_histograms[coExpressorsIndices[0]][1]++;
+            }
+        }
+    }
     // --- Step 4: Final Cleanup ---
-    // This single call will now correctly destroy the outer hash table
-    // AND trigger g_hash_table_destroy on each of the inner hash tables.
-    g_hash_table_destroy(barcode_to_deduped_hash);
+    // The barcode_to_deduped_hash is managed by the caller (finalize_processing)
     
     fclose(barcodesfp);
     fclose(matrixfp);
@@ -1431,9 +1475,9 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
 
     // After writing the text files, generate the heatmaps
     if (coexpression_histograms) {
-        generate_heatmap(directory, features, coexpression_histograms);
+        generate_heatmap(output_directory, features, coexpression_histograms);
     }
-    generate_deduped_heatmap(directory, features, feature_hist, deduped_counts, min_counts);
+    generate_deduped_heatmap(output_directory, features, feature_hist, deduped_counts, min_heatmap);
 }
 
 int find_closest_barcodes(unsigned char* code,unsigned char *corrected_codes, unsigned char *indices){
@@ -1806,14 +1850,33 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
             coexpression_histograms[i] = histogramsStorage + i * (features->number_of_features + 1);
         }
     }
-    //DEBUG_PRINT( "Number of reads matched to a feature %ld\n", valid);
-    printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, feature_hist, directory, hashes, stats, stringency, min_counts, filtered_barcodes_hash);
-    //DEBUG_PRINT( "Percentage of reads matched to a feature %.2f\n", (valid / (double)number_of_reads * 100.0));
-
-    DEBUG_PRINT( "Number of mismatched reads that are matched to a nearest barcode unambiguously  %ld\n", stats->recovered);
-    DEBUG_PRINT( "Number of reads pending priors before matching to a barcode %ld\n", stats->pending);
-    DEBUG_PRINT( "Number of pending reads that were successfully matched to a barcode %ld\n", stats->pending_recovered);
     
+    // Create and populate the deduped counts hash table once.
+    GHashTable* barcode_to_deduped_hash = g_hash_table_new_full(hash_int32, equal_int32, NULL, (GDestroyNotify)g_hash_table_destroy);
+    find_deduped_counts(hashes, barcode_to_deduped_hash, stringency, min_counts);
+
+    // Print the unfiltered results
+    printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, feature_hist, directory, hashes, stats, barcode_to_deduped_hash, NULL);
+    
+    // If a filter is provided, print the filtered results as well.
+    if (filtered_barcodes_hash) {
+        // Reset co-expression and histogram data before the second run
+        if (coExpressionStorage) memset(coExpressionStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
+        if (histogramsStorage) memset(histogramsStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
+        for (int i = 0; i < features->number_of_features + 1; i++) {
+            if (feature_hist[i]) {
+                g_array_unref(feature_hist[i]);
+                feature_hist[i] = NULL;
+            }
+        }
+        
+        printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, feature_hist, directory, hashes, stats, barcode_to_deduped_hash, filtered_barcodes_hash);
+    }
+    
+    // Clean up the hash table now that all printing is done.
+    g_hash_table_destroy(barcode_to_deduped_hash);
+    
+    //DEBUG_PRINT( "Number of reads matched to a feature %ld\n", valid);
     print_feature_sequences(features, total_feature_counts, directory, hashes);
     char deduped_hist_filename[FILENAME_LENGTH];
     sprintf(deduped_hist_filename, "%s/deduped_counts_histograms.txt", directory);

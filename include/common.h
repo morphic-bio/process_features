@@ -237,6 +237,7 @@ typedef struct sample_args {
     double em_cumulative_limit;
     int heatmap_minimum_counts;
     int min_prediction;
+    int min_heatmap;
 } sample_args;
 
 typedef struct fastq_reader {

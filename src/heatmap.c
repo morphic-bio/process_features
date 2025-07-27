@@ -214,6 +214,11 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
 
 void generate_deduped_heatmap(const char *directory, feature_arrays *features, GArray **feature_hist, int *total_deduped_counts, int histogram_minimum_counts) {
     char output_file[1024];
+
+    if (histogram_minimum_counts == -1) {
+        histogram_minimum_counts = 1;
+    }
+
     if (directory[strlen(directory) - 1] == '/') {
         snprintf(output_file, sizeof(output_file), "%sFeature_counts_heatmap.png", directory);
     } else {

@@ -43,7 +43,6 @@ int main(int argc, char *argv[])
     int search_threads_per_consumer=4;
     int set_consumer_threads_per_set=0;
     int set_search_threads_per_consumer=0;
-    int min_em_counts = 100;
     uint16_t min_prediction = 1;
 
     static struct option long_options[] = {
@@ -83,6 +82,7 @@ int main(int argc, char *argv[])
         {"min_EM_counts", required_argument, 0, 13},
         {"em_cumulative_limit", required_argument, 0, 14},
         {"min_prediction", required_argument, 0, 15},
+        {"min_heatmap", required_argument, 0, 16},
         {0, 0, 0, 0}
     };
 
@@ -126,6 +126,7 @@ int main(int argc, char *argv[])
             case 13: min_em_counts = atoi(optarg); break;
             case 14: em_cumulative_limit = atof(optarg); break;
             case 15: min_prediction = atoi(optarg); break;
+            case 16: min_heatmap = atoi(optarg); break;
             default: fprintf(stderr, "Usage: %s [options]\n", argv[0]); return 1;
         }
     }
@@ -229,6 +230,7 @@ int main(int argc, char *argv[])
             args.min_em_counts = min_em_counts;
             args.em_cumulative_limit = em_cumulative_limit;
             args.min_prediction = min_prediction;
+            args.min_heatmap = min_heatmap;
             process_files_in_sample(&args);
             // cleanup_sample is handled within process_files_in_sample
             atomic_fetch_add(thread_counter, -threads_per_set);
