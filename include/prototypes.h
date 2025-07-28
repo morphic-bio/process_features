@@ -21,7 +21,6 @@ void initcode2seq();
 void initdiff2hamming(unsigned char *difference);
 void free_feature_arrays(feature_arrays *features);
 void initialize_unit_sizes();
-void plot_cumulative_histogram_with_em(const char *directory, GArray *histogram, NBSignalCut em_fit, uint16_t min_counts, double posterior_cutoff);
 int is_directory(const char *path);
 void read_unmatched_barcodes_features_block(unmatched_barcodes_features_block *entry_block, unmatched_barcodes_features *entry);
 int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned char hamming_distance, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools);
@@ -54,7 +53,7 @@ void find_deduped_counts(data_structures *hashes, GHashTable* barcode_to_deduped
 void find_connected_component(gpointer start_key, uint32_t *counts, data_structures *hashes);
 void add_deduped_count(GHashTable* temp_deduped_hash, uint32_t *clique_counts, uint16_t stringency, uint16_t min_counts);
 void code2string(unsigned char *code, char *string, int length);
-void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, GHashTable *barcode_to_deduped_hash, GHashTable *filtered_barcodes_hash);
+void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, GHashTable *barcode_to_deduped_hash, GHashTable *filtered_barcodes_hash);
 int find_closest_barcodes(unsigned char* code,unsigned char *corrected_codes, unsigned char *indices);
 int find_variant_match(unsigned char *code, int sequence_index, unsigned char *corrected_bases );
 void process_pending_barcodes( data_structures *hashes, memory_pool_collection *pools, statistics *stats, double min_posterior);
@@ -100,7 +99,6 @@ void determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposteri
 // Original function (now a wrapper)
 NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
                             int max_iter, double tol, double em_cumulative_limit);
-void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms);
 void generate_deduped_heatmap(const char *directory, feature_arrays *features, GArray **feature_hist, int *total_deduped_counts, int histogram_minimum_counts);
 
 

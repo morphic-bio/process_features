@@ -1236,7 +1236,7 @@ void code2string(unsigned char *code, char *string, int length){
     string[4*length]='\0';
 }
 
-void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts,int **coexpression_counts, int **coexpression_histograms, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, GHashTable *barcode_to_deduped_hash, GHashTable *filtered_barcodes_hash){
+void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, GHashTable *barcode_to_deduped_hash, GHashTable *filtered_barcodes_hash){
     int total_deduped_counts = 0;
     int total_raw_counts = 0;
     char barcodes_file[FILENAME_LENGTH];
@@ -1273,6 +1273,9 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     size_t number_of_barcode_entries = 0;
     GHashTableIter iter;
     gpointer key, value;
+
+    GArray *feature_richness_hist = g_array_new(FALSE, TRUE, sizeof(uint32_t));
+
     g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
         if (filtered_barcodes_hash) {
@@ -1283,7 +1286,16 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
             }
         }
         number_of_barcode_entries++;
-        number_of_features_seen += g_hash_table_size((GHashTable*)value);
+        GHashTable *deduped_hash = (GHashTable *)value;
+        guint n_features_in_barcode = g_hash_table_size(deduped_hash);
+        number_of_features_seen += n_features_in_barcode;
+
+        if (feature_richness_hist && n_features_in_barcode > 0) {
+            if (feature_richness_hist->len <= n_features_in_barcode) {
+                g_array_set_size(feature_richness_hist, n_features_in_barcode + 1);
+            }
+            g_array_index(feature_richness_hist, uint32_t, n_features_in_barcode)++;
+        }
     }
     
     fprintf(matrixfp, "%%%%MatrixMarket matrix coordinate real general\n");
@@ -1292,51 +1304,8 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     
     
     
-    // --- Populate Co-expression Matrices ---
-    if (coexpression_counts != NULL && coexpression_histograms != NULL) {
-        g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
-        while (g_hash_table_iter_next(&iter, &key, &value)) {
-            if (filtered_barcodes_hash) {
-                char barcode[barcode_length + 1];
-                code2string((unsigned char *)key, barcode, barcode_code_length);
-                if (g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL) {
-                    continue;
-                }
-            }
-
-            GHashTable* deduped_hash = (GHashTable*)value;
-            int number_of_coexpressors = 0;
-            int coCounts[features->number_of_features + 1];
-            int coExpressorsIndices[features->number_of_features];
-            
-            GHashTableIter inner_iter;
-            gpointer inner_key, inner_value;
-            g_hash_table_iter_init(&inner_iter, deduped_hash);
-            while(g_hash_table_iter_next(&inner_iter, &inner_key, &inner_value)) {
-                int feature_index = GPOINTER_TO_INT(inner_key);
-                int count = GPOINTER_TO_INT(inner_value);
-                if (count > 0) {
-                    coCounts[number_of_coexpressors] = count;
-                    coExpressorsIndices[number_of_coexpressors++] = feature_index;
-                }
-            }
-            
-            if (number_of_coexpressors > 1) {
-                for (int i = 0; i < number_of_coexpressors; i++) {
-                    for (int j = 0; j < number_of_coexpressors; j++) {
-                        coexpression_counts[coExpressorsIndices[i]][coExpressorsIndices[j]] += coCounts[i];
-                    }
-                    coexpression_histograms[coExpressorsIndices[i]][number_of_coexpressors]++;
-                }
-            } else if (number_of_coexpressors) {
-                coexpression_counts[coExpressorsIndices[0]][0] += coCounts[0];
-                coexpression_counts[0][coExpressorsIndices[0]] += coCounts[0];
-                coexpression_histograms[coExpressorsIndices[0]][1]++;
-            }
-        }
-    }
     // --- Step 3: Iterate through all barcodes to write files and calculate final stats ---
-    int line_no = 1;
+    int total_barcodes=0;
     g_hash_table_iter_init(&iter, hashes->filtered_hash);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
         feature_counts *entry = (feature_counts*)value;
@@ -1381,10 +1350,11 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
                 if(h->len <= c) g_array_set_size(h, c+1);
                 g_array_index(h, uint32_t, c)++;
 
-                fprintf(matrixfp, "%d %d %d\n", GPOINTER_TO_INT(dedup_key), line_no, deduped_count);
+                fprintf(matrixfp, "%d %d %d\n", GPOINTER_TO_INT(dedup_key), total_barcodes, deduped_count);
                 total_deduped_counts += deduped_count;
+                
             }
-            line_no++;
+            total_barcodes++;
         }
 
     }
@@ -1415,42 +1385,6 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     
     
     
-    // --- NEW (Restored Logic): Populate Co-expression Matrices ---
-    // This loop must run before we start writing the output file.
-    if (coexpression_counts != NULL && coexpression_histograms != NULL) {
-        g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
-        while (g_hash_table_iter_next(&iter, &key, &value)) {
-            GHashTable* deduped_hash = (GHashTable*)value;
-            int number_of_coexpressors = 0;
-            int coCounts[features->number_of_features + 1];
-            int coExpressorsIndices[features->number_of_features];
-            
-            GHashTableIter inner_iter;
-            gpointer inner_key, inner_value;
-            g_hash_table_iter_init(&inner_iter, deduped_hash);
-            while(g_hash_table_iter_next(&inner_iter, &inner_key, &inner_value)) {
-                int feature_index = GPOINTER_TO_INT(inner_key);
-                int count = GPOINTER_TO_INT(inner_value);
-                if (count > 0) {
-                    coCounts[number_of_coexpressors] = count;
-                    coExpressorsIndices[number_of_coexpressors++] = feature_index;
-                }
-            }
-            
-            if (number_of_coexpressors > 1) {
-                for (int i = 0; i < number_of_coexpressors; i++) {
-                    for (int j = 0; j < number_of_coexpressors; j++) {
-                        coexpression_counts[coExpressorsIndices[i]][coExpressorsIndices[j]] += coCounts[i];
-                    }
-                    coexpression_histograms[coExpressorsIndices[i]][number_of_coexpressors]++;
-                }
-            } else if (number_of_coexpressors) {
-                coexpression_counts[coExpressorsIndices[0]][0] += coCounts[0];
-                coexpression_counts[0][coExpressorsIndices[0]] += coCounts[0];
-                coexpression_histograms[coExpressorsIndices[0]][1]++;
-            }
-        }
-    }
     // --- Step 4: Final Cleanup ---
     // The barcode_to_deduped_hash is managed by the caller (finalize_processing)
     
@@ -1473,10 +1407,15 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     fprintf (statsfp, "Percentage reads assigned to barcode %.4f\n", 100.0*(total_raw_counts/(double) (total_raw_counts+stats->total_unmatched_features)));
     fclose(statsfp);
 
-    // After writing the text files, generate the heatmaps
-    if (coexpression_histograms) {
-        generate_heatmap(output_directory, features, coexpression_histograms);
+    if (feature_richness_hist) {
+        plot_simple_histogram(output_directory, "feature_richness_histogram.html", "Feature Richness per Barcode", "Number of Distinct Features", "Frequency (Barcodes)", feature_richness_hist);
+        g_array_unref(feature_richness_hist);
     }
+    if (feature_hist[0]) {
+        plot_simple_histogram(output_directory, "feature_multiplicity_histogram.html", "Feature Multiplicity", "Deduplicated UMI Count", "Frequency", feature_hist[0]);
+    }
+
+    // After writing the text files, generate the heatmaps
     generate_deduped_heatmap(output_directory, features, feature_hist, deduped_counts, min_heatmap);
 }
 
@@ -1813,55 +1752,19 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     int total_barcoded_counts[features->number_of_features];
 
     GArray **feature_hist = g_new0(GArray*, features->number_of_features + 1);
-    int **coExpression = NULL;
-    int **coexpression_histograms = NULL;
-    int *coExpressionStorage = NULL;
     int *histogramsStorage = NULL;
-    //coexpression matrix will store the total counts for each feature (also when there are no others - in the 0 field) in cells with feature i starting with 1
-    //for simplicity we also hava a zero line so that all the indices are 1 based
-    //store the total counts in the zero line
-    if (features->number_of_features <= 10000){
-        coExpressionStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-        if (coExpressionStorage == NULL) {
-            perror("Failed to allocate memory for coexpression matrix");
-            exit(EXIT_FAILURE);
-        }
-        memset(coExpressionStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-        coExpression = malloc((features->number_of_features + 1) * sizeof(int *));
-        if (coExpression == NULL) {
-            perror("Failed to allocate memory for coexpression matrix");
-            exit(EXIT_FAILURE);
-        }
-        for (int i = 0; i < features->number_of_features + 1; i++) {
-            coExpression[i] = coExpressionStorage + i * (features->number_of_features + 1);
-        }
-        histogramsStorage = malloc((features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-        if (histogramsStorage == NULL) {
-            perror("Failed to allocate memory for coexpression histograms");
-            exit(EXIT_FAILURE);
-        }
-        memset(histogramsStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
-        coexpression_histograms = malloc((features->number_of_features + 1) * sizeof(int *));
-        if (coexpression_histograms == NULL) {
-            perror("Failed to allocate memory for coexpression histograms");
-            exit(EXIT_FAILURE);
-        }
-        for (int i = 0; i < features->number_of_features + 1; i++) {
-            coexpression_histograms[i] = histogramsStorage + i * (features->number_of_features + 1);
-        }
-    }
+
     
     // Create and populate the deduped counts hash table once.
     GHashTable* barcode_to_deduped_hash = g_hash_table_new_full(hash_int32, equal_int32, NULL, (GDestroyNotify)g_hash_table_destroy);
     find_deduped_counts(hashes, barcode_to_deduped_hash, stringency, min_counts);
 
     // Print the unfiltered results
-    printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, feature_hist, directory, hashes, stats, barcode_to_deduped_hash, NULL);
+    printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, feature_hist, directory, hashes, stats, barcode_to_deduped_hash, NULL);
     
     // If a filter is provided, print the filtered results as well.
     if (filtered_barcodes_hash) {
-        // Reset co-expression and histogram data before the second run
-        if (coExpressionStorage) memset(coExpressionStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
+        // Reset co-expression and histogram data before the second ru
         if (histogramsStorage) memset(histogramsStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
         for (int i = 0; i < features->number_of_features + 1; i++) {
             if (feature_hist[i]) {
@@ -1870,7 +1773,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
             }
         }
         
-        printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, coExpression, coexpression_histograms, feature_hist, directory, hashes, stats, barcode_to_deduped_hash, filtered_barcodes_hash);
+        printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, feature_hist, directory, hashes, stats, barcode_to_deduped_hash, filtered_barcodes_hash);
     }
     
     // Clean up the hash table now that all printing is done.
@@ -1916,14 +1819,6 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         exit(EXIT_FAILURE);
     }
     fprintf(signal_range_fp, "FeatureName\tMinSignalCount\tMaxSignalCount\n");
-
-    char feature_coexpression_filename[FILENAME_LENGTH];
-    sprintf(feature_coexpression_filename, "%s/feature_coexpression.txt", directory);
-    FILE *feature_coexpression_fp = fopen(feature_coexpression_filename, "w");
-    if (feature_coexpression_fp == NULL) {
-        perror("Failed to open feature coexpression file");
-        exit(EXIT_FAILURE);
-    }
 
     char mix_file[FILENAME_LENGTH];
     sprintf(mix_file, "%s/feature_mixture_params.txt", directory);
@@ -2060,14 +1955,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
             feature_printed[i] = 1;
         }
     }
-    if (coExpression) {
-        for (int i = 0; i <= features->number_of_features; i++) {
-            for (int j = 0; j < features->number_of_features + 1; j++) {
-                fprintf(feature_coexpression_fp, "%d ", coExpression[i][j]);
-            }
-            fprintf(feature_coexpression_fp, "\n");
-        }
-    }
+
     char feature_histograms_filename[FILENAME_LENGTH];
     sprintf(feature_histograms_filename, "%s/feature_histograms.txt", directory);
     FILE *feature_histograms_fp = fopen(feature_histograms_filename, "w");
@@ -2076,39 +1964,16 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         exit(EXIT_FAILURE);
     }
     //the 0 indices of the histograms to find the rightmost non-zero index
-    if (coexpression_histograms) {
-        for (int i = 1; i < features->number_of_features + 1; i++) {
-            coexpression_histograms[i][0] = 0;
-            for (int j = 1; j < features->number_of_features + 1; j++) {
-                if (coexpression_histograms[i][j] > 0) {
-                    coexpression_histograms[i][0] = j;
-                }
-            }
-        }
-        for (int i = 1; i < features->number_of_features + 1; i++) {
-            for (int j = 1; j < features->number_of_features + 1; j++) {
-                fprintf(feature_histograms_fp, "%d ", coexpression_histograms[i][j]);
-            }
-            fprintf(feature_histograms_fp, "\n");
-        }
-    }
-    #ifndef NO_HEATMAP
-    if (coexpression_histograms) {
-        generate_heatmap(directory, features, coexpression_histograms);
-    }
-    #endif
+
 
     // Free the feature histogram arrays
     for(int i=0; i < features->number_of_features + 1; ++i)
         if(feature_hist[i]) g_array_unref(feature_hist[i]);
     g_free(feature_hist);
 
-    free(coExpression);
-    free(coExpressionStorage);
-    free(coexpression_histograms);
+
     free(histogramsStorage);
     fclose(feature_statsfp);
-    fclose(feature_coexpression_fp);
     fclose(feature_histograms_fp);
     fclose(mixfp);
     fclose(signal_range_fp);
