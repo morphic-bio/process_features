@@ -48,6 +48,7 @@ The tool can accept input FASTQ files in two ways:
 | `-f`, `--featurelist` | `[filename]` | Feature list file (CSV with 'name' and 'sequence' columns). | (required) |
 | `-d`, `--directory` | `[path]` | Base output directory. A subdirectory will be created for each sample. | (required) |
 | `--filtered_barcodes` | `[filename]` | A file containing a list of barcodes to process, one per line. If provided, only these barcodes will be processed. | |
+| `--min_heatmap` | `[int]` | Minimum deduped count for a feature to be included in the Feature Counts Heatmap. | 0 |
 | `--barcode_fastqs` | `[string]` | Comma-separated list of barcode FASTQ files. | |
 | `--forward_fastqs` | `[string]` | Comma-separated list of forward read FASTQ files. | |
 | `--reverse_fastqs` | `[string]` | Comma-separated list of reverse read FASTQ files. | |
@@ -227,10 +228,10 @@ Each of the matched sequences is displayed under the feature index that they are
 An interactive HTML plot file named `umi_counts_histogram.html` is generated in each sample's output directory. This plot displays the cumulative histogram of feature counts per barcode, overlaid with the Expectation-Maximization (EM) model fit.
 
 Key features of this plot include:
-- **Interactive Scales**: A dropdown menu allows switching the Y-axis between linear and logarithmic scales for better visualization of count distributions.
-- **Component Visualization**: The individual components of the EM fit (e.g., noise, signal, multiplets) are plotted as separate lines.
-- **Cutoff Lines**: Vertical lines indicate the minimum and maximum signal cutoffs determined by the EM model.
-- **Detailed Information**: Hovering over the plot provides detailed information about the observed counts and the fitted model values.
+- **Interactive Scales:** A dropdown menu allows switching the Y-axis between linear and logarithmic scales for better visualization of count distributions.
+- **Component Visualization:** The individual components of the EM fit (e.g., noise, signal, multiplets) are plotted as separate lines.
+- **Cutoff Lines:** Vertical lines indicate the minimum and maximum signal cutoffs determined by the EM model.
+- **Detailed Information:** Hovering over the plot provides detailed information about the observed counts and the fitted model values.
 
 This plot is crucial for quality control, allowing for a visual assessment of the EM model's performance and the resulting signal-to-noise separation.
 
@@ -246,13 +247,14 @@ The repository is organized into the following main directories:
     -   `main.c`: The main entry point of the application, handles command-line argument parsing and orchestrates the overall workflow.
     -   `assignBarcodes.c`: Core logic for barcode assignment, error correction, and feature matching.
     -   `EMfit.c`: Implementation of the Expectation-Maximization algorithm for feature assignment.
-    -   `plot_histogram.c`: Functions for generating interactive and static QC histograms.
+    -   `plot_histogram.c`: Functions for generating interactive QC histograms.
     -   `io.c`: Functions related to reading FASTQ files and handling input.
     -   `memory.c`: Memory management utilities, including memory pools for efficient allocation.
     -   `queue.c`: Implementation of a queue data structure used for parallel processing.
     -   `utils.c`: Helper functions used across the application.
-    -   `globals.c`, `global.c`: Definitions of global variables.
-    -   `heatmap.c`: Functions for generating the QC heatmap images.
+    -   `globals.c`: Definitions of global variables.
+    -   `heatmap.c`: Functions for generating QC heatmap images.
+    -   `plasma_colormap_16.h`, `plasma_colormap_64.h`, `plasma_colormap_256.h`, `plasma_colormap_1024.h`: Color map definitions for heatmaps.
 -   **`include/`**: Contains all the header files.
     -   `common.h`: Common headers, structs, and macros used throughout the project.
     -   `prototypes.h`: Function prototypes for functions defined in the `src` directory.
@@ -265,7 +267,6 @@ The repository is organized into the following main directories:
     -   `heatmap.h`: Header for heatmap generation functions.
     -   `EMfit.h`: Header for EM fitting.
     -   `process.h`: Header for process management.
-    -   `viridis_colormap.h`, `plasma_colormap.h`, `plasma_colormap_16.h`, `plasma_colormap_64.h`, `plasma_colormap_256.h`, `plasma_colormap_1024.h`: Color map definitions for heatmaps.
 -   **`scripts/`**: Contains utility scripts for testing and other purposes.
 -   **`graphics/`**: Contains image files used in the documentation.
 -   **`Makefile`**: The main makefile for compiling the project.
@@ -273,18 +274,20 @@ The repository is organized into the following main directories:
 
 ## QC and Interactive Plots
 
-### Interactive Average UMI Count Plot
+### Interactive UMI Count Histogram
 
-An interactive HTML plot (`umi_counts_histogram.html`) is generated in each sample’s output directory. This plot displays the average UMI count histogram per feature, overlaid with the Expectation-Maximization (EM) model fit and its individual components.
+An interactive HTML plot (`umi_counts_histogram.html`) is generated in each sample’s output directory. This plot is crucial for quality control, allowing for a visual assessment of the EM model's performance and the resulting signal-to-noise separation. It visualizes the UMI count distributions overlaid with the Expectation-Maximization (EM) model fit.
 
 **Key features:**
-- **Histogram:** Shows the average number of UMIs per feature across all barcodes.
-- **EM Model Fit:** The overall fit and each component (background, signal, multiplet) are plotted as separate lines.
-- **Cutoff Lines:** Vertical lines indicate the minimum and maximum signal cutoffs determined by the EM model, as well as the user-defined minimum counts threshold.
-- **Interactive Controls:** Dropdown menu allows switching the Y-axis between linear and logarithmic scales.
-- **Legend and Hover Info:** The legend explains each component, and hovering provides detailed information.
-
-This plot is crucial for quality control, allowing for a visual assessment of the EM model's performance and the resulting signal-to-noise separation.
+- **Dual Views:** A dropdown menu allows switching between two views:
+  - **Cumulative View:** The histogram of total UMI counts across all features. This view reflects the global data distribution.
+  - **Average View:** The cumulative histogram normalized by the number of active features, representing the distribution for a typical feature.
+- **EM Model Fit:** For each view, the overall fit and its individual components (background, signal, and optionally multiplet) are plotted as separate lines. The Bayesian Information Criterion (BIC) for the chosen model is displayed in the title.
+- **Cutoff Lines:** Vertical lines indicate the minimum and maximum signal cutoffs determined by the EM model for assigning counts.
+- **Interactive Controls:**
+  - A dropdown menu to switch between `Cumulative` and `Average` views.
+  - A dropdown menu to toggle the Y-axis between `linear` and `logarithmic` scales for better visualization.
+- **Legend and Hover Info:** A detailed legend explains each trace. Hovering over the plot provides precise values for the observed histogram and the fitted model components.
 
 ---
 
@@ -292,11 +295,11 @@ This plot is crucial for quality control, allowing for a visual assessment of th
 
 A heatmap image (`Feature_counts_heatmap.png`) is generated for each sample. In this heatmap:
 - **Rows:** Features.
-- **Columns:** UMI counts.
+- **Columns:** UMI counts (starting from 1).
 - **Color Intensity:** Number of barcodes with that UMI count for the feature.
-- **Bar Graph:** Above the heatmap, a bar graph shows the total number of barcodes for each UMI count.
+- **Bar Graph:** Above the heatmap, a bar graph shows the total number of barcodes for each UMI count across all features.
 - **Color Bar:** Indicates the scale of counts.
-- **Filtering:** Only features with deduped counts above a threshold are shown.
+- **Filtering:** Only features with deduped counts above the threshold set by `--min_heatmap` are shown.
 
 This heatmap provides a visual summary of the count distribution for each feature, helping to identify features with abnormal count profiles or multiplet artifacts.
 
@@ -306,11 +309,11 @@ This heatmap provides a visual summary of the count distribution for each featur
 
 A second heatmap (`Feature_types_heatmap.png`) is generated for each sample. In this heatmap:
 - **Rows:** Features.
-- **Columns:** Number of different feature types present when a given feature is found in a barcode.
-- **Color Intensity:** Frequency of barcodes with that number of feature types for the feature.
-- **Bar Graph:** Above the heatmap, a bar graph shows the total number of barcodes with a given number of feature types.
+- **Columns:** Number of different feature types present in a barcode (co-expression level).
+- **Color Intensity:** The number of barcodes where the given feature (row) was observed along with the specified number of other feature types (column).
+- **Bar Graph:** Above the heatmap, a bar graph shows the total number of barcodes with a given number of co-expressing feature types.
 - **Color Bar:** Indicates the scale of counts.
-- **Filtering:** Only features with nonzero counts are shown.
+- **Filtering:** Only features with at least one observed count are shown.
 
 This heatmap helps visualize co-occurrence patterns and the distribution of feature types per barcode, which is useful for detecting multiplets and feature co-expression.
 
