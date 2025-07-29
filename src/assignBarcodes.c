@@ -1303,7 +1303,55 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     fprintf(matrixfp, "%d %ld %ld\n", features->number_of_features, number_of_barcode_entries, number_of_features_seen);
     
     
-    
+    // --- Step 2.5: Calculate co-expression histograms for richness heatmap ---
+    int **coexpression_histograms = malloc((features->number_of_features + 1) * sizeof(int*));
+    if (coexpression_histograms) {
+        for (int i = 0; i < features->number_of_features + 1; i++) {
+            // Allocate one extra element for simplicity, using number_of_features as max possible co-occurrence
+            coexpression_histograms[i] = calloc(features->number_of_features + 1, sizeof(int));
+        }
+
+        GHashTableIter coex_iter;
+        gpointer coex_key, coex_value;
+        g_hash_table_iter_init(&coex_iter, barcode_to_deduped_hash);
+        while (g_hash_table_iter_next(&coex_iter, &coex_key, &coex_value)) {
+            GHashTable *deduped_hash = (GHashTable *)coex_value;
+            guint n_features_in_barcode = g_hash_table_size(deduped_hash);
+
+            if (n_features_in_barcode > 0) {
+                 GList *feature_indices = g_hash_table_get_keys(deduped_hash);
+                 for (GList *l = feature_indices; l != NULL; l = l->next) {
+                    int feature_index = GPOINTER_TO_INT(l->data);
+                    if (feature_index > 0) {
+                        int num_other_features = n_features_in_barcode - 1;
+                        if (num_other_features > 0 && num_other_features <= features->number_of_features) {
+                           coexpression_histograms[feature_index][num_other_features]++;
+                        }
+                    }
+                 }
+                 g_list_free(feature_indices);
+            }
+        }
+        
+        // Calculate the maximum number of co-occurring features for each feature (for heatmap scaling)
+        for (int i = 1; i <= features->number_of_features; i++) {
+            int max_co_occur = 0;
+            for (int j = 1; j <= features->number_of_features; j++) {
+                if (coexpression_histograms[i][j] > 0) {
+                    max_co_occur = j;
+                }
+            }
+            coexpression_histograms[i][0] = max_co_occur;
+        }
+
+        generate_heatmap(output_directory, features, coexpression_histograms);
+
+        for (int i = 0; i < features->number_of_features + 1; i++) {
+            free(coexpression_histograms[i]);
+        }
+        free(coexpression_histograms);
+    }
+
     // --- Step 3: Iterate through all barcodes to write files and calculate final stats ---
     int total_barcodes=0;
     g_hash_table_iter_init(&iter, hashes->filtered_hash);

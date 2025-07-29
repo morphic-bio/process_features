@@ -100,6 +100,7 @@ void determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposteri
 NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
                             int max_iter, double tol, double em_cumulative_limit);
 void generate_deduped_heatmap(const char *directory, feature_arrays *features, GArray **feature_hist, int *total_deduped_counts, int histogram_minimum_counts);
+void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms);
 
 
 #endif // PROTOTYPES_Hhbe 
