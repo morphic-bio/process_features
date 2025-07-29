@@ -52,8 +52,163 @@ double normalize(int value, int max_value) {
     return (double)value / max_value;
 }
 
-// Function to generate heatmap with dynamic padding
-void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms) {
+/* -------------------------------------------------------------------------- *
+ *  Shared drawing logic                                                      *
+ * -------------------------------------------------------------------------- */
+typedef int (*value_cb)(int row, int col, void *ctx);
+
+/* central renderer – used by both public helpers */
+static void draw_heatmap_core(const char *output_file,
+                              feature_arrays *features,
+                              int left_padding,
+                              int right_padding,
+                              int num_cols,
+                              int filtered_rows,
+                              int *column_sums,
+                              int max_column_sum,
+                              int max_value,
+                              int *filter_mask,
+                              value_cb value_fn,
+                              void *value_ctx,
+                              int clear_background)
+{
+    int width  = left_padding + num_cols * CELL_SIZE + BAR_WIDTH + right_padding;
+    int height = BASE_PADDING + BAR_GRAPH_HEIGHT + BASE_PADDING + 20 +
+                 filtered_rows * CELL_SIZE + BASE_PADDING;
+
+    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+                                                          width, height);
+    cairo_t *cr = cairo_create(surface);
+
+    if (clear_background) {          /* only needed by the deduped map    */
+        cairo_set_source_rgb(cr, 1, 1, 1);
+        cairo_paint(cr);
+    }
+
+    /* ---------- bar graph (column sums) ---------- */
+    for (int j = 0; j < num_cols; j++) {
+        double bar_h = 0.0;
+        if (max_column_sum > 0)
+            bar_h = (double)column_sums[j] / max_column_sum * BAR_GRAPH_HEIGHT;
+
+        cairo_set_source_rgb(cr, 0.20, 0.40, 0.80);
+        cairo_rectangle(cr, left_padding + j * CELL_SIZE,
+                        BASE_PADDING + BAR_GRAPH_HEIGHT - bar_h,
+                        CELL_SIZE, bar_h);
+        cairo_fill(cr);
+    }
+
+    /* side labels (max / mid) */
+    cairo_set_font_size(cr, 10);
+    cairo_set_source_rgb(cr, 0, 0, 0);
+    char lbl[32];
+    snprintf(lbl, sizeof lbl, "%d", max_column_sum);
+    cairo_move_to(cr, left_padding - 40, BASE_PADDING + 5);
+    cairo_show_text(cr, lbl);
+
+    snprintf(lbl, sizeof lbl, "%d", max_column_sum / 2);
+    cairo_move_to(cr, left_padding - 40, BASE_PADDING + BAR_GRAPH_HEIGHT / 2 + 5);
+    cairo_show_text(cr, lbl);
+
+    /* x-axis labels every 5th column */
+    for (int j = 0; j < num_cols; j++) {
+        if (j == 0 || (j + 1) % 5 == 0) {
+            snprintf(lbl, sizeof lbl, "%d", j + 1);
+            cairo_move_to(cr, left_padding + j * CELL_SIZE + CELL_SIZE / 4,
+                          BASE_PADDING + BAR_GRAPH_HEIGHT + 15);
+            cairo_show_text(cr, lbl);
+        }
+    }
+
+    /* pick a colour-map based on dynamic range */
+    int cmap_sz;
+    const double (*plasma)[3] = select_colormap(max_value, &cmap_sz);
+
+    /* ---------- coloured matrix ---------- */
+    int draw_row = 0;
+    for (int i = 0; i < features->number_of_features; ++i) {
+        if (!filter_mask[i]) continue;
+
+        for (int j = 0; j < num_cols; ++j) {
+            double v      = value_fn(i, j, value_ctx);
+            double inten  = normalize((int)v, max_value);
+            double r, g, b;
+            value_to_color(inten, &r, &g, &b, plasma, cmap_sz);
+
+            cairo_set_source_rgb(cr, r, g, b);
+            cairo_rectangle(cr,
+                            left_padding + j * CELL_SIZE,
+                            BASE_PADDING + BAR_GRAPH_HEIGHT + 20
+                                + draw_row * CELL_SIZE,
+                            CELL_SIZE, CELL_SIZE);
+            cairo_fill(cr);
+        }
+
+        /* row label */
+        cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+                               CAIRO_FONT_WEIGHT_NORMAL);
+        cairo_set_font_size(cr, 10);
+        cairo_move_to(cr, BASE_PADDING,
+                      BASE_PADDING + BAR_GRAPH_HEIGHT + 20
+                          + draw_row * CELL_SIZE + CELL_SIZE / 2);
+        cairo_show_text(cr, features->feature_names[i]);
+        draw_row++;
+    }
+
+    /* ---------- colour-bar ---------- */
+    for (int i = 0; i < height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20; i++) {
+        double norm = 1.0 - (double)i /
+                      (height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20);
+        double r, g, b;
+        value_to_color(norm, &r, &g, &b, plasma, cmap_sz);
+
+        cairo_set_source_rgb(cr, r, g, b);
+        cairo_rectangle(cr,
+                        width - right_padding - BAR_WIDTH,
+                        BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + i,
+                        BAR_WIDTH, 1);
+        cairo_fill(cr);
+    }
+
+    cairo_set_font_size(cr, 10);
+    for (int i = 0;
+         i <= height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20;
+         i += 10 * CELL_SIZE) {
+        double norm = 1.0 - (double)i /
+                      (height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20);
+        int v = (int)(norm * max_value);
+        snprintf(lbl, sizeof lbl, "%d", v);
+        cairo_move_to(cr,
+                      width - right_padding + 5,
+                      BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + i + 4);
+        cairo_show_text(cr, lbl);
+    }
+
+    cairo_surface_write_to_png(surface, output_file);
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+}
+
+/* ---------- small helpers that fetch the actual cell value ---------- */
+static int coexpression_value(int row, int col, void *ctx)
+{
+    int **hist = ctx;                 /* co-expression matrix */
+    return hist[row + 1][col + 1];
+}
+
+static int deduped_value(int row, int col, void *ctx)
+{
+    GArray **hist = ctx;              /* per-feature GArray histograms   */
+    GArray *h     = hist[row + 1];
+    if (h && (size_t)(col + 1) < h->len)
+        return g_array_index(h, uint32_t, col + 1);
+    return 0;
+}
+
+void generate_heatmap(const char *directory,
+                      feature_arrays *features,
+                      int **coexpression_histograms)
+{
     char output_file[1024];
     if (directory[strlen(directory) - 1] == '/') {
         snprintf(output_file, sizeof(output_file), "%sFeature_types_heatmap.png", directory);
@@ -105,114 +260,36 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
             max_column_sum = column_sums[j];
         }
     }
-    // Adjust canvas dimensions to include the bar graph
-    int width = left_padding + num_cols * CELL_SIZE + BAR_WIDTH + right_padding;
-    int height = BASE_PADDING + BAR_GRAPH_HEIGHT + BASE_PADDING + 20 + filtered_rows * CELL_SIZE + BASE_PADDING; // +20 for x-axis labels
-
-    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
-    cairo_t *cr = cairo_create(surface);
-
-    // Draw bar graph
-    for (int j = 0; j < num_cols; j++) {
-        double bar_height = (double)column_sums[j] / max_column_sum * BAR_GRAPH_HEIGHT;
-        cairo_set_source_rgb(cr, 0.2, 0.4, 0.8); // Bar color (blue)
-        cairo_rectangle(cr, left_padding + j * CELL_SIZE, BASE_PADDING + BAR_GRAPH_HEIGHT - bar_height, CELL_SIZE, bar_height);
-        cairo_fill(cr);
-    }
-    // **Draw side labels for maximum and midpoint**
-    cairo_set_font_size(cr, 10);
-    cairo_set_source_rgb(cr, 0, 0, 0); // Black color for labels
-
-    // Maximum value label
-    char max_label[20];
-    snprintf(max_label, sizeof(max_label), "%-d", max_column_sum);
-    cairo_move_to(cr, left_padding - 30 - 10, BASE_PADDING + 5); // Position label at top-left of bar graph
-    cairo_show_text(cr, max_label);
-
-    // Midpoint value label
-    char midpoint_label[20];
-    int midpoint_value = max_column_sum / 2;
-    snprintf(midpoint_label, sizeof(midpoint_label), "%d", midpoint_value);
-    cairo_move_to(cr, left_padding - 30 - 10, BASE_PADDING + BAR_GRAPH_HEIGHT / 2 + 5); // Position at the midpoint of the bar graph
-    cairo_show_text(cr, midpoint_label);
-    
-    // Draw x-axis labels under the bar graph
-    cairo_set_font_size(cr, 10);
-    cairo_set_source_rgb(cr, 0, 0, 0); // Black color for labels
-    for (int j = 0; j < num_cols; j++) {
-        if (j == 0 || (j + 1) % 5 == 0) { // Label first and every 5th column
-            char label[12];
-            snprintf(label, sizeof(label), "%d", j+1);
-            cairo_move_to(cr, left_padding + j * CELL_SIZE + CELL_SIZE / 4, BASE_PADDING + BAR_GRAPH_HEIGHT + 15); // Adjust placement
-            cairo_show_text(cr, label);
-        }
-    }
-
-    // Draw heatmap
-    //find max value
     int max_value = 0;
-    for (int i = 0; i < num_rows; i++) {
+    for (int i = 0; i < num_rows; ++i) {
         if (!filter_mask[i]) continue;
-        for (int j = 0; j < num_cols; j++) {
-            if (coexpression_histograms[i+1][j+1] > max_value) {
-                max_value = coexpression_histograms[i+1][j+1];
-            }
+        for (int j = 0; j < num_cols; ++j) {
+            int v = coexpression_histograms[i + 1][j + 1];
+            if (v > max_value) max_value = v;
         }
     }
-    int draw_row = 0;
-    const double (*plasma_colormap)[3];
-    int colormap_size;
-    plasma_colormap = select_colormap(max_value, &colormap_size);
+    // Adjust canvas dimensions to include the bar graph
+//    int width = left_padding + num_cols * CELL_SIZE + BAR_WIDTH + right_padding;
+//;    int height = BASE_PADDING + BAR_GRAPH_HEIGHT + BASE_PADDING + 20 + filtered_rows * CELL_SIZE + BASE_PADDING; // +20 for x-axis labels
 
-    for (int i = 0; i < num_rows; i++) {
-        if (!filter_mask[i]) continue;
-        for (int j = 0; j < num_cols; j++) {
-            double intensity = normalize(coexpression_histograms[i+1][j+1], max_value);
-            //fprintf(stderr, "Intensity %f\n", intensity);
-            double r, g, b;
-            value_to_color(intensity, &r, &g, &b, plasma_colormap, colormap_size);
-            cairo_set_source_rgb(cr, r, g, b);
-            cairo_rectangle(cr, left_padding + j * CELL_SIZE, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + draw_row * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-            cairo_fill(cr);
-        }
-        // Draw row labels
-        cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-        cairo_set_font_size(cr, 10);
-        cairo_move_to(cr, BASE_PADDING, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + draw_row * CELL_SIZE + CELL_SIZE / 2);
-        cairo_show_text(cr, features->feature_names[i]);
-        draw_row++;
-    }
-    // Draw color bar
-    for (int i = 0; i < height - BAR_GRAPH_HEIGHT - 20 - BASE_PADDING*3 ; i++) {
-        double normalized_value = 1.0 - (double)i / (height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20);
-        double r, g, b;
-        value_to_color(normalized_value, &r, &g, &b, plasma_colormap, colormap_size);
-        cairo_set_source_rgb(cr, r, g, b);
-        cairo_rectangle(cr, width - right_padding - BAR_WIDTH, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + i, BAR_WIDTH, 1);
-        cairo_fill(cr);
-    }
-
-    // Add labels to the color bar
-    cairo_set_font_size(cr, 10);
-    for (int i = 0; i <= height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20; i += 10 * CELL_SIZE) {
-        double normalized_value = 1.0 - (double)i / (height - BAR_GRAPH_HEIGHT - BASE_PADDING * 3 - 20 );
-        int value = (int)(normalized_value * max_value);
-        char label[20];
-        snprintf(label, sizeof(label), "%d", value);
-        cairo_move_to(cr, width - right_padding + 5, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + i + 4); // Adjust for padding
-        cairo_show_text(cr, label);
-    }
-
-    // Save to PNG
-    cairo_surface_write_to_png(surface, output_file);
-
-    // Clean up
-    cairo_destroy(cr);
-    cairo_surface_destroy(surface);
+    draw_heatmap_core(output_file, features,
+                      left_padding, right_padding,
+                      num_cols, filtered_rows,
+                      column_sums,                /* bar-graph */
+                      max_column_sum,
+                      max_value,                  /* ← correct scale for colours */
+                      filter_mask,
+                      coexpression_value, coexpression_histograms,
+                      0);
 } 
 
 
-void generate_deduped_heatmap(const char *directory, feature_arrays *features, GArray **feature_hist, int *total_deduped_counts, int histogram_minimum_counts) {
+void generate_deduped_heatmap(const char *directory,
+                              feature_arrays *features,
+                              GArray **feature_hist,
+                              int *total_deduped_counts,
+                              int histogram_minimum_counts)
+{
     char output_file[1024];
 
     if (histogram_minimum_counts == -1) {
@@ -266,120 +343,40 @@ void generate_deduped_heatmap(const char *directory, feature_arrays *features, G
         }
     }
 
+    /* recompute max_column_sum **excluding** the unused j==0 column */
     long max_column_sum = 0;
-    for (size_t j = 0; j < num_cols; j++) {
-        if (column_sums[j] > max_column_sum) {
-            max_column_sum = column_sums[j];
-        }
-    }
+    for (size_t j = 1; j < num_cols; ++j)        /* start at 1 */
+        if (column_sums[j] > max_column_sum) max_column_sum = column_sums[j];
 
-    int width = left_padding + (num_cols - 1) * CELL_SIZE + BAR_WIDTH + right_padding;
-    int height = BASE_PADDING + BAR_GRAPH_HEIGHT + BASE_PADDING + 20 + filtered_rows * CELL_SIZE + BASE_PADDING;
-
-    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
-    cairo_t *cr = cairo_create(surface);
-
-    cairo_set_source_rgb(cr, 1, 1, 1);
-    cairo_paint(cr);
-
-    for (size_t j = 1; j < num_cols; j++) {
-        if(max_column_sum > 0){
-            double bar_height = (double)column_sums[j] / max_column_sum * BAR_GRAPH_HEIGHT;
-            cairo_set_source_rgb(cr, 0.2, 0.4, 0.8);
-            cairo_rectangle(cr, left_padding + (j-1) * CELL_SIZE, BASE_PADDING + BAR_GRAPH_HEIGHT - bar_height, CELL_SIZE, bar_height);
-            cairo_fill(cr);
-        }
-    }
-
-    cairo_set_font_size(cr, 10);
-    cairo_set_source_rgb(cr, 0, 0, 0);
-
-    char max_label[22];
-    snprintf(max_label, sizeof(max_label), "%-ld", max_column_sum);
-    cairo_move_to(cr, left_padding - 40, BASE_PADDING + 5);
-    cairo_show_text(cr, max_label);
-
-    char midpoint_label[22];
-    long midpoint_value = max_column_sum / 2;
-    snprintf(midpoint_label, sizeof(midpoint_label), "%ld", midpoint_value);
-    cairo_move_to(cr, left_padding - 40, BASE_PADDING + BAR_GRAPH_HEIGHT / 2 + 5);
-    cairo_show_text(cr, midpoint_label);
-
-    for (size_t j = 1; j < num_cols; j++) {
-        if (j == 1 || (j) % 5 == 0) {
-            char label[22];
-            snprintf(label, sizeof(label), "%zu", j);
-            cairo_move_to(cr, left_padding + (j-1) * CELL_SIZE + CELL_SIZE / 4, BASE_PADDING + BAR_GRAPH_HEIGHT + 15);
-            cairo_show_text(cr, label);
-        }
-    }
-
+    /* find the maximum single-cell value (skip index 0) */
     int max_value = 0;
-    for (int i = 0; i < num_rows; i++) {
-        if (filter_mask[i] && feature_hist[i+1]) {
-            for (guint j = 0; j < feature_hist[i+1]->len; ++j) {
-                 uint32_t val = g_array_index(feature_hist[i+1], uint32_t, j);
-                 if(val > max_value) max_value = val;
-            }
-        }
-    }
-
-    int draw_row = 0;
-    const double (*plasma_colormap)[3];
-    int colormap_size;
-    plasma_colormap = select_colormap(max_value, &colormap_size);
-
-    for (int i = 0; i < num_rows; i++) {
+    for (int i = 0; i < num_rows; ++i) {
         if (!filter_mask[i]) continue;
-        
-        GArray *h = feature_hist[i+1];
-        for (size_t j = 1; j < num_cols; j++) {
-            double intensity = 0.0;
-            if (h && j < h->len) {
-                intensity = normalize(g_array_index(h, uint32_t, j), max_value);
-            }
-            double r, g, b;
-            value_to_color(intensity, &r, &g, &b, plasma_colormap, colormap_size);
-            cairo_set_source_rgb(cr, r, g, b);
-            cairo_rectangle(cr, left_padding + (j-1) * CELL_SIZE, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + draw_row * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-            cairo_fill(cr);
+        GArray *h = feature_hist[i + 1];
+        if (!h) continue;
+        for (guint j = 1; j < h->len; ++j) {     /* start at 1 */
+            uint32_t v = g_array_index(h, uint32_t, j);
+            if (v > max_value) max_value = v;
         }
-
-        cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-        cairo_set_font_size(cr, 10);
-        cairo_move_to(cr, BASE_PADDING, BASE_PADDING + BAR_GRAPH_HEIGHT + 20 + draw_row * CELL_SIZE + CELL_SIZE / 2);
-        cairo_show_text(cr, features->feature_names[i]);
-        draw_row++;
     }
 
-    int color_bar_y_start = BASE_PADDING + BAR_GRAPH_HEIGHT + 20;
-    int color_bar_height = filtered_rows * CELL_SIZE;
+    /* drop the unused first column */
+    int effective_cols = (int)num_cols - 1;
+    int *col_sums_int  = malloc(sizeof(int) * effective_cols);
+    for (int j = 0; j < effective_cols; ++j)
+        col_sums_int[j] = (int)column_sums[j + 1];
 
-    for (int i = 0; i < color_bar_height; i++) {
-        double normalized_value = 1.0 - (double)i / color_bar_height;
-        double r, g, b;
-        value_to_color(normalized_value, &r, &g, &b, plasma_colormap, colormap_size);
-        cairo_set_source_rgb(cr, r, g, b);
-        cairo_rectangle(cr, width - right_padding - BAR_WIDTH, color_bar_y_start + i, BAR_WIDTH, 1);
-        cairo_fill(cr);
-    }
+    draw_heatmap_core(output_file, features,
+                      left_padding, right_padding,
+                      effective_cols, filtered_rows,
+                      col_sums_int,
+                      max_column_sum,             /* bar-graph */
+                      max_value,                  /* ← correct colour scale    */
+                      filter_mask,
+                      deduped_value, feature_hist,
+                      1);
 
-    cairo_set_font_size(cr, 10);
-    for (int i = 0; i <= 10; i++) {
-        double normalized_value = 1.0 - (double)i / 10.0;
-        int value = (int)(normalized_value * max_value);
-        char label[20];
-        snprintf(label, sizeof(label), "%d", value);
-        
-        double y_pos = color_bar_y_start + (i * (color_bar_height/10.0));
-        cairo_move_to(cr, width - right_padding + 5, y_pos + 4);
-        cairo_show_text(cr, label);
-    }
-
-    cairo_surface_write_to_png(surface, output_file);
-
-    cairo_destroy(cr);
-    cairo_surface_destroy(surface);
+    free(col_sums_int);
     fprintf(stderr, "Feature counts heatmap saved to: %s\n", output_file);
 } 
 
