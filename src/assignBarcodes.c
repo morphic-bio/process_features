@@ -1516,20 +1516,54 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     }
     memset(deduped_counts, 0, (features->number_of_features + 1) * sizeof(int));
     // After writing the text files, generate the heatmaps
-    generate_deduped_heatmap(output_directory, features, feature_hist, deduped_counts, min_heatmap);
-
-    int num_features_for_deduped_heatmap = 0;
+    
+    // --- Convert feature_hist (GArray**) to a dense matrix for the heatmap ---
+    int max_len = 0;
     for (int i = 1; i <= features->number_of_features; i++) {
-        if (deduped_counts[i] >= 1) {
-            num_features_for_deduped_heatmap++;
+        if (feature_hist[i] && feature_hist[i]->len > max_len) {
+            max_len = feature_hist[i]->len;
         }
     }
     
+    int max_deduped_count = (max_len > 0) ? max_len - 1 : 0;
+    
+    int **deduped_histograms =
+        malloc((features->number_of_features + 1) * sizeof(int *));
+    for (int i = 0; i <= features->number_of_features; ++i) {
+        deduped_histograms[i] =
+            calloc(max_deduped_count + 1, sizeof(int));
+    }
+
+    for (int i = 1; i <= features->number_of_features; ++i) {
+        if (feature_hist[i]) {
+            for (guint j = 0; j < feature_hist[i]->len; j++) {
+                deduped_histograms[i][j] = g_array_index(feature_hist[i], uint32_t, j);
+            }
+        }
+    }
+
+    // Now, use the populated deduped_histograms to get total counts and check the condition.
+    int num_features_for_deduped_heatmap = 0;
+    int temp_total_deduped_counts[features->number_of_features];
+    for (int i = 0; i < features->number_of_features; ++i) {
+        long feature_total = 0;
+        // The histogram at index j stores the frequency of count j.
+        // Sum j * frequency(j) to get the total counts for the feature.
+        for (int j = 1; j <= max_deduped_count; j++) {
+            feature_total += (long)j * deduped_histograms[i+1][j];
+        }
+        temp_total_deduped_counts[i] = feature_total;
+
+        if (feature_total > min_heatmap) {
+            num_features_for_deduped_heatmap++;
+        }
+    }
+
     if (num_features_for_deduped_heatmap < 2) {
         fprintf(stdout, "Skipping heatmap generation as there are fewer than 2 features with sufficient counts.\n");
     } else {
-        generate_deduped_heatmap(output_directory, features, feature_hist, deduped_counts, 1);
-    
+        generate_deduped_heatmap(output_directory, features, deduped_histograms, max_deduped_count, temp_total_deduped_counts, min_heatmap);
+
         // --- Step 2.5: Calculate feature richness histograms for heatmap ---
         // A more direct approach to building the histograms.
 
@@ -1627,6 +1661,11 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
             free(richness_histograms[i]);
         free(richness_histograms);
     }
+
+    for (int i = 0; i <= features->number_of_features; ++i) {
+        free(deduped_histograms[i]);
+    }
+    free(deduped_histograms);
 }
 
 int find_closest_barcodes(unsigned char* code,unsigned char *corrected_codes, unsigned char *indices){

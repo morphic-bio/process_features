@@ -9,6 +9,7 @@
 #include "plasma_colormap_64.h"
 #include "plasma_colormap_256.h"
 #include "plasma_colormap_1024.h"
+
 #define CELL_SIZE 10  // Size of each cell in the heatmap
 #define BAR_WIDTH 20  // Width of the color bar
 #define BASE_PADDING 10  // Base padding for additional adjustments
@@ -196,15 +197,6 @@ static int coexpression_value(int row, int col, void *ctx)
     return hist[row + 1][col + 1];
 }
 
-static int deduped_value(int row, int col, void *ctx)
-{
-    GArray **hist = ctx;              /* per-feature GArray histograms   */
-    GArray *h     = hist[row + 1];
-    if (h && (size_t)(col + 1) < h->len)
-        return g_array_index(h, uint32_t, col + 1);
-    return 0;
-}
-
 void generate_heatmap(const char *directory,
                       feature_arrays *features,
                       int **coexpression_histograms)
@@ -292,7 +284,8 @@ void generate_heatmap(const char *directory,
 
 void generate_deduped_heatmap(const char *directory,
                               feature_arrays *features,
-                              GArray **feature_hist,
+                              int **deduped_histograms,
+                              int max_deduped_count,
                               int *total_deduped_counts,
                               int histogram_minimum_counts)
 {
@@ -321,15 +314,12 @@ void generate_deduped_heatmap(const char *directory,
     
     int filtered_rows = 0;
     int filter_mask[num_rows];
-    size_t num_cols = 0;
+    size_t num_cols = max_deduped_count;
 
     for (int i = 0; i < num_rows; i++) {
         filter_mask[i] = (total_deduped_counts[i] > histogram_minimum_counts);
         if (filter_mask[i]) {
             filtered_rows++;
-            if (feature_hist[i + 1] && feature_hist[i + 1]->len > num_cols) {
-                num_cols = feature_hist[i + 1]->len;
-            }
         }
     }
 
@@ -338,36 +328,34 @@ void generate_deduped_heatmap(const char *directory,
         return;
     }
 
-    long column_sums[num_cols];
+    long column_sums[num_cols + 1];
     memset(column_sums, 0, sizeof(column_sums));
     
     for (int i = 0; i < num_rows; i++) {
-        if(filter_mask[i] && feature_hist[i+1]){
-            for(guint j=0; j < feature_hist[i+1]->len; ++j){
-                column_sums[j] += g_array_index(feature_hist[i+1], uint32_t, j);
+        if(filter_mask[i]){
+            for(guint j=1; j <= num_cols; ++j){
+                column_sums[j] += deduped_histograms[i+1][j];
             }
         }
     }
 
     /* recompute max_column_sum **excluding** the unused j==0 column */
     long max_column_sum = 0;
-    for (size_t j = 1; j < num_cols; ++j)        /* start at 1 */
+    for (size_t j = 1; j <= num_cols; ++j)        /* start at 1 */
         if (column_sums[j] > max_column_sum) max_column_sum = column_sums[j];
 
     /* find the maximum single-cell value (skip index 0) */
     int max_value = 0;
     for (int i = 0; i < num_rows; ++i) {
         if (!filter_mask[i]) continue;
-        GArray *h = feature_hist[i + 1];
-        if (!h) continue;
-        for (guint j = 1; j < h->len; ++j) {     /* start at 1 */
-            uint32_t v = g_array_index(h, uint32_t, j);
+        for (guint j = 1; j <= num_cols; ++j) {     /* start at 1 */
+            int v = deduped_histograms[i + 1][j];
             if (v > max_value) max_value = v;
         }
     }
 
     /* drop the unused first column */
-    int effective_cols = (int)num_cols - 1;
+    int effective_cols = (int)num_cols;
     int *col_sums_int  = malloc(sizeof(int) * effective_cols);
     for (int j = 0; j < effective_cols; ++j)
         col_sums_int[j] = (int)column_sums[j + 1];
@@ -379,7 +367,7 @@ void generate_deduped_heatmap(const char *directory,
                       max_column_sum,             /* bar-graph */
                       max_value,                  /* ← correct colour scale    */
                       filter_mask,
-                      deduped_value, feature_hist,
+                      coexpression_value, deduped_histograms,
                       1);
 
     free(col_sums_int);
