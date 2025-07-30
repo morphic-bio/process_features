@@ -305,17 +305,17 @@ This heatmap provides a visual summary of the count distribution for each featur
 
 ---
 
-### Feature Types Heatmap
+### Feature Richness Heatmap
 
-A second heatmap (`Feature_types_heatmap.png`) is generated for each sample. In this heatmap:
+A second heatmap (`Feature_types_heatmap.png`) is generated for each sample to visualize feature richness. In this heatmap:
 - **Rows:** Features.
-- **Columns:** Number of different feature types present in a barcode (co-expression level).
-- **Color Intensity:** The number of barcodes where the given feature (row) was observed along with the specified number of other feature types (column).
-- **Bar Graph:** Above the heatmap, a bar graph shows the total number of barcodes with a given number of co-expressing feature types.
+- **Columns:** The total number of unique feature types present in a barcode (richness level).
+- **Color Intensity:** The number of barcodes where the given feature (row) was observed that contained a specific total number of feature types (column).
+- **Bar Graph:** Above the heatmap, a bar graph shows the total number of barcodes for each richness level across all features.
 - **Color Bar:** Indicates the scale of counts.
 - **Filtering:** Only features with at least one observed count are shown.
 
-This heatmap helps visualize co-occurrence patterns and the distribution of feature types per barcode, which is useful for detecting multiplets and feature co-expression.
+This heatmap helps visualize the complexity of features within single barcodes, which is useful for identifying potential multiplets and assessing the overall quality of the feature capture.
 
 ---
 
