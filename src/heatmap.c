@@ -218,8 +218,6 @@ void generate_heatmap(const char *directory,
     //find max_name_length
     int max_name_length=0;
     const int num_rows = features->number_of_features;
-    int column_sums[num_rows];
-    memset(column_sums,0,num_rows*sizeof(int));    
     for (int i=0; i<num_rows; i++){
         if (strlen(features->feature_names[i])>max_name_length){
             max_name_length=strlen(features->feature_names[i]);
@@ -240,20 +238,27 @@ void generate_heatmap(const char *directory,
          if (filter_mask[i]){
               filtered_rows++;
          }
-       if (coexpression_histograms[i+1][0]> num_cols){
+       if (coexpression_histograms[i+1][0] > num_cols){
            num_cols=coexpression_histograms[i+1][0];
        }
     }
     // calculate column sums and find the maximum column sum
+    int *column_sums = calloc(num_cols, sizeof(int));
+    if (!column_sums) return;
+
     for (int i = 0; i < num_rows; i++) {
-        for (int j = 0; j < num_cols; j++) {
-            column_sums[j] += coexpression_histograms[i+1][j+1];
+        if (!filter_mask[i]) continue;
+        for (int j = 1; j <= num_cols; j++) { // j is total features
+            column_sums[j-1] += coexpression_histograms[i+1][j];
         }
     }
-    //correct for multiple counting of column sums
-    for (int j = 0; j < num_cols; j++) {
-        column_sums[j] /= j+1;
+
+    // Correct for overcounting for the top histogram
+    for (int j = 1; j <= num_cols; j++) {
+        // a richness of j overcounts by a factor of j
+        if (j > 0) column_sums[j-1] /= j;
     }
+
     int max_column_sum = 0;
     for (int j = 0; j < num_cols; j++) {
         if (column_sums[j] > max_column_sum) {
@@ -263,8 +268,8 @@ void generate_heatmap(const char *directory,
     int max_value = 0;
     for (int i = 0; i < num_rows; ++i) {
         if (!filter_mask[i]) continue;
-        for (int j = 0; j < num_cols; ++j) {
-            int v = coexpression_histograms[i + 1][j + 1];
+        for (int j = 1; j <= num_cols; ++j) {
+            int v = coexpression_histograms[i + 1][j];
             if (v > max_value) max_value = v;
         }
     }
@@ -281,6 +286,7 @@ void generate_heatmap(const char *directory,
                       filter_mask,
                       coexpression_value, coexpression_histograms,
                       0);
+    free(column_sums);
 } 
 
 
@@ -379,5 +385,6 @@ void generate_deduped_heatmap(const char *directory,
     free(col_sums_int);
     fprintf(stderr, "Feature counts heatmap saved to: %s\n", output_file);
 } 
+
 
 

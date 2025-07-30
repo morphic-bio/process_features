@@ -130,7 +130,33 @@ int main(int argc, char *argv[])
             default: fprintf(stderr, "Usage: %s [options]\n", argv[0]); return 1;
         }
     }
-
+    GHashTable *filtered_barcodes_hash = NULL;
+    if (filtered_barcodes_filename) {
+        if (!file_exists(filtered_barcodes_filename)) {
+            printf("filtered_barcodes_filename: %s does not exist  \n", filtered_barcodes_filename);
+            char full_path[2048];
+            if (strlen(directory) > 0) {
+                snprintf(full_path, sizeof(full_path), "%s%s", directory, filtered_barcodes_filename);
+                printf("Will check for filtered barcodes file at %s\n", full_path);
+                if (file_exists(full_path)) {
+                    free(filtered_barcodes_filename);
+                    filtered_barcodes_filename = strdup(full_path);
+                } else {
+                    fprintf(stderr, "Error: Filtered barcodes file not found at %s or %s\n", filtered_barcodes_filename, full_path);
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Error: Filtered barcodes file not found at %s\n", filtered_barcodes_filename);
+                return 1;
+            }
+        }
+        else{
+            //print the full path of the filtered_barcodes_filename
+            printf("Will use filtered barcodes file: %s\n", filtered_barcodes_filename);
+        }
+        filtered_barcodes_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+        read_barcodes_into_hash(filtered_barcodes_filename, filtered_barcodes_hash);
+    }
     int positional_arg_count = argc - optind;
     if (positional_arg_count > 0 && (barcodeFastqFilesString != NULL || forwardFastqFilesString != NULL || reverseFastqFilesString != NULL)) {
         fprintf(stderr, "Error: Cannot specify both positional arguments and --barcode_fastqs\n");
@@ -140,6 +166,9 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Error: Barcode, forward, and reverse patterns must be different\n");
         return 1;
     }
+    
+
+
     fastq_files_collection fastq_files;
     memset(&fastq_files, 0, sizeof(fastq_files));
     if (positional_arg_count && is_directory(argv[optind])){
@@ -149,11 +178,6 @@ int main(int argc, char *argv[])
         organize_fastq_files_by_type(positional_arg_count, argc, argv,optind, barcodeFastqFilesString, forwardFastqFilesString, reverseFastqFilesString, &fastq_files, barcode_pattern, forward_pattern, reverse_pattern,sample_flag);
     }
     whitelist_hash = g_hash_table_new(hash_int32, equal_int32 );
-    GHashTable *filtered_barcodes_hash = NULL;
-    if (filtered_barcodes_filename) {
-        filtered_barcodes_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-        read_barcodes_into_hash(filtered_barcodes_filename, filtered_barcodes_hash);
-    }
     read_whiteList(whitelist_filename, whitelist_hash, reverse_complement_whitelist);
     initialize_unit_sizes();
     const int nSamples=fastq_files.nsamples;
