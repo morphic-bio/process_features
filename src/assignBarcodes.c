@@ -1355,17 +1355,20 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     int global_max_cooccur = 0;
 
     gpointer       barcode_key, deduped_hash_value;
-
+    int skipped_barcodes = 0;
+    int processed_barcodes = 0;
     g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
     while (g_hash_table_iter_next(&iter, &barcode_key, &deduped_hash_value)) {
-        char *barcode = (char *)barcode_key;
+        char barcode[barcode_length + 1];
+        code2string((unsigned char *)barcode_key, barcode, barcode_code_length);
         if (filtered_barcodes_hash &&
-            g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL)
+            g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL){
+            skipped_barcodes++;
             continue;
-
+        }
+        processed_barcodes++;
         GHashTable *features_in_barcode = (GHashTable *)deduped_hash_value;
         guint       n_feats_in_bc       = g_hash_table_size(features_in_barcode);
-
         if (n_feats_in_bc == 0) continue;
         if (n_feats_in_bc  > global_max_cooccur) {
             global_max_cooccur = n_feats_in_bc;
@@ -1378,13 +1381,14 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
 
             GList *barcodes_for_feature =
                 g_hash_table_lookup(feature_to_barcodes_hash, l->data);
-            barcodes_for_feature = g_list_prepend(barcodes_for_feature, barcode);
+            barcodes_for_feature = g_list_prepend(barcodes_for_feature, barcode_key);
             g_hash_table_insert(feature_to_barcodes_hash, l->data,
                                 barcodes_for_feature);
         }
         g_list_free(feat_idxs);
     }
-
+    fprintf(stderr, "Skipped barcodes: %d\n", skipped_barcodes);
+    fprintf(stderr, "Processed barcodes: %d\n", processed_barcodes);
     // Step 2: Allocate and zero the dense histogram matrix.
     int **coexpression_histograms =
         malloc((features->number_of_features + 1) * sizeof(int *));
@@ -1594,7 +1598,8 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
 
         g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
         while (g_hash_table_iter_next(&iter, &barcode_key, &deduped_hash_value)) {
-            char *barcode = (char *)barcode_key;
+            char barcode[barcode_length + 1];
+            code2string((unsigned char *)barcode_key, barcode, barcode_code_length);    
             if (filtered_barcodes_hash &&
                 g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL)
                 continue;
@@ -1615,7 +1620,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
 
                 GList *barcodes_for_feature =
                     g_hash_table_lookup(feature_to_barcodes_hash, l->data);
-                barcodes_for_feature = g_list_prepend(barcodes_for_feature, barcode);
+                barcodes_for_feature = g_list_prepend(barcodes_for_feature, barcode_key);
                 g_hash_table_insert(feature_to_barcodes_hash, l->data,
                                     barcodes_for_feature);
             }
