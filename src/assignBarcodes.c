@@ -1236,6 +1236,49 @@ void code2string(unsigned char *code, char *string, int length){
     string[4*length]='\0';
 }
 
+/* Increment (and lazily allocate/resize) the histogram for one feature. */
+static void update_feature_hist(GArray **feature_hist,
+                                int feature_idx, int count)
+{
+    GArray *h = feature_hist[feature_idx];
+    if (!h)
+        h = feature_hist[feature_idx] =
+                 g_array_new(FALSE, TRUE, sizeof(uint32_t));
+
+    if (h->len <= (guint)count)
+        g_array_set_size(h, count + 1);
+
+    g_array_index(h, uint32_t, count)++;
+}
+
+/* Build the cumulative histogram in slot 0 once all features are done. */
+static void build_cumulative_feature_hist(feature_arrays *features,
+                                          GArray **feature_hist)
+{
+    feature_hist[0] = g_array_new(FALSE, TRUE, sizeof(uint32_t));
+    if (!feature_hist[0])
+        return;
+
+    /* find maximum length */
+    size_t max_len = 0;
+    for (int i = 1; i <= features->number_of_features; ++i)
+        if (feature_hist[i] && feature_hist[i]->len > max_len)
+            max_len = feature_hist[i]->len;
+
+    g_array_set_size(feature_hist[0], max_len);
+    for (guint j = 0; j < max_len; ++j)
+        g_array_index(feature_hist[0], uint32_t, j) = 0;
+
+    /* accumulate */
+    for (int i = 1; i <= features->number_of_features; ++i) {
+        GArray *h = feature_hist[i];
+        if (!h) continue;
+        for (guint j = 0; j < h->len; ++j)
+            g_array_index(feature_hist[0], uint32_t, j) +=
+                g_array_index(h, uint32_t, j);
+    }
+}
+
 void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, GHashTable *barcode_to_deduped_hash, GHashTable *filtered_barcodes_hash){
     int total_deduped_counts = 0;
     int total_raw_counts = 0;
@@ -1440,12 +1483,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
                 deduped_counts[f_idx - 1] += deduped_count;      /* This was missing */
                 int c     = deduped_count;                       /* 0,1,2,…          */
 
-                GArray *h = feature_hist[f_idx];
-                if(!h) h = feature_hist[f_idx] =
-                            g_array_new(FALSE, TRUE, sizeof(uint32_t));
-                if(h->len <= c) g_array_set_size(h, c+1);
-                g_array_index(h, uint32_t, c)++;
-
+                update_feature_hist(feature_hist, f_idx, c);
                 fprintf(matrixfp, "%d %d %d\n", GPOINTER_TO_INT(dedup_key), total_barcodes, deduped_count);
                 total_deduped_counts += deduped_count;
                 
@@ -1456,28 +1494,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     }
     
     // --- Step 3.5: Create cumulative histogram at index 0 ---
-    feature_hist[0] = g_array_new(FALSE, TRUE, sizeof(uint32_t));
-    if (feature_hist[0]) {
-        size_t max_len = 0;
-        for (int i = 1; i <= features->number_of_features; i++) {
-            if (feature_hist[i] && feature_hist[i]->len > max_len) {
-                max_len = feature_hist[i]->len;
-            }
-        }
-        g_array_set_size(feature_hist[0], max_len);
-        for (unsigned int j = 0; j < max_len; j++) {
-            g_array_index(feature_hist[0], uint32_t, j) = 0;
-        }
-
-        for (int i = 1; i <= features->number_of_features; i++) {
-            GArray *h = feature_hist[i];
-            if (h) {
-                for (guint j = 0; j < h->len; j++) {
-                    g_array_index(feature_hist[0], uint32_t, j) += g_array_index(h, uint32_t, j);
-                }
-            }
-        }
-    }
+    build_cumulative_feature_hist(features, feature_hist);
     
     
     
@@ -2001,7 +2018,6 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     int total_barcoded_counts[features->number_of_features];
 
     GArray **feature_hist = g_new0(GArray*, features->number_of_features + 1);
-    int *histogramsStorage = NULL;
 
     
     // Create and populate the deduped counts hash table once.
@@ -2014,7 +2030,6 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     // If a filter is provided, print the filtered results as well.
     if (filtered_barcodes_hash) {
         // Reset co-expression and histogram data before the second ru
-        if (histogramsStorage) memset(histogramsStorage, 0, (features->number_of_features + 1) * (features->number_of_features + 1) * sizeof(int));
         for (int i = 0; i < features->number_of_features + 1; i++) {
             if (feature_hist[i]) {
                 g_array_unref(feature_hist[i]);
@@ -2220,8 +2235,6 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         if(feature_hist[i]) g_array_unref(feature_hist[i]);
     g_free(feature_hist);
 
-
-    free(histogramsStorage);
     fclose(feature_statsfp);
     fclose(feature_histograms_fp);
     fclose(mixfp);
