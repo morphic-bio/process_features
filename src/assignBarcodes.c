@@ -2935,6 +2935,21 @@ void process_files_in_sample(sample_args *args) {
     fastq_files_collection *fastq_files=args->fastq_files;
     const int sample_offset=fastq_files->sample_offsets[sample_index];
     const int sample_size=fastq_files->sample_sizes[sample_index];
+    
+
+    if (args->filtered_barcodes_name && !args->filtered_barcodes_hash) {
+        fprintf(stderr, "Looking for filtered barcodes file at %s\n", args->filtered_barcodes_name);
+        char filtered_path[FILENAME_LENGTH];
+        snprintf(filtered_path, FILENAME_LENGTH, "%s/%s", args->directory, args->filtered_barcodes_name);
+        if (file_exists(filtered_path)) {
+            args->filtered_barcodes_hash = g_hash_table_new(g_str_hash, g_str_equal);
+            read_barcodes_into_hash(filtered_path, args->filtered_barcodes_hash);
+        }
+        else {
+            fprintf(stderr, "Error: Filtered barcodes file not found at %s\n", filtered_path);
+        }
+    }
+
 
     // Allocate and initialize arrays of statistics and data_structures
     args->stats = malloc(nconsumers * sizeof(statistics));

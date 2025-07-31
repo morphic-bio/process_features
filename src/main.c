@@ -132,6 +132,7 @@ int main(int argc, char *argv[])
     }
     GHashTable *filtered_barcodes_hash = NULL;
     if (filtered_barcodes_filename) {
+        int filtered_barcodes_found = 0;
         if (!file_exists(filtered_barcodes_filename)) {
             printf("filtered_barcodes_filename: %s does not exist  \n", filtered_barcodes_filename);
             char full_path[2048];
@@ -141,21 +142,23 @@ int main(int argc, char *argv[])
                 if (file_exists(full_path)) {
                     free(filtered_barcodes_filename);
                     filtered_barcodes_filename = strdup(full_path);
+                    filtered_barcodes_found = 1;
                 } else {
-                    fprintf(stderr, "Error: Filtered barcodes file not found at %s or %s\n", filtered_barcodes_filename, full_path);
-                    return 1;
+                    fprintf(stderr, "Warning: Filtered barcodes file not found at %s or %s\n", filtered_barcodes_filename, full_path);
                 }
             } else {
-                fprintf(stderr, "Error: Filtered barcodes file not found at %s\n", filtered_barcodes_filename);
-                return 1;
+                fprintf(stderr, "Warning: Filtered barcodes file not found at %s\n", filtered_barcodes_filename);
             }
         }
         else{
-            //print the full path of the filtered_barcodes_filename
+            filtered_barcodes_found = 1;
             printf("Will use filtered barcodes file: %s\n", filtered_barcodes_filename);
         }
-        filtered_barcodes_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-        read_barcodes_into_hash(filtered_barcodes_filename, filtered_barcodes_hash);
+        
+        if (filtered_barcodes_found) {
+            filtered_barcodes_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+            read_barcodes_into_hash(filtered_barcodes_filename, filtered_barcodes_hash);
+        }
     }
     int positional_arg_count = argc - optind;
     if (positional_arg_count > 0 && (barcodeFastqFilesString != NULL || forwardFastqFilesString != NULL || reverseFastqFilesString != NULL)) {
@@ -234,6 +237,10 @@ int main(int argc, char *argv[])
             // initialize_statistics(&stats);
             args.sample_index = i;
             args.directory = sample_directory;
+            if (filtered_barcodes_filename)
+              args.filtered_barcodes_name = filtered_barcodes_filename;
+            else
+              args.filtered_barcodes_name = NULL;
             args.fastq_files = &fastq_files;
             args.features = features;
             args.maxHammingDistance = maxHammingDistance;

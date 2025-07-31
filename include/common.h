@@ -215,6 +215,7 @@ typedef struct _memory_pool_collection {
 typedef struct sample_args {
     int sample_index;
     char *directory;
+    char *filtered_barcodes_name;
     fastq_files_collection *fastq_files;
     feature_arrays *features;
     int maxHammingDistance;
