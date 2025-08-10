@@ -20,9 +20,8 @@ int count_files_with_pattern(const char *directory_path, const char *pattern);
 void organize_fastq_files_by_directory(int positional_arg_count, int argc, char *argv[], int optind, char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString, fastq_files_collection *fastq_files, char *barcode_pattern, char *forward_pattern, char *reverse_pattern);
 void organize_fastq_files_by_type(int positional_arg_count, int argc, char *argv[], int optind, char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString, fastq_files_collection *fastq_files, char *barcode_pattern, char *forward_pattern, char *reverse_pattern, int sample_flag);
 void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order);
-int find_number_of_fastq_files(int positional_arg_count,char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString);
+size_t get_file_size(char *filepath);
 int file_exists(const char *filename);
-void find_file_type(char* concatenated_patterns,int nPatterns);
 void read_barcodes_into_hash(char *filename, GHashTable *hash);
 const char* get_basename(const char *path);
 

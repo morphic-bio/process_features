@@ -23,7 +23,7 @@ void initdiff2hamming(unsigned char *difference);
 void free_feature_arrays(feature_arrays *features);
 
 int feature_lookup_kmer(const char *seq, int len, const struct feature_arrays *fa, int direct_search);
-int feature_lookup_code(const unsigned char *code, int code_len, int direct_search);
+int feature_lookup_code(const unsigned char *code, int code_len);
 
 #endif /* BARCODE_MATCH_H */
 

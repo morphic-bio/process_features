@@ -45,3 +45,34 @@ void free_fastq_files_collection(fastq_files_collection *fastq_files){
     if(fastq_files->sorted_index)
         free(fastq_files->sorted_index);
 }
+int mkdir_p(const char *path) {
+    char temp[1024];
+    char *p = NULL;
+    size_t len;
+
+    // Copy path and ensure it ends with '/'
+    snprintf(temp, sizeof(temp), "%s", path);
+    len = strlen(temp);
+    if (temp[len - 1] == '/')
+        temp[len - 1] = 0;
+
+    // Iterate through each directory in the path
+    for (p = temp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = 0;
+
+            // Create directory if it doesn't exist
+            if (mkdir(temp, S_IRWXU) != 0 && errno != EEXIST) {
+                perror("mkdir");
+                return -1;
+            }
+            *p = '/';
+        }
+    }
+    // Create the final directory
+    if (mkdir(temp, S_IRWXU) != 0 && errno != EEXIST) {
+        perror("mkdir");
+        return -1;
+    }
+    return 0;
+}

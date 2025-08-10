@@ -1,4 +1,5 @@
 #include "../include/common.h"
+#include "../include/queue.h"
 
 void init_queue(Queue *queue) {
     queue->capacity = INITIAL_CAPACITY;

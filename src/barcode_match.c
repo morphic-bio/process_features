@@ -118,8 +118,7 @@ void initialize_complement(){
     match['N']='N';
 }
 
-int feature_lookup_code(const unsigned char *code, int code_len, int direct_search) {
-    (void)direct_search;
+int feature_lookup_code(const unsigned char *code, int code_len) {
     // Hash look-up path (current behavior)
     GBytes *key = g_bytes_new_static(code, code_len);
     gpointer val = g_hash_table_lookup(feature_code_hash, key);
@@ -174,7 +173,7 @@ int feature_lookup_kmer(const char *seq, int len, const struct feature_arrays *f
 
     unsigned char code[(MAX_FEATURE_CODE_LENGTH > 0 ? MAX_FEATURE_CODE_LENGTH : 40)];
     int clen = string2code((char*)seq, len, code);
-    return feature_lookup_code(code, clen, direct_search);
+    return feature_lookup_code(code, clen);
 }
 
 

@@ -4,6 +4,7 @@
 #include "common.h"
 #include <zlib.h>
 #include <stdatomic.h>
+#include "queue.h"
 
 // Forward declare the struct to avoid full definition
 // struct NBSignalCut is defined in common.h, so forward declaration is not needed
@@ -13,7 +14,6 @@
 void initialize_complement();
 void initialize_statistics(statistics *stats);
 double get_time_in_seconds();
-int mkdir_p(const char *path);
 void lowerCaseDifferences(char *ref, char *query, int length);
 int compare_feature_sequences(const void *a, const void *b);
 void initseq2Code();
@@ -103,4 +103,4 @@ void generate_heatmap(const char *directory, feature_arrays *features, int **coe
 void generate_deduped_heatmap(const char *directory, feature_arrays *features, int **deduped_histograms, int max_deduped_count, int *total_deduped_counts, int histogram_minimum_counts);
 
 
-#endif // PROTOTYPES_Hhbe 
+#endif // PROTOTYPES_H

@@ -1,4 +1,5 @@
 #include "../include/io.h"
+#include <sys/stat.h>
 
 feature_arrays* read_features_file(const char* filename) {
     //expext a comma separated file with column names at least one with name and sequence fields
@@ -660,63 +661,86 @@ void read_barcodes_into_hash(char *filename, GHashTable *hash) {
     fclose(file);
 }
 
-int find_number_of_fastq_files(int positional_arg_count,char *barcodeFastqFilesString, char *forwardFastqFilesString, char *reverseFastqFilesString){
-    if (positional_arg_count){
-        return positional_arg_count;
-    }
-    if (barcodeFastqFilesString == NULL){
-        perror("No barcode fastq files specified");
-        exit(EXIT_FAILURE);
-    }
-    int nFiles=1;
-    if (forwardFastqFilesString != NULL){
-        nFiles++;
-    }
-    if (reverseFastqFilesString != NULL){
-        nFiles++;
-    }
-    for (int i=0; barcodeFastqFilesString[i]; i++){
-        if (barcodeFastqFilesString[i] == ','){
-            nFiles++;
-        }
-    }
-    for (int i=0; forwardFastqFilesString[i]; i++){
-        if (forwardFastqFilesString[i] == ','){
-            nFiles++;
-        }
-    }
-    for (int i=0; forwardFastqFilesString[i]; i++){
-        if (forwardFastqFilesString[i] == ','){
-            nFiles++;
-        }
-    }
-    return nFiles;
-}
 int file_exists(const char *filename){
     struct stat buffer;
     return (stat(filename, &buffer) == 0);
 }
 const char* get_basename(const char* path) {
-    DEBUG_PRINT( "Path %s\n", path);
-    //case where the last character is a '/'
-    if (path[0] && path[strlen(path)-1] == '/'){
-        char *temp=strdup(path);
-        temp[strlen(temp)-1]='\0'; //this should be cleaned at end but not a big deal
-        return get_basename(temp);
-    }
-    const char *base = strrchr(path, '/');
-    DEBUG_PRINT( "Base %s\n", base);
-    return base ? base + 1 : path;  // If '/' is found, return the part after it. If not, return the original path.
+    size_t len = strlen(path);
+    while (len > 0 && path[len-1] == '/') len--;       // strip trailing slashes
+    if (len == 0) return path;
+    const char *start = path;
+    for (size_t i = 0; i < len; ++i) if (path[i] == '/') start = path + i + 1;
+    return start;
 }
 
-void find_file_type(char* concatenated_patterns,int nPatterns){
-    char patterns[nPatterns][strlen(concatenated_patterns)+1];
-    char *this_pattern=concatenated_patterns;
-    for (int i=0; i<nPatterns; i++){
-        strcpy(patterns[i],this_pattern);
-        this_pattern+=strlen(this_pattern)+1;
-    }
-    
+/* ------------------------------------------------------------------
+ * Sample-size helper functions shared by assignBarcodes and demux_fastq
+ * ------------------------------------------------------------------ */
+
+size_t get_file_size(char *filepath)
+{
+    struct stat st;
+    if (stat(filepath, &st) == 0)
+        return (size_t)st.st_size;
+    perror(filepath);
+    return 0;
 }
+
+/* tiny selection-sort with context to avoid pulling qsort_r (BSD/GNU diff) */
+static int compare_file_sizes_ctx(const void *a, const void *b, void *ctx)
+{
+    const size_t *sizes = (const size_t*)ctx;
+    int ia = *(const int*)a;
+    int ib = *(const int*)b;
+    if (sizes[ia] < sizes[ib]) return 1;   /* we want descending order */
+    if (sizes[ia] > sizes[ib]) return -1;
+    return 0;
+}
+
+static void qsort_with_ctx(void *base, size_t n, size_t size,
+                           int (*cmp)(const void*, const void*, void*),
+                           void *ctx)
+{
+    char *p = (char*)base;
+    for (size_t i = 0; i + 1 < n; ++i) {
+        for (size_t j = i + 1; j < n; ++j) {
+            if (cmp(p + i*size, p + j*size, ctx) > 0) {
+                char tmp[size];
+                memcpy(tmp,        p + i*size, size);
+                memcpy(p + i*size, p + j*size, size);
+                memcpy(p + j*size, tmp,        size);
+            }
+        }
+    }
+}
+
+void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order)
+{
+    if (!fastq_files || fastq_files->nsamples <= 0) return;
+
+    size_t *sizes = (size_t*)malloc((size_t)fastq_files->nsamples * sizeof(size_t));
+    if (!sizes) { perror("malloc sizes"); exit(EXIT_FAILURE); }
+
+    int idx = 0;
+    for (int s = 0; s < fastq_files->nsamples; ++s) {
+        size_t total = 0;
+        for (int j = 0; j < fastq_files->sample_sizes[s]; ++j) {
+            total += get_file_size(fastq_files->barcode_fastq[idx]);
+            if (fastq_files->forward_fastq)
+                total += get_file_size(fastq_files->forward_fastq[idx]);
+            if (fastq_files->reverse_fastq)
+                total += get_file_size(fastq_files->reverse_fastq[idx]);
+            idx++;
+        }
+        sizes[s] = total;
+        sample_order[s] = s;
+    }
+
+    qsort_with_ctx(sample_order, (size_t)fastq_files->nsamples, sizeof(int),
+                   compare_file_sizes_ctx, sizes);
+    free(sizes);
+}
+
 
 

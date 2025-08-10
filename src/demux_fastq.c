@@ -28,6 +28,7 @@ typedef struct {
 // Use shared implementations from barcode_match.c
 
 // Simple size-based ordering without stat() to avoid heavy deps
+#if 0   /* duplicate – now provided in io.c */
 void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order) {
   for (int i = 0; i < fastq_files->nsamples; ++i) sample_order[i] = i;
   for (int i = 0; i < fastq_files->nsamples; ++i) {
@@ -38,25 +39,8 @@ void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order
     }
   }
 }
+#endif
 
-/* Local mkdir -p */
-static int my_mkdir_p(const char *path) {
-  char tmp[FILENAME_LENGTH];
-  size_t len = strlen(path);
-  if (!len) return -1;
-  if (len >= sizeof(tmp)) return -1;
-  strcpy(tmp, path);
-  if (tmp[len-1] == '/') tmp[len-1] = '\0';
-  for (char *p = tmp + 1; *p; p++) {
-    if (*p == '/') {
-      *p = '\0';
-      if (mkdir(tmp, S_IRWXU) && errno != EEXIST) return -1;
-      *p = '/';
-    }
-  }
-  if (mkdir(tmp, S_IRWXU) && errno != EEXIST) return -1;
-  return 0;
-}
 
 static inline void chomp(char *s) {
   size_t n = strlen(s);
@@ -227,7 +211,7 @@ static demux_sink* get_or_open_sink(demux_cfg *cfg, const char *sample,
 
   char dir[FILENAME_LENGTH*2];
   snprintf(dir, sizeof(dir), "%s/%s", cfg->outdir, sample);
-  if (my_mkdir_p(dir)) { fprintf(stderr, "Failed to create %s\n", dir); exit(EXIT_FAILURE); }
+  if (mkdir_p(dir)) { fprintf(stderr, "Failed to create %s\n", dir); exit(EXIT_FAILURE); }
 
   s = (demux_sink*)calloc(1, sizeof(demux_sink));
   pthread_mutex_init(&s->lock, NULL);             // NEW
@@ -585,7 +569,7 @@ int main(int argc, char **argv) {
     usage(argv[0]); return 1;
   }
   if (cfg.outdir[strlen(cfg.outdir)-1] == '/') cfg.outdir[strlen(cfg.outdir)-1] = 0;
-  if (my_mkdir_p(cfg.outdir)) { fprintf(stderr, "Failed to create outdir %s\n", cfg.outdir); return 1; }
+  if (mkdir_p(cfg.outdir)) { fprintf(stderr, "Failed to create outdir %s\n", cfg.outdir); return 1; }
 
   // Initialise core matching tables
   barcode_match_init();

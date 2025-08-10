@@ -7,7 +7,7 @@
 #include "../include/io.h"
 #include "../include/plot_histogram.h"
 #include "../include/EMfit.h"
-#include "heatmap.h"
+#include "../include/heatmap.h"
 
 //will  print if DEBUG is set or debug=1
 //code for feature sequences stats
@@ -60,37 +60,7 @@ double get_time_in_seconds() {
     gettimeofday(&time, NULL);
     return time.tv_sec + (time.tv_usec / 1000000.0);
 }
-int mkdir_p(const char *path) {
-    char temp[1024];
-    char *p = NULL;
-    size_t len;
 
-    // Copy path and ensure it ends with '/'
-    snprintf(temp, sizeof(temp), "%s", path);
-    len = strlen(temp);
-    if (temp[len - 1] == '/')
-        temp[len - 1] = 0;
-
-    // Iterate through each directory in the path
-    for (p = temp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = 0;
-
-            // Create directory if it doesn't exist
-            if (mkdir(temp, S_IRWXU) != 0 && errno != EEXIST) {
-                perror("mkdir");
-                return -1;
-            }
-            *p = '/';
-        }
-    }
-    // Create the final directory
-    if (mkdir(temp, S_IRWXU) != 0 && errno != EEXIST) {
-        perror("mkdir");
-        return -1;
-    }
-    return 0;
-}
 
 void lowerCaseDifferences(char *ref, char *query, int length){
     for (int i=0; i<length; i++){
@@ -3012,16 +2982,6 @@ int existing_output_skip(char keep_existing, char *directory){
     }
     return 0;
 }
-size_t get_file_size(char *filepath){
-    char *filename=filepath;
-    struct stat file_stat;
-    if (stat(filename, &file_stat) == 0) {
-        return file_stat.st_size;
-    } else {
-        perror("stat");
-    }
-    return 0;
-}
 
 int compare_file_sizes(const void *a, const void *b, void *context) {
     size_t *sizes = (size_t *)context;
@@ -3057,37 +3017,6 @@ void qsort_with_context(void *base, size_t num, size_t size,
 }
 
 // Main function to sort the indices of samples by their size and store the order in sample_order
-void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order) {
-    // Allocate memory for the sizes array to store the total size of each sample
-    size_t *sizes = malloc(fastq_files->nsamples * sizeof(size_t));
-    if (sizes == NULL) {
-        perror("Memory allocation failed");
-        exit(EXIT_FAILURE);
-    }
-
-    // Calculate the total size for each sample and store it in the sizes array
-    int sample_index = 0;
-    for (int i = 0; i < fastq_files->nsamples; i++) {
-        sizes[i] = 0;  // Initialize size for each sample
-        for (int j = 0; j < fastq_files->sample_sizes[i]; j++) {
-            sizes[i] += get_file_size(fastq_files->barcode_fastq[sample_index]);
-            if (fastq_files->forward_fastq) {
-                sizes[i] += get_file_size(fastq_files->forward_fastq[sample_index]);
-            }
-            if (fastq_files->reverse_fastq) {
-                sizes[i] += get_file_size(fastq_files->reverse_fastq[sample_index]);
-            }
-            sample_index++;
-        }
-        sample_order[i] = i;  // Initialize sample_order with indices 0 to nsamples-1
-    }
-
-    // Sort the sample_order array based on the sizes array
-    qsort_with_context(sample_order, fastq_files->nsamples, sizeof(int), compare_file_sizes, sizes);
-
-    // Free the allocated memory for sizes
-    free(sizes);
-}
 void cleanup_sample(memory_pool_collection *pools, data_structures *hashes){
     destroy_data_structures(hashes);
     free_memory_pool_collection(pools);

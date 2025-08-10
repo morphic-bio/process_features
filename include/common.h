@@ -17,7 +17,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <zlib.h>
-#include "sys/wait.h"
+#include <sys/wait.h>
 #include <dirent.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
@@ -60,9 +60,12 @@
         } \
     } while (0)
 
-#define INITIAL_CAPACITY 16
 
-// Structs
+
+// Struct
+//forward declare Queue - defined in queue.h
+typedef struct _queue Queue;
+
 // Structs for memory management
 typedef struct _storage_block {
     struct _storage_block *next;
@@ -163,13 +166,6 @@ typedef struct statistics {
     unmatched_barcodes_features_block_list unmatched_list;
 } statistics;
 
-typedef struct _queue {
-    uint64_t *data;
-    size_t front;
-    size_t back;
-    size_t queue_size;
-    size_t capacity;
-} Queue;
 
 typedef struct data_structures {
     GHashTable *filtered_hash;
@@ -277,15 +273,6 @@ typedef struct fastq_processor {
 } fastq_processor;
 
 
-// Queue function prototypes
-void init_queue(Queue *queue);
-void clear_queue(Queue *queue);
-int is_empty(Queue *queue);
-size_t size(Queue *queue);
-void enqueue(Queue *queue, uint64_t value);
-uint64_t dequeue(Queue *queue);
-uint64_t peek(Queue *queue);
-void free_queue(Queue *queue);
 
 
 
