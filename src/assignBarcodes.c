@@ -1,4 +1,5 @@
 #include "../include/common.h"
+#include "../include/barcode_match.h"
 #include "../include/globals.h"
 #include "../include/prototypes.h"
 #include "../include/utils.h"
@@ -33,13 +34,8 @@ void destroy_feature_umi_counts(gpointer data) {
     // from our custom memory pool, which is freed all at once later.
 }
 
-void initialize_complement(){
-    match['A']='T';
-    match['T']='A';
-    match['C']='G';
-    match['G']='C';
-    match['N']='N';
-}
+/* moved to prototypes/common; provide non-static definition here for linkage */
+/* moved to barcode_match.c */
 void initialize_statistics(statistics *stats) {
     stats->start_time = get_time_in_seconds();
     stats->nMismatches = 0;
@@ -127,54 +123,10 @@ int compare_feature_sequences(const void *a, const void *b) {
     return fb->counts - fa->counts;
 }
 
-void initseq2Code(){
-    for (int i=0; i<256; i++){
-        seq2code[i]=0;
-    }
-    seq2code['A']=0;
-    seq2code['C']=1;
-    seq2code['G']=2;
-    seq2code['T']=3;
-}
-void initcode2seq(){
-    char temp[1025];
-    strcpy(temp, LOOKUP_STRING);
-    for (int i=0; i<256; i++){
-        code2seq[i][0]=temp[4*i];
-        code2seq[i][1]=temp[4*i+1];
-        code2seq[i][2]=temp[4*i+2];
-        code2seq[i][3]=temp[4*i+3];
-    }
-}
-void initdiff2hamming(unsigned char *difference){
-    memset(difference,0,256);
-    for (int i=0; i<256; i++){
-        difference[i]=0;
-          unsigned char mask=3;
-        //check if first 2 bits are 0
-        for (int j=0; j<4; j++){
-            if (i & mask){
-                difference[i]++;
-            }
-            mask=mask << 2;
-        }
-        //DEBUG_PRINT( "Difference %d %d\n", i, difference[i]);
-    }
-}
+/* moved to barcode_match.c */
 
 
-void free_feature_arrays(feature_arrays *features) {
-    free(features->feature_names_storage);
-    free(features->feature_lengths);
-    free(features->feature_code_lengths);
-    free(features->feature_sequences_storage);
-    free(features->feature_codes_storage);
-    free(features->feature_names);
-    free(features->feature_sequences);
-    free(features->feature_codes);
-    free(features->mismatched_feature_indices);
-    free(features);
-}
+/* moved to barcode_match.c */
 
 void initialize_unit_sizes(){
     // Size of feature_counts (rounded up to alignment of uint16_t)
@@ -420,52 +372,11 @@ unsigned char* read_whiteList(char *whitelist_filename,GHashTable *hash, int rev
     fclose(whitelist_file);
     return whitelist;
 }
-int split_line(char *line, char *fields[], const char *split_string) {
-    int count = 0;
-    char *token;
-
-    // Use strtok to split the line by split_string
-    token = strtok(line, split_string);
-    while (token != NULL) {
-        fields[count++] = token;  // Store pointer to the split string
-        token = strtok(NULL, split_string);  // Get next token
-    }
-    return count;  // Return the number of fields
-}
+/* moved to barcode_match.c */
 
 
-char check_sequence(char *sequence, int sequence_length){
-    for (int i=0; i<sequence_length; i++){
-        if (sequence[i] == 'A' || sequence[i] == 'C' || sequence[i] == 'G' || sequence[i] == 'T'){
-            continue;
-        }
-        return 0;
-    }
-    return 1;
-}
-int string2code(char *string, int sequence_length, unsigned char *code){
-    const int last_element=sequence_length/4;
-    for (int i=0; i<last_element; i++){
-        code[i]=seq2code[(unsigned char)string[4*i]]<<6 | seq2code[(unsigned char)string[4*i+1]]<<4 | seq2code[(unsigned char)string[4*i+2]]<<2 | seq2code[(unsigned char)string[4*i+3]];
-    }
-    //check if there are any remaining characters and pad with 0
-    char leftover=sequence_length%4;
-    if (!leftover){
-        return last_element;
-    }
-    switch (leftover){
-        case 1:
-            code[last_element]=seq2code[(unsigned char)string[4*last_element]]<<6;
-            break;
-        case 2:
-            code[last_element]=seq2code[(unsigned char)string[4*last_element]]<<6 | seq2code[(unsigned char)string[4*last_element+1]]<<4;
-            break;
-        case 3:
-            code[last_element]=seq2code[(unsigned char)string[4*last_element]]<<6 | seq2code[(unsigned char)string[4*last_element+1]]<<4 | seq2code[(unsigned char)string[4*last_element+2]]<<2;
-            break;
-    }
-    return last_element+1;
-}
+/* moved to barcode_match.c */
+/* moved to barcode_match.c */
 void string2all_codes(char *string, unsigned char codes[][LINE_LENGTH/2+1], int *lengths){
     //4 codes are returned for the string to capture all the possible frames
     char offset[3][LINE_LENGTH];
@@ -1226,15 +1137,7 @@ void find_connected_component(gpointer start_key, uint32_t *counts, data_structu
     }
 }
 
-void code2string(unsigned char *code, char *string, int length){
-    for (int i=0; i<length; i++){
-        string[4*i]=code2seq[code[i]][0];
-        string[4*i+1]=code2seq[code[i]][1];
-        string[4*i+2]=code2seq[code[i]][2];
-        string[4*i+3]=code2seq[code[i]][3];
-    }
-    string[4*length]='\0';
-}
+/* moved to barcode_match.c */
 
 /* Increment (and lazily allocate/resize) the histogram for one feature. */
 static void update_feature_hist(GArray **feature_hist,

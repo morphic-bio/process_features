@@ -14,7 +14,7 @@ CAIRO_LIBS :=
 DEFINES :=
 
 # Source files (basenames only)
-SRCS_BASE=main.c assignBarcodes.c queue.c globals.c utils.c memory.c io.c EMfit.c plot_histogram.c heatmap.c
+SRCS_BASE=main.c assignBarcodes.c queue.c globals.c utils.c memory.c io.c EMfit.c plot_histogram.c heatmap.c barcode_match.c
 SRCS = $(SRCS_BASE)
 
 # Add cairo flags and define if NO_HEATMAP is not set to 1
@@ -33,14 +33,22 @@ LDFLAGS=-lm -lpthread -lz -fopenmp $(GLIB_LIBS) $(CAIRO_LIBS)
 # Object files
 OBJS=$(SRCS:.c=.o)
 
-# Executable name
+# Executable names
 TARGET=assignBarcodes
+DEMUX_TARGET=demux_fastq
+
+# demux_fastq sources/objects
+DEMUX_SRCS=demux_fastq.c io.c utils.c globals.c barcode_match.c
+DEMUX_OBJS=$(DEMUX_SRCS:.c=.o)
 
 .PHONY: all clean
 
-all: $(TARGET)
+all: $(TARGET) $(DEMUX_TARGET)
 
 $(TARGET): $(OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+$(DEMUX_TARGET): $(DEMUX_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 # The implicit rule will now use VPATH to find the .c files in src/
@@ -48,4 +56,4 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(TARGET) $(DEMUX_OBJS) $(DEMUX_TARGET)

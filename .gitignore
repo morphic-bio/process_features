@@ -1,8 +1,12 @@
 assignBarcodes
 filterfastq
+docs
+demux_fastq
+demux_test_out*
+test_files*
+tables
 test_output/
 test*
-*.sh
 atac*
 ATAC
 *test
@@ -17,4 +21,4 @@ sc_test*
 .specstory
 .cursor*
 *.o
-
+feature_lists
