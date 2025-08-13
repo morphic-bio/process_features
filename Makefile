@@ -8,6 +8,7 @@ VPATH = $(SRCDIR)
 # Use pkg-config to get the correct flags for glib-2.0 and cairo
 GLIB_CFLAGS := $(shell pkg-config --cflags glib-2.0)
 GLIB_LIBS := $(shell pkg-config --libs glib-2.0)
+HTS_LIBS := -lhts
 
 CAIRO_CFLAGS :=
 CAIRO_LIBS :=
@@ -28,7 +29,7 @@ endif
 
 # Combine all flags
 CFLAGS=-g -Wall -O3 -I$(INCDIR) -fopenmp $(GLIB_CFLAGS) $(CAIRO_CFLAGS) $(DEFINES)
-LDFLAGS=-lm -lpthread -lz -fopenmp $(GLIB_LIBS) $(CAIRO_LIBS)
+LDFLAGS=-lm -lpthread -lz -fopenmp $(GLIB_LIBS) $(CAIRO_LIBS) $(HTS_LIBS)
 
 # Object files
 OBJS=$(SRCS:.c=.o)
@@ -41,9 +42,13 @@ DEMUX_TARGET=demux_fastq
 DEMUX_SRCS=demux_fastq.c io.c utils.c globals.c barcode_match.c
 DEMUX_OBJS=$(DEMUX_SRCS:.c=.o)
 
+DEMUX_BAM_TARGET=demux_bam
+DEMUX_BAM_SRCS=demux_bam.c utils.c globals.c
+DEMUX_BAM_OBJS=$(DEMUX_BAM_SRCS:.c=.o)
+
 .PHONY: all clean
 
-all: $(TARGET) $(DEMUX_TARGET)
+all: $(TARGET) $(DEMUX_TARGET) $(DEMUX_BAM_TARGET)
 
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
@@ -51,9 +56,12 @@ $(TARGET): $(OBJS)
 $(DEMUX_TARGET): $(DEMUX_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
+$(DEMUX_BAM_TARGET): $(DEMUX_BAM_OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS)
+
 # The implicit rule will now use VPATH to find the .c files in src/
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(DEMUX_OBJS) $(DEMUX_TARGET)
+	rm -f $(OBJS) $(TARGET) $(DEMUX_OBJS) $(DEMUX_TARGET) $(DEMUX_BAM_OBJS) $(DEMUX_BAM_TARGET)
