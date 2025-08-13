@@ -239,6 +239,12 @@ typedef struct sample_args {
     data_structures **sample_hashes; // [demux_nsamples][threads]
     statistics **sample_stats;       // per sample, per thread
     memory_pool_collection **sample_pools; // per sample, per thread
+    /* Sample barcode demux config (Phase 1-4) */
+    int sample_max_hamming;          /* default 1 */
+    int sample_max_N;                /* default 0 */
+    int sample_constant_offset;      /* >=0 absolute offset; -1 unused */
+    int sample_offset_relative;      /* negative/positive offset from feature end; 0 unused */
+    feature_arrays *sample_barcodes; /* loaded sample barcode list */
 } sample_args;
 
 typedef struct fastq_reader {

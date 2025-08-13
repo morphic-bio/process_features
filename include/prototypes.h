@@ -102,6 +102,8 @@ NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
                             int max_iter, double tol, double em_cumulative_limit);
 void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms);
 void generate_deduped_heatmap(const char *directory, feature_arrays *features, int **deduped_histograms, int max_deduped_count, int *total_deduped_counts, int histogram_minimum_counts);
+char* grab_sample_barcode(char *read, uint16_t feature_end, const sample_args *args);
+int find_sample_index(char *seq, const sample_args *args, int *hamming_distance);
 
 
 #endif // PROTOTYPES_H

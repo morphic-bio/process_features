@@ -2515,9 +2515,14 @@ void *consume_reads(void *arg) {
     const sample_args *sample_args = processor_args->sample_args;
 
     // Use thread-local statistics and hashes
-    statistics *stats = &sample_args->stats[processor_args->thread_id];
-    data_structures *hashes = &sample_args->hashes[processor_args->thread_id];
-    memory_pool_collection *pools = sample_args->pools[processor_args->thread_id];
+    statistics *stats;  
+    data_structures *hashes;  
+    memory_pool_collection *pools;  
+    const int thread_id = processor_args->thread_id;  
+    // default to global (legacy) structures  
+    stats  = &sample_args->stats[thread_id];  
+    hashes = &sample_args->hashes[thread_id];  
+    pools  = sample_args->pools[thread_id];
 
     int done=0;
     //first one is always barcode
@@ -3077,6 +3082,35 @@ void reverse_complement_sequence(char *sequence,  char *reverse, int length){
         reverse[i] = comp_base;
     }
     reverse[length] = '\0';
+}
+
+static char sample_barcode_buffer[LINE_LENGTH];
+
+char* grab_sample_barcode(char *read, uint16_t feature_end, const sample_args *args){
+    if (!args->sample_barcodes) return NULL;
+    int offset;
+    if (args->sample_constant_offset >= 0) offset = args->sample_constant_offset;
+    else if (args->sample_offset_relative != 0) offset = (int)feature_end + args->sample_offset_relative;
+    else return NULL;
+    const int len = args->sample_barcodes->common_length;
+    if (offset < 0) return NULL;
+    int read_len = strlen(read);
+    if (offset + len > read_len) return NULL;
+    memcpy(sample_barcode_buffer, read + offset, len);
+    sample_barcode_buffer[len] = '\0';
+    return sample_barcode_buffer;
+}
+
+int find_sample_index(char *seq, const sample_args *args, int *hamming){
+    if (!args->sample_barcodes) return 0;
+    if (!seq) return 0;
+    int hd=0;
+    char dummy_match[LINE_LENGTH];
+    uint16_t dummy_pos=0;
+    int idx = checkAndCorrectFeature(seq, args->sample_barcodes, args->sample_max_hamming, /*threads*/1, &hd, dummy_match, args->sample_max_N, NULL, &dummy_pos);
+    if (hamming) *hamming = hd;
+    if (idx==0) return 0; // undetermined
+    return idx; // 1-based index into sample_barcodes
 }
 
 
