@@ -43,7 +43,7 @@ DEMUX_SRCS=demux_fastq.c io.c utils.c globals.c barcode_match.c
 DEMUX_OBJS=$(DEMUX_SRCS:.c=.o)
 
 DEMUX_BAM_TARGET=demux_bam
-DEMUX_BAM_SRCS=demux_bam.c utils.c globals.c
+DEMUX_BAM_SRCS=demux_bam.c utils.c globals.c barcode_match.c io.c
 DEMUX_BAM_OBJS=$(DEMUX_BAM_SRCS:.c=.o)
 
 .PHONY: all clean
