@@ -45,6 +45,13 @@ int main(int argc, char *argv[])
     int set_search_threads_per_consumer=0;
     uint16_t min_prediction = 1;
 
+    char *sample_barcodes_filename = NULL;
+    int sample_max_hamming = 1;
+    int sample_max_N = 0;
+    int sample_constant_offset_cli = -2;  /* sentinel */
+    int sample_offset_relative_cli = 0;
+    feature_arrays *sample_barcodes = NULL;
+
     static struct option long_options[] = {
         {"whitelist", required_argument, 0, 'w'},
         {"featurelist", required_argument, 0, 'f'},
@@ -184,6 +191,19 @@ int main(int argc, char *argv[])
     }
     whitelist_hash = g_hash_table_new(hash_int32, equal_int32 );
     read_whiteList(whitelist_filename, whitelist_hash, reverse_complement_whitelist);
+    if (sample_barcodes_filename) {
+        sample_barcodes = read_features_file(sample_barcodes_filename);
+        if (!sample_barcodes) { fprintf(stderr, "Failed to load sample barcodes file %s\n", sample_barcodes_filename); exit(1);}    
+        if ((sample_constant_offset_cli == -2) && sample_offset_relative_cli == 0) {
+            fprintf(stderr, "Error: must specify --sample_offset or --sample_offset_rel when --sample_barcodes given\n");
+            exit(1);
+        }
+        if (sample_constant_offset_cli != -2 && sample_offset_relative_cli != 0) {
+            fprintf(stderr, "Error: specify only ONE of --sample_offset or --sample_offset_rel\n");
+            exit(1);
+        }
+    }
+    int demux_nsamples = (sample_barcodes) ? sample_barcodes->number_of_features : 1;
     initialize_unit_sizes();
     const int nSamples=fastq_files.nsamples;
     if (set_search_threads_per_consumer){
@@ -264,7 +284,12 @@ int main(int argc, char *argv[])
             args.em_cumulative_limit = em_cumulative_limit;
             args.min_prediction = min_prediction;
             args.min_heatmap = min_heatmap;
-            args.demux_nsamples = 1;
+            args.demux_nsamples = demux_nsamples;
+            args.sample_barcodes = sample_barcodes;
+            args.sample_max_hamming = sample_max_hamming;
+            args.sample_max_N = sample_max_N;
+            args.sample_constant_offset = (sample_constant_offset_cli!=-2)? sample_constant_offset_cli : -1;
+            args.sample_offset_relative = sample_offset_relative_cli;
             args.sample_hashes = NULL;
             args.sample_stats = NULL;
             args.sample_pools = NULL;
