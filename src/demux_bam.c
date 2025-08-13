@@ -152,9 +152,11 @@ typedef struct {
     GHashTable *counts_map;  /* uint64_t* -> uint32 count (GUINT_TO_POINTER) */
 } shard_data;
 
+static void tripkey_free(gpointer data){ g_slice_free(TripKey, data); }
+
 static shard_data* shard_data_new(void) {
     shard_data *s = g_new0(shard_data,1);
-    s->dedup_set = g_hash_table_new_full(tripkey_hash, tripkey_equal, g_free, NULL);
+    s->dedup_set = g_hash_table_new_full(tripkey_hash, tripkey_equal, tripkey_free, NULL);
     s->counts_map = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
     return s;
 }
@@ -259,7 +261,7 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
     hts_set_threads(in, cfg->hts_threads);
 
     shard_data *shd = shard_data_new();
-    GHashTable *seen_reads = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+    GHashTable *seen_reads = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     bam1_t *b = bam_init1();
     long long recs=0, used=0;
@@ -284,10 +286,9 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
 
         /* seen read guard */
         uint64_t qhash = hash_qname(bam_get_qname(b), (flag & BAM_FREAD1)?1:2);
-        uint64_t tmp_qhash = qhash;
-        if (g_hash_table_contains(seen_reads, &tmp_qhash)) continue;
-        uint64_t *dup_qhash = MEMDUP(&qhash, sizeof(uint64_t));
-        g_hash_table_insert(seen_reads, dup_qhash, GUINT_TO_POINTER(1));
+        gpointer qk = (gpointer)(uintptr_t)qhash;
+        if (g_hash_table_contains(seen_reads, qk)) continue;
+        g_hash_table_insert(seen_reads, qk, GUINT_TO_POINTER(1));
 
         int ok=0; uint64_t umi64 = pack_umi_2bit(ub,&ok);
         if (!ok) continue;
@@ -298,7 +299,8 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
         uint64_t cbk = ((uint64_t)sample_idx<<56) | cb_id;
 
         TripKey tk = { .cbk=cbk, .gene_idx=gene_idx, .umi64=umi64 };
-        TripKey *tk_heap = MEMDUP(&tk, sizeof(TripKey));
+        TripKey *tk_heap = g_slice_new(TripKey);
+        *tk_heap = tk;
         gboolean inserted = g_hash_table_insert(shd->dedup_set, tk_heap, GUINT_TO_POINTER(1));
         if (inserted) {
             uint64_t *pair = g_new(uint64_t,1);
@@ -312,7 +314,7 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
                 g_free(pair); /* replaced key freed */
             }
         } else {
-            g_free(tk_heap);
+            g_slice_free(TripKey, tk_heap);
         }
         used++;
     }
@@ -375,7 +377,8 @@ static gpointer shard_worker(gpointer data) {
         if (!r) break; /* sentinel */
         uint64_t cbk = ((uint64_t)r->sample_idx<<56) | r->cb_id;
         TripKey tk = { .cbk = cbk, .gene_idx = r->gene_idx, .umi64 = r->umi64 };
-        TripKey *heap = MEMDUP(&tk, sizeof(TripKey));
+        TripKey *heap = g_slice_new(TripKey);
+        *heap = tk;
         gboolean inserted = g_hash_table_insert(ctx->shard->dedup_set, heap, GUINT_TO_POINTER(1));
         if (inserted) {
             uint64_t *pair = g_new(uint64_t,1);
@@ -389,7 +392,7 @@ static gpointer shard_worker(gpointer data) {
                 g_free(pair);
             }
         } else {
-            g_free(heap);
+            g_slice_free(TripKey, heap);
         }
         g_free(r);
     }
@@ -426,7 +429,7 @@ static void process_bam_multi(cfg_t *cfg, intern_table *cb_tab, intern_table *ge
         threads[i] = g_thread_new(NULL, shard_worker, &workers[i]);
     }
 
-    GHashTable *seen_reads = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+    GHashTable *seen_reads = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     samFile *in = sam_open(cfg->bam_path, "r");
     if (!in) { perror("sam_open"); exit(EXIT_FAILURE);}    
@@ -452,10 +455,9 @@ static void process_bam_multi(cfg_t *cfg, intern_table *cb_tab, intern_table *ge
         const char *gene = bam_aux2Z(gx_tag);
         if (!cb || !ub || !gene) continue;
         uint64_t qhash = hash_qname(bam_get_qname(b), (flag & BAM_FREAD1)?1:2);
-        uint64_t tmp_qhash = qhash;
-        if (g_hash_table_contains(seen_reads, &tmp_qhash)) continue;
-        uint64_t *dup_qhash = MEMDUP(&qhash, sizeof(uint64_t));
-        g_hash_table_insert(seen_reads, dup_qhash, GUINT_TO_POINTER(1));
+        gpointer qk = (gpointer)(uintptr_t)qhash;
+        if (g_hash_table_contains(seen_reads, qk)) continue;
+        g_hash_table_insert(seen_reads, qk, GUINT_TO_POINTER(1));
         int ok=0; uint64_t umi64 = pack_umi_2bit(ub,&ok);
         if (!ok) continue;
         guint32 cb_id = intern_get(cb_tab, cb);

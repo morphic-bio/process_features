@@ -1,6 +1,5 @@
 assignBarcodes
 filterfastq
-docs
 demux_fastq
 demux_test_out*
 test_files*
