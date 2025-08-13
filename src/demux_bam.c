@@ -1,5 +1,12 @@
 #include "../include/common.h"
+#include "../include/utils.h"
 #include <htslib/sam.h>
+
+#if GLIB_CHECK_VERSION(2,68,0)
+#define MEMDUP g_memdup2
+#else
+#define MEMDUP g_memdup
+#endif
 
 /*
  * demux_bam.c – Read STARsolo BAM, deduplicate (CB,UB,gene) and output MatrixMarket.
@@ -277,9 +284,10 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
 
         /* seen read guard */
         uint64_t qhash = hash_qname(bam_get_qname(b), (flag & BAM_FREAD1)?1:2);
-        gpointer qk = GUINT64_TO_POINTER(qhash);
-        if (g_hash_table_contains(seen_reads, qk)) continue;
-        g_hash_table_insert(seen_reads, g_memdup(&qhash,sizeof(uint64_t)), GUINT_TO_POINTER(1));
+        uint64_t tmp_qhash = qhash;
+        if (g_hash_table_contains(seen_reads, &tmp_qhash)) continue;
+        uint64_t *dup_qhash = MEMDUP(&qhash, sizeof(uint64_t));
+        g_hash_table_insert(seen_reads, dup_qhash, GUINT_TO_POINTER(1));
 
         int ok=0; uint64_t umi64 = pack_umi_2bit(ub,&ok);
         if (!ok) continue;
@@ -290,7 +298,7 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
         uint64_t cbk = ((uint64_t)sample_idx<<56) | cb_id;
 
         TripKey tk = { .cbk=cbk, .gene_idx=gene_idx, .umi64=umi64 };
-        TripKey *tk_heap = g_memdup(&tk, sizeof(TripKey));
+        TripKey *tk_heap = MEMDUP(&tk, sizeof(TripKey));
         gboolean inserted = g_hash_table_insert(shd->dedup_set, tk_heap, GUINT_TO_POINTER(1));
         if (inserted) {
             uint64_t *pair = g_new(uint64_t,1);
@@ -367,7 +375,7 @@ static gpointer shard_worker(gpointer data) {
         if (!r) break; /* sentinel */
         uint64_t cbk = ((uint64_t)r->sample_idx<<56) | r->cb_id;
         TripKey tk = { .cbk = cbk, .gene_idx = r->gene_idx, .umi64 = r->umi64 };
-        TripKey *heap = g_memdup(&tk, sizeof(TripKey));
+        TripKey *heap = MEMDUP(&tk, sizeof(TripKey));
         gboolean inserted = g_hash_table_insert(ctx->shard->dedup_set, heap, GUINT_TO_POINTER(1));
         if (inserted) {
             uint64_t *pair = g_new(uint64_t,1);
@@ -393,16 +401,16 @@ static void merge_counts(GHashTable *dest, GHashTable *src) {
     GHashTableIter it; gpointer key, val;
     g_hash_table_iter_init(&it, src);
     while (g_hash_table_iter_next(&it, &key, &val)) {
-        uint64_t *pk = key;
-        uint32_t cnt_src = GPOINTER_TO_UINT(val);
-        gpointer existing = g_hash_table_lookup(dest, pk);
+        uint64_t pair_val = *(uint64_t*)key;
+        uint64_t *dup_key = g_new(uint64_t,1);
+        *dup_key = pair_val;
+        guint cnt_src = GPOINTER_TO_UINT(val);
+        gpointer existing = g_hash_table_lookup(dest, dup_key);
         if (!existing) {
-            uint64_t *dup = g_new(uint64_t,1);
-            *dup = *pk;
-            g_hash_table_insert(dest, dup, GUINT_TO_POINTER(cnt_src));
+            g_hash_table_insert(dest, dup_key, GUINT_TO_POINTER(cnt_src));
         } else {
             guint cnt_total = GPOINTER_TO_UINT(existing) + cnt_src;
-            g_hash_table_replace(dest, pk, GUINT_TO_POINTER(cnt_total));
+            g_hash_table_replace(dest, dup_key, GUINT_TO_POINTER(cnt_total));
         }
     }
 }
@@ -444,9 +452,10 @@ static void process_bam_multi(cfg_t *cfg, intern_table *cb_tab, intern_table *ge
         const char *gene = bam_aux2Z(gx_tag);
         if (!cb || !ub || !gene) continue;
         uint64_t qhash = hash_qname(bam_get_qname(b), (flag & BAM_FREAD1)?1:2);
-        gpointer qk = GUINT64_TO_POINTER(qhash);
-        if (g_hash_table_contains(seen_reads, qk)) continue;
-        g_hash_table_insert(seen_reads, g_memdup(&qhash,sizeof(uint64_t)), GUINT_TO_POINTER(1));
+        uint64_t tmp_qhash = qhash;
+        if (g_hash_table_contains(seen_reads, &tmp_qhash)) continue;
+        uint64_t *dup_qhash = MEMDUP(&qhash, sizeof(uint64_t));
+        g_hash_table_insert(seen_reads, dup_qhash, GUINT_TO_POINTER(1));
         int ok=0; uint64_t umi64 = pack_umi_2bit(ub,&ok);
         if (!ok) continue;
         guint32 cb_id = intern_get(cb_tab, cb);
