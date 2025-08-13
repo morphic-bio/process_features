@@ -525,7 +525,8 @@ static void write_barcode_map(const char *outdir, intern_table *cb_tab, sample_m
     /* build index→name lookup (0..255) */
     const char *names[256];
     for(int i=0;i<256;i++) names[i] = "undetermined";
-    if (smap){
+    gboolean have_map = (smap && smap->sample_to_index && g_hash_table_size(smap->sample_to_index) > 0);
+    if (have_map){
         GHashTableIter it; gpointer key,val;
         g_hash_table_iter_init(&it, smap->sample_to_index);
         while(g_hash_table_iter_next(&it,&key,&val)){
@@ -533,12 +534,26 @@ static void write_barcode_map(const char *outdir, intern_table *cb_tab, sample_m
             if(idx) names[idx] = (const char*)key; /* sample_id string */
         }
     }
+    unsigned int n_assigned=0, n_unspecified=0, n_undetermined=0;
     for (guint i=0;i<cb_tab->id_to_str->len;i++){
         const char *cb = id_to_str(cb_tab,i);
-        guint8 idx = smap ? sample_map_get_index(smap, cb) : 0;
-        fprintf(f, "%u\t%s\t%s\n", i+1, cb, names[idx]);
+        if (have_map){
+            guint8 idx = sample_map_get_index(smap, cb);
+            if (idx){
+                fprintf(f, "%u\t%s\t%s\n", i+1, cb, names[idx]);
+                n_assigned++;
+            } else {
+                fprintf(f, "%u\t%s\tunspecified\n", i+1, cb);
+                n_unspecified++;
+            }
+        } else {
+            fprintf(f, "%u\t%s\tundetermined\n", i+1, cb);
+            n_undetermined++;
+        }
     }
     fclose(f);
+    fprintf(stderr, "CB mapping summary: assigned=%u unspecified=%u undetermined=%u\n",
+            n_assigned, n_unspecified, n_undetermined);
 }
 
 int main(int argc, char **argv) {
