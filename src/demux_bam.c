@@ -348,6 +348,7 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
         fprintf(fmtx, "%u %u %u\n", gene_idx+1, cb_id+1, count);
     }
     fclose(fmtx);
+    write_barcode_map(cfg->outdir, cb_tab, smap);
 
     /* Clean */
     bam_destroy1(b);
@@ -507,11 +508,38 @@ static void process_bam_multi(cfg_t *cfg, intern_table *cb_tab, intern_table *ge
         fprintf(fmtx, "%u %u %u\n", gene_idx+1, cb_id+1, cnt);
     }
     fclose(fmtx);
+    write_barcode_map(cfg->outdir, cb_tab, smap);
 
     /* TODO: free resources */
 }
 
 // MULTI-THREAD SHARD IMPLEMENTATION END
+
+/* ---------------- barcode→sample map writer ---------------- */
+static void write_barcode_map(const char *outdir, intern_table *cb_tab, sample_map *smap){
+    char path[FILENAME_LENGTH];
+    snprintf(path,sizeof(path), "%s/barcode_to_sample.tsv", outdir);
+    FILE *f = fopen(path,"w");
+    if(!f){ perror("barcode_to_sample.tsv"); return; }
+    fprintf(f,"col_idx\tCB\tsample_id\n");
+    /* build index→name lookup (0..255) */
+    const char *names[256];
+    for(int i=0;i<256;i++) names[i] = "undetermined";
+    if (smap){
+        GHashTableIter it; gpointer key,val;
+        g_hash_table_iter_init(&it, smap->sample_to_index);
+        while(g_hash_table_iter_next(&it,&key,&val)){
+            guint8 idx = GPOINTER_TO_UINT(val);
+            if(idx) names[idx] = (const char*)key; /* sample_id string */
+        }
+    }
+    for (guint i=0;i<cb_tab->id_to_str->len;i++){
+        const char *cb = id_to_str(cb_tab,i);
+        guint8 idx = smap ? sample_map_get_index(smap, cb) : 0;
+        fprintf(f, "%u\t%s\t%s\n", i+1, cb, names[idx]);
+    }
+    fclose(f);
+}
 
 int main(int argc, char **argv) {
     cfg_t cfg = {0};
@@ -525,8 +553,10 @@ int main(int argc, char **argv) {
 
     if (cfg.consumer_threads==1) {
         process_bam_single(&cfg, cb_tab, gene_tab, smap);
+        write_barcode_map(cfg.outdir, cb_tab, smap);
     } else {
         process_bam_multi(&cfg, cb_tab, gene_tab, smap);
+        write_barcode_map(cfg.outdir, cb_tab, smap);
     }
 
     return 0;
