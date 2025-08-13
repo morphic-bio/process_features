@@ -235,6 +235,10 @@ typedef struct sample_args {
     int heatmap_minimum_counts;
     int min_prediction;
     int min_heatmap;
+    int demux_nsamples; // number of demultiplexed samples (1 = legacy)
+    data_structures **sample_hashes; // [demux_nsamples][threads]
+    statistics **sample_stats;       // per sample, per thread
+    memory_pool_collection **sample_pools; // per sample, per thread
 } sample_args;
 
 typedef struct fastq_reader {

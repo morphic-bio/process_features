@@ -264,6 +264,10 @@ int main(int argc, char *argv[])
             args.em_cumulative_limit = em_cumulative_limit;
             args.min_prediction = min_prediction;
             args.min_heatmap = min_heatmap;
+            args.demux_nsamples = 1;
+            args.sample_hashes = NULL;
+            args.sample_stats = NULL;
+            args.sample_pools = NULL;
             process_files_in_sample(&args);
             // cleanup_sample is handled within process_files_in_sample
             atomic_fetch_add(thread_counter, -threads_per_set);
