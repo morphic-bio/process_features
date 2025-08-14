@@ -3,6 +3,7 @@
 #include "../include/globals.h"
 #include "../include/io.h"
 #include "../include/barcode_match.h"
+#include "../include/prototypes.h"   /* for code2string() */
 #include <htslib/sam.h>
 
 #if GLIB_CHECK_VERSION(2,68,0)
@@ -107,6 +108,31 @@ static gboolean extract_kmer_from_bam(const bam1_t *b, int offset,
     out8[PROBE_LEN] = '\0';
     return TRUE;
 }
+
+/* ------------ DEBUG: dump all feature-hash keys -------------- */
+static void dump_feature_codes(void)
+{
+    GHashTableIter it;
+    gpointer key, val;
+    g_hash_table_iter_init(&it, feature_code_hash);
+
+    char seqbuf[PROBE_LEN * 4 + 1];   /* enough for 4 bases/byte */
+    while (g_hash_table_iter_next(&it, &key, &val)) {
+        GBytes *g = (GBytes *)key;
+        gsize blen;
+        const guint8 *data = g_bytes_get_data(g, &blen);
+
+        /* convert the packed code back to a string */
+        code2string((unsigned char *)data, seqbuf, (int)blen);
+
+        /* trim to the real probe length when printing */
+        seqbuf[PROBE_LEN] = '\0';
+        fprintf(stderr, "[feature_hash] %s → %u\n",
+                seqbuf, GPOINTER_TO_UINT(val));
+    }
+    fprintf(stderr, "[feature_hash] ---- end dump ----\n");
+}
+/* ------------------------------------------------------------- */
 
 /* ---------------- TripKey hashing ---------------- */
 
@@ -292,7 +318,7 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
             GBytes *k = g_bytes_new_static(fa->feature_codes[idx], fa->feature_code_lengths[idx]);
             g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(idx+1));
         }
-        g_hash_table_insert(bc2idx, (gpointer)bc_id, GUINT_TO_POINTER(idx));
+        g_hash_table_insert(bc2idx, (gpointer)bc_id, GUINT_TO_POINTER(idx + 1));
     }
     g_free(bc_list);
 
@@ -302,21 +328,26 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
     while (fgets(line, sizeof(line), fp)) {
         char *save=NULL;
         char *variant = strtok_r(line, "\t \r\n", &save);
-        (void)strtok_r(NULL, "\t \r\n", &save); /* canonical – not needed */
+        char *canonical = strtok_r(NULL, "\t \r\n", &save);
         char *bc_id   = strtok_r(NULL, "\t \r\n", &save);
         if (!variant || !bc_id) continue;
+        if (strcmp(variant, canonical) == 0) continue;
         if ((int)strlen(variant) != PROBE_LEN) continue;
         if (!check_sequence(variant, PROBE_LEN)) continue;
+
         gpointer iptr = g_hash_table_lookup(bc2idx, bc_id);
-        if (!iptr) continue; /* should not happen */
-        guint bc_index = GPOINTER_TO_UINT(iptr);
+        if (!iptr) continue;              /* should not happen */
+        guint bc_index = GPOINTER_TO_UINT(iptr) - 1;   /* back to 0-based */
+        fprintf(stderr, "DEBUG: %d variant=%s\tbc_id=%s\n", variant_idx, variant, bc_id);
         uint8_t *codebuf = variant_codes + variant_idx * (PROBE_LEN+3)/4;
         int codelen = string2code(variant, PROBE_LEN, codebuf);
         GBytes *k = g_bytes_new_static(codebuf, codelen);
-        g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(bc_index));
+        g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(bc_index+1));
         variant_idx++;
     }
-
+    //print the size of the feature_code_hash
+    fprintf(stderr, "DEBUG: variant_idx=%d\n", variant_idx);
+    fprintf(stderr, "DEBUG: feature_code_hash size=%zu\n", g_hash_table_size(feature_code_hash));   
     fclose(fp);
     g_hash_table_destroy(bc2canon);
     g_hash_table_destroy(bc2idx);
@@ -379,11 +410,21 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
 
 /* ---------------- Worker function (single-thread) ---------------- */
 
-static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *gene_tab) {
+static void process_bam_single(cfg_t *cfg,
+                               intern_table *cb_tab,
+                               intern_table *gene_tab)
+{
     samFile *in = sam_open(cfg->bam_path, "r");
     if (!in) { perror("sam_open"); exit(EXIT_FAILURE);}    
     bam_hdr_t *hdr = sam_hdr_read(in);
     hts_set_threads(in, cfg->hts_threads);
+
+    /* one-time debug dump of all feature codes */
+    static int dumped = 0;
+    if (!dumped) {
+        dump_feature_codes();
+        dumped = 1;
+    }
 
     int nprobes = probe_fa ? probe_fa->number_of_features : 0;
     shard_data *shd = shard_data_new(nprobes);
