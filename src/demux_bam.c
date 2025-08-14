@@ -489,8 +489,8 @@ static void process_bam_single(cfg_t *cfg,
         }
         if (sample_idx > 0) {
             g_hash_table_insert(seen_reads, qk, GUINT_TO_POINTER(1));
-            shd->total_reads++;
         }
+        shd->total_reads++;
     }
 
     /* Majority resolution and counts */
