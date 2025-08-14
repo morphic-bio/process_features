@@ -65,16 +65,46 @@ static inline char bam_code_to_base(uint8_t c){
     }
 }
 
-static gboolean extract_kmer_from_bam(const bam1_t *b, int offset, char out8[PROBE_LEN+1]){
+static inline char complement_base(char b)
+{
+    switch (b) {
+        case 'A': return 'T';
+        case 'C': return 'G';
+        case 'G': return 'C';
+        case 'T': return 'A';
+        default : return 'N';
+    }
+}
+
+static gboolean extract_kmer_from_bam(const bam1_t *b, int offset,
+                                      char out8[PROBE_LEN + 1])
+{
     int n = b->core.l_qseq;
     if (offset < 0 || offset + PROBE_LEN > n) return FALSE;
+
     const uint8_t *seq = bam_get_seq(b);
-    for (int i=0;i<PROBE_LEN;i++){
-        char base = bam_code_to_base(bam_seqi(seq, offset+i));
-        if (base!='A'&&base!='C'&&base!='G'&&base!='T') return FALSE;
-        out8[i]=base;
+
+    if (b->core.flag & BAM_FREVERSE) {              /* reverse-strand read */
+        int start = n - offset - PROBE_LEN;         /* 5′ on reference   */
+        if (start < 0) return FALSE;
+        for (int i = 0; i < PROBE_LEN; ++i) {
+            /* walk right→left through the read, left→right into out8 */
+            char base = bam_code_to_base(bam_seqi(seq,
+                                                  start + PROBE_LEN - 1 - i));
+            if (base != 'A' && base != 'C' && base != 'G' && base != 'T')
+                return FALSE;
+            out8[i] = complement_base(base);
+        }
+    } else {                                        /* forward-strand read */
+        for (int i = 0; i < PROBE_LEN; ++i) {
+            char base = bam_code_to_base(bam_seqi(seq, offset + i));
+            if (base != 'A' && base != 'C' && base != 'G' && base != 'T')
+                return FALSE;
+            out8[i] = base;
+        }
     }
-    out8[PROBE_LEN]='\0';
+
+    out8[PROBE_LEN] = '\0';
     return TRUE;
 }
 
