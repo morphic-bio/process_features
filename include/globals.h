@@ -36,5 +36,8 @@ extern int limit_search;
 extern int min_heatmap;
 extern int min_em_counts;
 
+// Translation flag for final-stage barcode output/filters
+extern int translate_NXT;
+
 
 #endif // GLOBALS_H

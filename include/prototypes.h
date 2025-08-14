@@ -87,6 +87,7 @@ void reverse_in_place(char *str);
 char complement(char base);
 void reverse_complement_in_place(char *seq);
 void reverse_complement_sequence(char *sequence,  char *reverse, int length);
+void translate_nxt_inplace(char *barcode, int len);
 void cleanup_sample(memory_pool_collection *pools, data_structures *hashes);
 void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order);
 

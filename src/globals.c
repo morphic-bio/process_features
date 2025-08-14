@@ -29,3 +29,4 @@ long long max_reads = 0;
 int limit_search = -1;
 int min_heatmap = -1;
 int min_em_counts = 100;
+int translate_NXT = 0;

@@ -83,6 +83,7 @@ int main(int argc, char *argv[])
         {"em_cumulative_limit", required_argument, 0, 14},
         {"min_prediction", required_argument, 0, 15},
         {"min_heatmap", required_argument, 0, 16},
+        {"translate_NXT", no_argument, 0, 17},
         {0, 0, 0, 0}
     };
 
@@ -127,6 +128,7 @@ int main(int argc, char *argv[])
             case 14: em_cumulative_limit = atof(optarg); break;
             case 15: min_prediction = atoi(optarg); break;
             case 16: min_heatmap = atoi(optarg); break;
+            case 17: translate_NXT = 1; fprintf(stderr, "translate_NXT enabled: complementing positions 8 and 9 at output/filter time.\n"); break;
             default: fprintf(stderr, "Usage: %s [options]\n", argv[0]); return 1;
         }
     }

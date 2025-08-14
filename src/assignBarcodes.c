@@ -1197,6 +1197,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
         if (filtered_barcodes_hash) {
             char barcode[barcode_length + 1];
             code2string((unsigned char *)key, barcode, barcode_code_length);
+            if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
             if (g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL) {
                 continue;
             }
@@ -1234,6 +1235,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     while (g_hash_table_iter_next(&iter, &barcode_key, &deduped_hash_value)) {
         char barcode[barcode_length + 1];
         code2string((unsigned char *)barcode_key, barcode, barcode_code_length);
+        if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
         if (filtered_barcodes_hash &&
             g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL){
             skipped_barcodes++;
@@ -1342,7 +1344,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
             
             char barcode[barcode_length + 1];
             code2string(entry->sequence_code, barcode, barcode_code_length);
-    
+            if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
             if (filtered_barcodes_hash && g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL) {
                 total_excluded_barcodes++;
                 continue;
@@ -1473,6 +1475,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
         while (g_hash_table_iter_next(&iter, &barcode_key, &deduped_hash_value)) {
             char barcode[barcode_length + 1];
             code2string((unsigned char *)barcode_key, barcode, barcode_code_length);    
+            if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
             if (filtered_barcodes_hash &&
                 g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL)
                 continue;
@@ -3079,3 +3082,11 @@ void reverse_complement_sequence(char *sequence,  char *reverse, int length){
 
 
 
+
+void translate_nxt_inplace(char *barcode, int len) {
+    if (!barcode) return;
+    if (len >= 9) {
+        barcode[7] = complement(barcode[7]);
+        barcode[8] = complement(barcode[8]);
+    }
+}
