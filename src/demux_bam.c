@@ -109,15 +109,23 @@ typedef struct {
     GHashTable *dedup_set;     /* TripKey* -> votes (GHashTable<direct-int key -> count>) */
     GHashTable *counts_map;    /* uint64_t* -> uint32 count (GUINT_TO_POINTER) */
     GHashTable *ambiguous_cb;  /* direct-int key cb_id -> 1 */
+    guint64      total_reads;
+    guint64      usable_reads;
+    guint64      single_reads;
+    guint64      multi_reads;
+    guint64     *probe_tot;    /* per-probe total usable reads */
+    guint64     *probe_single; /* per-probe reads from single-barcode cells */
 } shard_data;
 
 static void tripkey_free(gpointer data){ g_slice_free(TripKey, data); }
 
-static shard_data* shard_data_new(void) {
+static shard_data* shard_data_new(int nprobes) {
     shard_data *s = g_new0(shard_data,1);
     s->dedup_set = g_hash_table_new_full(tripkey_hash, tripkey_equal, tripkey_free, (GDestroyNotify)g_hash_table_destroy);
     s->counts_map = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
     s->ambiguous_cb = g_hash_table_new(g_direct_hash, g_direct_equal);
+    s->probe_tot    = g_new0(guint64, nprobes);
+    s->probe_single = g_new0(guint64, nprobes);
     return s;
 }
 
@@ -322,7 +330,8 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
     bam_hdr_t *hdr = sam_hdr_read(in);
     hts_set_threads(in, cfg->hts_threads);
 
-    shard_data *shd = shard_data_new();
+    int nprobes = probe_fa ? probe_fa->number_of_features : 0;
+    shard_data *shd = shard_data_new(nprobes);
     GHashTable *seen_reads = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     bam1_t *b = bam_init1();
@@ -391,7 +400,12 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
             guint cnt = v ? GPOINTER_TO_UINT(v)+1 : 1;
             g_hash_table_replace(votes, GUINT_TO_POINTER(sample_idx), GUINT_TO_POINTER(cnt));
         }
-        used++;
+        if (sample_idx>0){
+            used++;
+            shd->usable_reads++;
+            shd->probe_tot[sample_idx-1]++;
+        }
+        shd->total_reads++;
     }
 
     /* Majority resolution and counts */
@@ -414,6 +428,16 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
             g_hash_table_insert(shd->ambiguous_cb, GUINT_TO_POINTER(cb_id), GUINT_TO_POINTER(1));
             continue;
         }
+        /* accumulate single/multi stats */
+        if (best_idx>0){
+            if (second_cnt==0){
+                shd->single_reads++;
+                shd->probe_single[best_idx-1]++;
+            } else {
+                shd->multi_reads++;
+            }
+        }
+
         /* credit 1 to (cb_id, best_idx) if CB not ambiguous */
         guint32 cb_id = (guint32)(tk->cbk & 0xffffffffULL);
         if (g_hash_table_contains(shd->ambiguous_cb, GUINT_TO_POINTER(cb_id))) continue;
@@ -428,8 +452,10 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
         }
     }
 
-    fprintf(stderr,"records=%lld processed=%lld triplets=%u NNZ=%u CBs=%u Probes=%d\n",
-            recs, used, g_hash_table_size(shd->dedup_set), g_hash_table_size(shd->counts_map),
+    fprintf(stderr,"records=%lu usable=%lu single=%lu multi=%lu triplets=%u NNZ=%u CBs=%u Probes=%d\n",
+            (unsigned long)shd->total_reads, (unsigned long)shd->usable_reads,
+            (unsigned long)shd->single_reads, (unsigned long)shd->multi_reads,
+            g_hash_table_size(shd->dedup_set), g_hash_table_size(shd->counts_map),
             cb_tab->id_to_str->len, probe_fa?probe_fa->number_of_features:0);
 
     /* Write outputs */
@@ -452,7 +478,7 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
     /* features.tsv = probe names */
     snprintf(path,sizeof(path), "%s/features.tsv", cfg->outdir);
     FILE *ffe = fopen(path,"w");
-    int nprobes = probe_fa ? probe_fa->number_of_features : 0;
+    /* nprobes already declared earlier */
     for (int i=0;i<nprobes;i++) fprintf(ffe, "%s\n", probe_fa->feature_names[i]);
     fclose(ffe);
 
@@ -472,10 +498,27 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
     }
     fclose(fmtx);
 
+    /* stats.txt */
+    snprintf(path,sizeof(path), "%s/stats.txt", cfg->outdir);
+    FILE *fst = fopen(path,"w");
+    fprintf(fst,"Total_records\t%lu\n", (unsigned long)shd->total_reads);
+    fprintf(fst,"Usable_records\t%lu\n", (unsigned long)shd->usable_reads);
+    fprintf(fst,"Fraction_single_barcode\t%.6f\n", shd->usable_reads? (double)shd->single_reads/shd->usable_reads:0.0);
+    fprintf(fst,"Fraction_multi_barcode\t%.6f\n", shd->usable_reads? (double)shd->multi_reads/shd->usable_reads:0.0);
+    fprintf(fst,"BC_ID\tTotal_reads\tSingle_barcode_reads\n");
+    for(int i=0;i<nprobes;i++){
+        fprintf(fst,"%s\t%lu\t%lu\n", probe_fa->feature_names[i],
+                (unsigned long)shd->probe_tot[i], (unsigned long)shd->probe_single[i]);
+    }
+    fclose(fst);
+
     /* Clean */
     bam_destroy1(b);
     sam_hdr_destroy(hdr);
     sam_close(in);
+
+    g_free(shd->probe_tot);
+    g_free(shd->probe_single);
 }
 
 int main(int argc, char **argv) {
