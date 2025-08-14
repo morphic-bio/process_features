@@ -419,3 +419,53 @@ With `--threads 4` on a 4-core laptop the producer saturates ~200 MB/s decompres
 
 ## test_files in version control
 `test_files/` contains large binary/FASTQ test datasets and is therefore **ignored** in version control.  The root `.gitignore` already includes a `test*` wildcard entry, which covers `test_files/` while still retaining useful scripts such as `scripts/test_demux.sh`.  No additional ignore patterns are required. 
+
+## demux_bam – BAM to probe×barcode matrix (intermediate sample-barcode assignment)
+
+`demux_bam` reads a STARsolo-aligned BAM and produces a Matrix Market triplet where rows are sample-barcode probes (e.g., BCxxx), columns are cell barcodes (CB), and values are the number of unique UMIs after deduplication.
+
+### Typical run
+```bash
+./demux_bam \
+  --bam        input.bam \
+  --outdir     out_probe_matrix \
+  --sample_probes tables/probe-barcodes-fixed-rna-profiling-rna.txt \
+  --probe_offset 68 \
+  -S 2 -t 1
+```
+
+### CLI flags
+
+| flag | arg | description | default |
+|------|-----|-------------|---------|
+| `--bam`            | path | Input BAM (STARsolo-style) | – |
+| `--outdir`         | dir  | Output directory | `.` |
+| `--sample_probes`  | path | TSV with columns: variant 8-mer, unused, BC name | – |
+| `--probe_offset`   | int  | 0-based offset of the 8-mer in the read | `68` |
+| `--cb_tag`         | str  | BAM tag for cell barcode | `CB` |
+| `--ub_tag`         | str  | BAM tag for UMI | `UB` |
+| `--gene_tag`       | str  | Preferred gene tag; fallback to `GE` if missing | `GX` |
+| `--hts_threads` / `-S` | int | BAM I/O threads | `2` |
+| `--threads` / `-t`     | int | Consumer shards (single-thread in current stage) | `1` |
+| `--min_mapq`       | int  | Minimum MAPQ filter | `0` |
+| `--no_primary_filter` | – | Keep secondary/supplementary alignments | off |
+| `--keep_dup`       | –    | Keep PCR/optical duplicates | off |
+| `--max_records`    | int  | Process first N reads (debug) | `0` |
+| `-v`, `--debug`    | –    | Verbose logging | off |
+
+### Output files
+- `barcodes.tsv`   – CB strings (ambiguous CBs dropped by majority rule)
+- `features.tsv`   – probe names (BCxxx) loaded from `--sample_probes`
+- `matrix.mtx`     – rows: probes; cols: CBs; values: # unique UMIs after dedup and majority selection
+
+### Algorithm (concise)
+1. Extract per-read tags: `CB`, `UB`, and `GX` (fallback `GE`).
+2. Dedup key = `(CB, UB, gene)`; pack `UB` into a 64-bit code; require A/C/G/T only.
+3. Probe detection: slice the 8-mer at `--probe_offset` from the read sequence; lookup with the shared k-mer matcher to obtain a probe index (0 = none).
+4. For each dedup triplet, accumulate votes per probe index observed among reads that map to it.
+5. At finalize, choose the majority probe index for each triplet; ties between non-zero indices mark the corresponding CB as ambiguous and it is excluded from outputs.
+6. Each non-ambiguous triplet contributes 1 to `(CB, chosen_probe_index)` in the final matrix.
+
+Notes:
+- This tool does not map probes to final sample IDs yet. It provides a probe×barcode matrix as an intermediate for downstream sample assignment.
+- `assignBarcodes` is unaffected by this executable. 
