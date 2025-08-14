@@ -171,55 +171,94 @@ static void usage(const char *prog) {
 }
 
 static feature_arrays* load_probe_variants_to_features(const char *path) {
+    /* Three-column TSV: VARIANT_8MER  CANONICAL_8MER  BARCODE_ID */
     FILE *fp = fopen(path, "r");
     if (!fp) { perror("sample_probes"); exit(EXIT_FAILURE); }
-    int count=0, name_size=0, seq_size=0, code_size=0;
+
+    /* first pass – collect unique barcode IDs and their canonical sequence */
+    GHashTable *bc2canon = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     char line[LINE_LENGTH];
+    int uniq_cnt = 0, name_size = 0, seq_size = 0, code_size = 0;
     while (fgets(line, sizeof(line), fp)) {
-        char *save=NULL; 
-        char *v=strtok_r(line,"\t \r\n",&save); 
-        (void)strtok_r(NULL,"\t \r\n",&save); 
-        char *bc=strtok_r(NULL,"\t \r\n",&save);
-        if (!v||!bc) continue;
-        if ((int)strlen(v)!=PROBE_LEN) continue;
-        if (!check_sequence(v, PROBE_LEN)) continue;
-        count++;
-        name_size += (int)strlen(bc)+1;
-        seq_size  += PROBE_LEN+1;
-        code_size += (PROBE_LEN+3)/4;
+        char *save=NULL;
+        char *variant = strtok_r(line, "\t \r\n", &save);
+        char *canonical = strtok_r(NULL, "\t \r\n", &save);
+        char *bc_id   = strtok_r(NULL, "\t \r\n", &save);
+        if (!variant || !bc_id) continue;
+        if ((int)strlen(variant) != PROBE_LEN) continue;
+        if (!check_sequence(variant, PROBE_LEN)) continue;
+        if (!canonical || strlen(canonical)!=PROBE_LEN || !check_sequence(canonical, PROBE_LEN))
+            canonical = variant; /* fallback */
+        if (!g_hash_table_contains(bc2canon, bc_id)) {
+            g_hash_table_insert(bc2canon, g_strdup(bc_id), g_strdup(canonical));
+            uniq_cnt++;
+            name_size += (int)strlen(bc_id) + 1;
+            seq_size  += PROBE_LEN + 1;
+            code_size += (PROBE_LEN+3)/4;
+        }
     }
-    feature_arrays *fa = allocate_feature_arrays(name_size, seq_size, code_size, count, PROBE_LEN);
+
+    feature_arrays *fa = allocate_feature_arrays(name_size, seq_size, code_size, uniq_cnt, PROBE_LEN);
     fa->common_length = PROBE_LEN;
-    fseek(fp,0,SEEK_SET);
-    int idx=0; 
-    fa->feature_names[0]=fa->feature_names_storage; 
-    fa->feature_sequences[0]=fa->feature_sequences_storage; 
-    fa->feature_codes[0]=fa->feature_codes_storage;
-    while (fgets(line, sizeof(line), fp)){
-        char *save=NULL; 
-        char *v=strtok_r(line,"\t \r\n",&save); 
-        (void)strtok_r(NULL,"\t \r\n",&save); 
-        char *bc=strtok_r(NULL,"\t \r\n",&save);
-        if (!v||!bc) continue;
-        if ((int)strlen(v)!=PROBE_LEN) continue;
-        if (!check_sequence(v, PROBE_LEN)) continue;
-        strcpy(fa->feature_names[idx], bc);
-        if (idx+1<fa->number_of_features) fa->feature_names[idx+1]=fa->feature_names[idx]+strlen(bc)+1;
-        strcpy(fa->feature_sequences[idx], v);
-        fa->feature_lengths[idx]=PROBE_LEN;
-        fa->feature_code_lengths[idx] = string2code(v, PROBE_LEN, fa->feature_codes[idx]);
-        if (fa->feature_lengths[idx] == fa->common_length){
-            GBytes *key = g_bytes_new_static(fa->feature_codes[idx], fa->feature_code_lengths[idx]);
-            g_hash_table_insert(feature_code_hash, key, GUINT_TO_POINTER(idx+1));
+
+    /* second pass – fill feature_arrays and build bc_id → idx map */
+    GHashTable *bc2idx = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL);
+    GHashTableIter it; gpointer key, value;
+    g_hash_table_iter_init(&it, bc2canon);
+    int idx = 0;
+    fa->feature_names[0]     = fa->feature_names_storage;
+    fa->feature_sequences[0] = fa->feature_sequences_storage;
+    fa->feature_codes[0]     = fa->feature_codes_storage;
+    while (g_hash_table_iter_next(&it, &key, &value)) {
+        const char *bc_id = (const char*)key;
+        const char *canon = (const char*)value;
+        /* store name */
+        strcpy(fa->feature_names[idx], bc_id);
+        if (idx+1 < uniq_cnt)
+            fa->feature_names[idx+1] = fa->feature_names[idx] + strlen(bc_id) + 1;
+        /* store canonical sequence */
+        strcpy(fa->feature_sequences[idx], canon);
+        fa->feature_lengths[idx] = PROBE_LEN;
+        /* cast away const because string2code expects char* */
+        fa->feature_code_lengths[idx] =
+            string2code((char *)canon, PROBE_LEN, fa->feature_codes[idx]);
+        if (idx+1 < uniq_cnt) {
+            fa->feature_sequences[idx+1] = fa->feature_sequences[idx] + PROBE_LEN + 1;
+            fa->feature_codes[idx+1]     = fa->feature_codes[idx] + fa->feature_code_lengths[idx];
         }
-        if (idx+1<fa->number_of_features){ 
-            fa->feature_sequences[idx+1]=fa->feature_sequences[idx]+PROBE_LEN+1; 
-            fa->feature_codes[idx+1]=fa->feature_codes[idx]+fa->feature_code_lengths[idx]; 
+        /* insert canonical code into lookup */
+        if (fa->feature_lengths[idx] == PROBE_LEN) {
+            GBytes *k = g_bytes_new_static(fa->feature_codes[idx], fa->feature_code_lengths[idx]);
+            g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(idx+1));
         }
+        g_hash_table_insert(bc2idx, (gpointer)bc_id, GUINT_TO_POINTER(idx));
         idx++;
     }
+
+    /* third pass – map every variant 8-mer to the same index */
+    fseek(fp, 0, SEEK_SET);
+    while (fgets(line, sizeof(line), fp)) {
+        char *save=NULL;
+        char *variant = strtok_r(line, "\t \r\n", &save);
+        (void)strtok_r(NULL, "\t \r\n", &save); /* canonical – not needed */
+        char *bc_id   = strtok_r(NULL, "\t \r\n", &save);
+        if (!variant || !bc_id) continue;
+        if ((int)strlen(variant) != PROBE_LEN) continue;
+        if (!check_sequence(variant, PROBE_LEN)) continue;
+        gpointer iptr = g_hash_table_lookup(bc2idx, bc_id);
+        if (!iptr) continue; /* should not happen */
+        guint bc_index = GPOINTER_TO_UINT(iptr);
+        uint8_t codebuf[(PROBE_LEN+3)/4];
+        int codelen = string2code(variant, PROBE_LEN, codebuf);
+        GBytes *k = g_bytes_new_static(codebuf, codelen);
+        g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(bc_index+1));
+    }
+
     fclose(fp);
-    fprintf(stderr, "Loaded %d sample probes (len=%d)\n", count, fa->common_length);
+    g_hash_table_destroy(bc2canon);
+    g_hash_table_destroy(bc2idx);
+
+    fprintf(stderr, "Loaded %d unique sample barcode IDs (len=%d)\n", uniq_cnt, PROBE_LEN);
     return fa;
 }
 
@@ -381,8 +420,12 @@ static void process_bam_single(cfg_t *cfg, intern_table *cb_tab, intern_table *g
         uint64_t *pair = g_new(uint64_t,1);
         *pair = pair64(cb_id, best_idx);
         gpointer val = g_hash_table_lookup(shd->counts_map, pair);
-        if (!val) g_hash_table_insert(shd->counts_map, pair, GUINT_TO_POINTER(1));
-        else { guint cnt = GPOINTER_TO_UINT(val)+1; g_hash_table_replace(shd->counts_map, pair, GUINT_TO_POINTER(cnt)); g_free(pair); }
+        if (!val)
+            g_hash_table_insert(shd->counts_map, pair, GUINT_TO_POINTER(1));
+        else {
+            guint cnt = GPOINTER_TO_UINT(val) + 1;
+            g_hash_table_replace(shd->counts_map, pair, GUINT_TO_POINTER(cnt));
+        }
     }
 
     fprintf(stderr,"records=%lld processed=%lld triplets=%u NNZ=%u CBs=%u Probes=%d\n",
