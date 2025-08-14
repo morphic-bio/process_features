@@ -137,6 +137,13 @@ static guint64 hash_qname(const char *qname, int read12) {
     return h;
 }
 
+/* ---- helper: qsort comparator for barcode strings ----------------- */
+static int cmp_str (const void *a, const void *b)
+{
+    return strcmp (*(char* const*)a, *(char* const*)b);
+}
+/* ------------------------------------------------------------------- */
+
 /* ---------------- CLI config ---------------- */
 
 typedef struct {
@@ -209,17 +216,29 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
     feature_arrays *fa = allocate_feature_arrays(name_size, seq_size, code_size, uniq_cnt, PROBE_LEN);
     fa->common_length = PROBE_LEN;
 
-    /* second pass – fill feature_arrays and build bc_id → idx map */
+    /* ---------- collect & sort unique BC-IDs ---------- */
+    char **bc_list = g_new(char*, uniq_cnt);
+    {
+        GHashTableIter it;
+        gpointer key, value;
+        g_hash_table_iter_init (&it, bc2canon);
+        guint i = 0;
+        while (g_hash_table_iter_next (&it, &key, &value))
+            bc_list[i++] = (char*)key;          /* key already dup’ed */
+    }
+
+    /* alphabetic sort */
+    qsort (bc_list, uniq_cnt, sizeof(char*), cmp_str);
+
+    /* second pass – build arrays */
     GHashTable *bc2idx = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL);
-    GHashTableIter it; gpointer key, value;
-    g_hash_table_iter_init(&it, bc2canon);
     int idx = 0;
     fa->feature_names[0]     = fa->feature_names_storage;
     fa->feature_sequences[0] = fa->feature_sequences_storage;
     fa->feature_codes[0]     = fa->feature_codes_storage;
-    while (g_hash_table_iter_next(&it, &key, &value)) {
-        const char *bc_id = (const char*)key;
-        const char *canon = (const char*)value;
+    for (idx = 0; idx < uniq_cnt; idx++) {
+        const char *bc_id = bc_list[idx];
+        const char *canon = g_hash_table_lookup (bc2canon, bc_id);
         /* store name */
         strcpy(fa->feature_names[idx], bc_id);
         if (idx+1 < uniq_cnt)
@@ -240,8 +259,8 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
             g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(idx+1));
         }
         g_hash_table_insert(bc2idx, (gpointer)bc_id, GUINT_TO_POINTER(idx));
-        idx++;
     }
+    g_free(bc_list);
 
     /* third pass – map every variant 8-mer to the same index */
     fseek(fp, 0, SEEK_SET);
