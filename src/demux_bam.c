@@ -454,7 +454,6 @@ static void process_bam_single(cfg_t *cfg,
         uint64_t qhash = hash_qname(bam_get_qname(b), (flag & BAM_FREAD1)?1:2);
         gpointer qk = (gpointer)(uintptr_t)qhash;
         if (g_hash_table_contains(seen_reads, qk)) continue;
-        g_hash_table_insert(seen_reads, qk, GUINT_TO_POINTER(1));
 
         /* UMI pack */
         int ok=1; uint64_t out=0; int len=0; 
@@ -474,17 +473,6 @@ static void process_bam_single(cfg_t *cfg,
             char kmer[PROBE_LEN+1];
             if (extract_kmer_from_bam(b, cfg->probe_offset, kmer)){
                 int idx = feature_lookup_kmer(kmer, PROBE_LEN, probe_fa, direct_probe);
-
-                /* ---- DEBUG: report all 8-mers that do not match any barcode ---- */
-                if (idx == 0) {
-                    fprintf(stderr,
-                            "[NO_MATCH] seq=%s  revcomp=%d  qname=%s\n",
-                            kmer,
-                            (b->core.flag & BAM_FREVERSE) ? 1 : 0,
-                            bam_get_qname(b));
-                }
-                /* ---------------------------------------------------------------- */
-
                 if (idx>0 && idx<=probe_fa->number_of_features) sample_idx = idx;
             }
         }
@@ -511,6 +499,7 @@ static void process_bam_single(cfg_t *cfg,
             shd->usable_reads++;
             shd->probe_tot[sample_idx-1]++;
         }
+        g_hash_table_insert(seen_reads, qk, GUINT_TO_POINTER(1));
         shd->total_reads++;
     }
 
@@ -562,7 +551,9 @@ static void process_bam_single(cfg_t *cfg,
             (unsigned long)shd->total_reads, (unsigned long)shd->usable_reads,
             (unsigned long)shd->single_reads, (unsigned long)shd->multi_reads,
             g_hash_table_size(shd->dedup_set), g_hash_table_size(shd->counts_map),
-            cb_tab->id_to_str->len, probe_fa?probe_fa->number_of_features:0);
+            cb_tab->id_to_str->len, probe_fa ? probe_fa->number_of_features : 0);
+
+    fprintf(stderr, "unique_qnames=%u\n", g_hash_table_size(seen_reads));
 
     /* Write outputs */
     if (mkdir_p(cfg->outdir)) { fprintf(stderr,"Failed to create outdir\n"); exit(EXIT_FAILURE);}    
