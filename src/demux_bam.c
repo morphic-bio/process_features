@@ -338,7 +338,6 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
         gpointer iptr = g_hash_table_lookup(bc2idx, bc_id);
         if (!iptr) continue;              /* should not happen */
         guint bc_index = GPOINTER_TO_UINT(iptr) - 1;   /* back to 0-based */
-        fprintf(stderr, "DEBUG: %d variant=%s\tbc_id=%s\n", variant_idx, variant, bc_id);
         uint8_t *codebuf = variant_codes + variant_idx * (PROBE_LEN+3)/4;
         int codelen = string2code(variant, PROBE_LEN, codebuf);
         GBytes *k = g_bytes_new_static(codebuf, codelen);
@@ -347,7 +346,7 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
     }
     //print the size of the feature_code_hash
     fprintf(stderr, "DEBUG: variant_idx=%d\n", variant_idx);
-    fprintf(stderr, "DEBUG: feature_code_hash size=%zu\n", g_hash_table_size(feature_code_hash));   
+    fprintf(stderr, "DEBUG: feature_code_hash size=%u\n", g_hash_table_size(feature_code_hash));   
     fclose(fp);
     g_hash_table_destroy(bc2canon);
     g_hash_table_destroy(bc2idx);
@@ -475,6 +474,17 @@ static void process_bam_single(cfg_t *cfg,
             char kmer[PROBE_LEN+1];
             if (extract_kmer_from_bam(b, cfg->probe_offset, kmer)){
                 int idx = feature_lookup_kmer(kmer, PROBE_LEN, probe_fa, direct_probe);
+
+                /* ---- DEBUG: report all 8-mers that do not match any barcode ---- */
+                if (idx == 0) {
+                    fprintf(stderr,
+                            "[NO_MATCH] seq=%s  revcomp=%d  qname=%s\n",
+                            kmer,
+                            (b->core.flag & BAM_FREVERSE) ? 1 : 0,
+                            bam_get_qname(b));
+                }
+                /* ---------------------------------------------------------------- */
+
                 if (idx>0 && idx<=probe_fa->number_of_features) sample_idx = idx;
             }
         }
@@ -625,8 +635,16 @@ int main(int argc, char **argv) {
 
     /* init matching tables */
     barcode_match_init();
-    feature_code_hash = g_hash_table_new_full(g_bytes_hash, g_bytes_equal, (GDestroyNotify)g_bytes_unref, NULL);
-    if (cfg.sample_probes){ probe_fa = load_probe_variants_to_features(cfg.sample_probes); direct_probe = cfg.direct_probe; probe_offset = cfg.probe_offset; }
+    feature_code_hash = g_hash_table_new_full(g_bytes_hash,
+                                              g_bytes_equal,
+                                              (GDestroyNotify) g_bytes_unref,
+                                              NULL);
+
+    if (cfg.sample_probes) {
+        probe_fa     = load_probe_variants_to_features(cfg.sample_probes);
+        probe_offset = cfg.probe_offset;
+        direct_probe = 0;          /* disable direct search for now */
+    }
 
     intern_table *cb_tab = intern_table_new();
     intern_table *gene_tab = intern_table_new();
