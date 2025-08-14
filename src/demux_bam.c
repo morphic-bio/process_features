@@ -109,30 +109,6 @@ static gboolean extract_kmer_from_bam(const bam1_t *b, int offset,
     return TRUE;
 }
 
-/* ------------ DEBUG: dump all feature-hash keys -------------- */
-static void dump_feature_codes(void)
-{
-    GHashTableIter it;
-    gpointer key, val;
-    g_hash_table_iter_init(&it, feature_code_hash);
-
-    char seqbuf[PROBE_LEN * 4 + 1];   /* enough for 4 bases/byte */
-    while (g_hash_table_iter_next(&it, &key, &val)) {
-        GBytes *g = (GBytes *)key;
-        gsize blen;
-        const guint8 *data = g_bytes_get_data(g, &blen);
-
-        /* convert the packed code back to a string */
-        code2string((unsigned char *)data, seqbuf, (int)blen);
-
-        /* trim to the real probe length when printing */
-        seqbuf[PROBE_LEN] = '\0';
-        fprintf(stderr, "[feature_hash] %s → %u\n",
-                seqbuf, GPOINTER_TO_UINT(val));
-    }
-    fprintf(stderr, "[feature_hash] ---- end dump ----\n");
-}
-/* ------------------------------------------------------------- */
 
 /* ---------------- TripKey hashing ---------------- */
 
@@ -219,6 +195,7 @@ typedef struct {
     const char *sample_probes; /* path */
     int probe_offset;
     int direct_probe;
+    int search_nearby; /* if non-zero, enable fallback search for probes */
 } cfg_t;
 
 static void usage(const char *prog) {
@@ -371,6 +348,7 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         {"no_primary_filter", no_argument,0,0},
         {"keep_dup", no_argument,0,0},
         {"max_records", required_argument,0,0},
+        {"search_nearby", no_argument, 0, 0},
         {"debug", no_argument,0,'v'},
         {0,0,0,0}
     };
@@ -397,6 +375,7 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         else if (!strcmp(opt_name, "no_primary_filter")) cfg->primary_only = 0;
         else if (!strcmp(opt_name, "keep_dup")) cfg->skip_dup = 0;
         else if (!strcmp(opt_name, "max_records")) cfg->max_records = atoll(optarg);
+        else if (!strcmp(opt_name, "search_nearby")) cfg->search_nearby = 1;
     }
     if (!cfg->bam_path || !cfg->outdir) { usage(argv[0]); exit(EXIT_FAILURE);}    
     if (!cfg->cb_tag) cfg->cb_tag = DEFAULT_CB_TAG;
@@ -417,13 +396,6 @@ static void process_bam_single(cfg_t *cfg,
     if (!in) { perror("sam_open"); exit(EXIT_FAILURE);}    
     bam_hdr_t *hdr = sam_hdr_read(in);
     hts_set_threads(in, cfg->hts_threads);
-
-    /* one-time debug dump of all feature codes */
-    static int dumped = 0;
-    if (!dumped) {
-        dump_feature_codes();
-        dumped = 1;
-    }
 
     int nprobes = probe_fa ? probe_fa->number_of_features : 0;
     shard_data *shd = shard_data_new(nprobes);
@@ -469,11 +441,27 @@ static void process_bam_single(cfg_t *cfg,
 
         /* sample probe lookup */
         int sample_idx = 0;
-        if (probe_fa){
-            char kmer[PROBE_LEN+1];
-            if (extract_kmer_from_bam(b, cfg->probe_offset, kmer)){
+        if (probe_fa) {
+            char kmer[PROBE_LEN + 1];
+            /* try primary offset first */
+            if (extract_kmer_from_bam(b, cfg->probe_offset, kmer)) {
                 int idx = feature_lookup_kmer(kmer, PROBE_LEN, probe_fa, direct_probe);
-                if (idx>0 && idx<=probe_fa->number_of_features) sample_idx = idx;
+                if (idx > 0 && idx <= probe_fa->number_of_features)
+                    sample_idx = idx;
+            }
+            /* fallback search if enabled and not found */
+            if (sample_idx == 0 && cfg->search_nearby) {
+                int offs[4] = { cfg->probe_offset + 1,
+                                cfg->probe_offset + 2,
+                                cfg->probe_offset - 1,
+                                cfg->probe_offset - 2 };
+                for (int oi = 0; oi < 4 && sample_idx == 0; ++oi) {
+                    if (!extract_kmer_from_bam(b, offs[oi], kmer))
+                        continue; /* invalid offset or non-ACGT base */
+                    int idx = feature_lookup_kmer(kmer, PROBE_LEN, probe_fa, direct_probe);
+                    if (idx > 0 && idx <= probe_fa->number_of_features)
+                        sample_idx = idx;   /* early exit once found */
+                }
             }
         }
 
@@ -499,8 +487,10 @@ static void process_bam_single(cfg_t *cfg,
             shd->usable_reads++;
             shd->probe_tot[sample_idx-1]++;
         }
-        g_hash_table_insert(seen_reads, qk, GUINT_TO_POINTER(1));
-        shd->total_reads++;
+        if (sample_idx > 0) {
+            g_hash_table_insert(seen_reads, qk, GUINT_TO_POINTER(1));
+            shd->total_reads++;
+        }
     }
 
     /* Majority resolution and counts */
