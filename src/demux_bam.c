@@ -223,7 +223,7 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
     /* first pass – collect unique barcode IDs and their canonical sequence */
     GHashTable *bc2canon = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     char line[LINE_LENGTH];
-    int uniq_cnt = 0, name_size = 0, seq_size = 0, code_size = 0;
+    int uniq_cnt = 0, name_size = 0, seq_size = 0, code_size = 0, variant_cnt = 0;
     while (fgets(line, sizeof(line), fp)) {
         char *save=NULL;
         char *variant = strtok_r(line, "\t \r\n", &save);
@@ -241,10 +241,14 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
             seq_size  += PROBE_LEN + 1;
             code_size += (PROBE_LEN+3)/4;
         }
+        if (canonical != variant) variant_cnt++;    
     }
 
     feature_arrays *fa = allocate_feature_arrays(name_size, seq_size, code_size, uniq_cnt, PROBE_LEN);
     fa->common_length = PROBE_LEN;
+    //allocate a array of blocks of size (PROBE_LEN+3)/4
+    uint8_t *variant_codes = malloc(variant_cnt * (PROBE_LEN+3)/4);
+    memset(variant_codes, 0, variant_cnt * (PROBE_LEN+3)/4);
 
     /* ---------- collect & sort unique BC-IDs ---------- */
     char **bc_list = g_new(char*, uniq_cnt);
@@ -294,6 +298,7 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
 
     /* third pass – map every variant 8-mer to the same index */
     fseek(fp, 0, SEEK_SET);
+    int variant_idx = 0;
     while (fgets(line, sizeof(line), fp)) {
         char *save=NULL;
         char *variant = strtok_r(line, "\t \r\n", &save);
@@ -305,10 +310,11 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
         gpointer iptr = g_hash_table_lookup(bc2idx, bc_id);
         if (!iptr) continue; /* should not happen */
         guint bc_index = GPOINTER_TO_UINT(iptr);
-        uint8_t codebuf[(PROBE_LEN+3)/4];
+        uint8_t *codebuf = variant_codes + variant_idx * (PROBE_LEN+3)/4;
         int codelen = string2code(variant, PROBE_LEN, codebuf);
         GBytes *k = g_bytes_new_static(codebuf, codelen);
-        g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(bc_index+1));
+        g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(bc_index));
+        variant_idx++;
     }
 
     fclose(fp);
