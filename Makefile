@@ -27,8 +27,12 @@ else
 	SRCS += heatmap.c
 endif
 
-# Combine all flags
-CFLAGS=-g -Wall -O3 -I$(INCDIR) -fopenmp $(GLIB_CFLAGS) $(CAIRO_CFLAGS) $(DEFINES)
+# Compiler flags: optimise by default, but if DEBUG=1 build with symbols and no optimisations
+ifeq ($(DEBUG),1)
+    CFLAGS=-g -ggdb -Wall -O0 -I$(INCDIR) -fopenmp $(GLIB_CFLAGS) $(CAIRO_CFLAGS) $(DEFINES)
+else
+    CFLAGS=-g -Wall -O3 -I$(INCDIR) -fopenmp $(GLIB_CFLAGS) $(CAIRO_CFLAGS) $(DEFINES)
+endif
 LDFLAGS=-lm -lpthread -lz -fopenmp $(GLIB_LIBS) $(CAIRO_LIBS) $(HTS_LIBS)
 
 # Object files
@@ -43,7 +47,7 @@ DEMUX_SRCS=demux_fastq.c io.c utils.c globals.c barcode_match.c
 DEMUX_OBJS=$(DEMUX_SRCS:.c=.o)
 
 DEMUX_BAM_TARGET=demux_bam
-DEMUX_BAM_SRCS=demux_bam.c utils.c globals.c barcode_match.c io.c
+DEMUX_BAM_SRCS=demux_bam.c utils.c globals.c barcode_match.c io.c memory.c
 DEMUX_BAM_OBJS=$(DEMUX_BAM_SRCS:.c=.o)
 
 .PHONY: all clean

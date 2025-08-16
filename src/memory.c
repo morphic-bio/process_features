@@ -12,6 +12,7 @@ memory_pool_collection* initialize_memory_pool_collection() {
     pools->feature_umi_counts_pool = initialize_storage_pool(dynamic_struct_sizes.feature_umi_counts, UMI_STORAGE_BLOCK);
     pools->feature_sequences_pool = initialize_storage_pool(dynamic_struct_sizes.feature_sequences, FEATURE_SEQUENCE_BLOCK_SIZE);
     pools->unmatched_barcodes_features_block_pool = initialize_storage_pool(dynamic_struct_sizes.unmatched_barcodes_features_block, BARCODE_STORAGE_BLOCK_SIZE);
+    pools->cb_counts_pool = initialize_storage_pool(dynamic_struct_sizes.cb_probe_counts, CB_COUNTS_BLOCK_SIZE);
     return pools;
 }
 
@@ -20,6 +21,7 @@ void free_memory_pool_collection(memory_pool_collection *pools) {
     free_memory_pool_storage(pools->feature_umi_counts_pool);
     free_memory_pool_storage(pools->feature_sequences_pool);
     free_memory_pool_storage(pools->unmatched_barcodes_features_block_pool);
+    free_memory_pool_storage(pools->cb_counts_pool);
     free(pools);
 }
 

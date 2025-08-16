@@ -9,7 +9,7 @@
 #define UMI_STORAGE_BLOCK 10000000
 #define FEATURE_SEQUENCE_BLOCK_SIZE 100000
 #define BARCODE_STORAGE_BLOCK_SIZE 30000
-
+#define CB_COUNTS_BLOCK_SIZE  10000
 
 
 // Function prototypes for memory management

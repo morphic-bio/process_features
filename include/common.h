@@ -152,6 +152,7 @@ typedef struct unit_sizes {
     size_t feature_umi_counts;
     size_t feature_sequences;
     size_t unmatched_barcodes_features_block;
+    size_t cb_probe_counts; /* per-CB probe-count array */
 } unit_sizes;
 
 typedef struct statistics {
@@ -206,6 +207,7 @@ typedef struct _memory_pool_collection {
     memory_pool *feature_umi_counts_pool;
     memory_pool *feature_sequences_pool;
     memory_pool *unmatched_barcodes_features_block_pool;
+    memory_pool *cb_counts_pool; /* new pool for CB×probe count arrays */
 } memory_pool_collection;
 
 typedef struct sample_args {

@@ -4,7 +4,10 @@
 #include "../include/io.h"
 #include "../include/barcode_match.h"
 #include "../include/prototypes.h"   /* for code2string() */
+#include "../include/memory.h"
 #include <htslib/sam.h>
+
+static memory_pool_collection *global_pools = NULL;
 
 #if GLIB_CHECK_VERSION(2,68,0)
 #define MEMDUP g_memdup2
@@ -110,64 +113,24 @@ static gboolean extract_kmer_from_bam(const bam1_t *b, int offset,
 }
 
 
-/* ---------------- TripKey hashing ---------------- */
-
-typedef struct {
-    uint64_t cbk;       /* sample assignment not used; lower 56 bits hold cb_id */
-    uint32_t gene_idx;  /* used for dedup only */
-    uint64_t umi64;
-} TripKey;
-
-static guint tripkey_hash(gconstpointer v) {
-    const TripKey *k = v;
-    uint64_t h = k->cbk ^ ((uint64_t)k->gene_idx<<32) ^ k->umi64;
-    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ULL; h ^= h >> 33;
-    return (guint)h;
-}
-
-static gboolean tripkey_equal(gconstpointer a, gconstpointer b) {
-    const TripKey *x = a; const TripKey *y = b;
-    return x->cbk==y->cbk && x->gene_idx==y->gene_idx && x->umi64==y->umi64;
-}
-
-/* Key for counts (cb_id,sample_idx) packed into uint64 */
-static inline uint64_t pair64(uint32_t a, uint32_t b) {
-    return ((uint64_t)a<<32)|b;
-}
+/* TripKey dedup helpers removed */
 
 /* ---------------- Shard data ---------------- */
 
 typedef struct {
-    GHashTable *dedup_set;     /* TripKey* -> votes (GHashTable<direct-int key -> count>) */
-    GHashTable *counts_map;    /* uint64_t* -> uint32 count (GUINT_TO_POINTER) */
-    GHashTable *ambiguous_cb;  /* direct-int key cb_id -> 1 */
-    guint64      total_reads;
-    guint64      usable_reads;
-    guint64      single_reads;
-    guint64      multi_reads;
-    guint64     *probe_tot;    /* per-probe total usable reads */
-    guint64     *probe_single; /* per-probe reads from single-barcode cells */
+    GHashTable *cb_counts;     /* key: cb_id (direct)  val: uint16_t[nprobes] */
+    guint64     total_reads;
+    guint64     usable_reads;
+    guint64    *probe_tot;     /* per-probe total usable reads */
 } shard_data;
 
-static void tripkey_free(gpointer data){ g_slice_free(TripKey, data); }
-
-static shard_data* shard_data_new(int nprobes) {
+static shard_data* shard_data_new(int nprobes){
     shard_data *s = g_new0(shard_data,1);
-    s->dedup_set = g_hash_table_new_full(tripkey_hash, tripkey_equal, tripkey_free, (GDestroyNotify)g_hash_table_destroy);
-    s->counts_map = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
-    s->ambiguous_cb = g_hash_table_new(g_direct_hash, g_direct_equal);
-    s->probe_tot    = g_new0(guint64, nprobes);
-    s->probe_single = g_new0(guint64, nprobes);
+    s->cb_counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+    s->probe_tot = g_new0(guint64, nprobes);
     return s;
 }
 
-/* ---------------- Seen reads table ---------------- */
-static guint64 hash_qname(const char *qname, int read12) {
-    uint64_t h=14695981039346656037ULL;
-    for (const unsigned char *p=(const unsigned char*)qname; *p; ++p) { h ^= *p; h *= 1099511628211ULL; }
-    h ^= read12;
-    return h;
-}
 
 /* ---- helper: qsort comparator for barcode strings ----------------- */
 static int cmp_str (const void *a, const void *b)
@@ -195,6 +158,7 @@ typedef struct {
     const char *sample_probes; /* path */
     int probe_offset;
     int direct_probe;
+    int save_read_to_cb;
     int search_nearby; /* if non-zero, enable fallback search for probes */
 } cfg_t;
 
@@ -348,6 +312,7 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         {"no_primary_filter", no_argument,0,0},
         {"keep_dup", no_argument,0,0},
         {"max_records", required_argument,0,0},
+        {"save_read_to_cb", no_argument,0,0},
         {"search_nearby", no_argument, 0, 0},
         {"debug", no_argument,0,'v'},
         {0,0,0,0}
@@ -375,7 +340,13 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         else if (!strcmp(opt_name, "no_primary_filter")) cfg->primary_only = 0;
         else if (!strcmp(opt_name, "keep_dup")) cfg->skip_dup = 0;
         else if (!strcmp(opt_name, "max_records")) cfg->max_records = atoll(optarg);
+        else if (!strcmp(opt_name, "save_read_to_cb")) cfg->save_read_to_cb = 1;
         else if (!strcmp(opt_name, "search_nearby")) cfg->search_nearby = 1;
+        else {
+            fprintf(stderr, "Error: unsupported option --%s\n", opt_name);
+            usage(argv[0]);
+            exit(EXIT_FAILURE);
+        }
     }
     if (!cfg->bam_path || !cfg->outdir) { usage(argv[0]); exit(EXIT_FAILURE);}    
     if (!cfg->cb_tag) cfg->cb_tag = DEFAULT_CB_TAG;
@@ -399,45 +370,45 @@ static void process_bam_single(cfg_t *cfg,
 
     int nprobes = probe_fa ? probe_fa->number_of_features : 0;
     shard_data *shd = shard_data_new(nprobes);
-    GHashTable *seen_reads = g_hash_table_new(g_direct_hash, g_direct_equal);
+    /* seen_reads guard removed: we rely on primary-only filter and TripKey dedup */
+    /* (no separate hash table for read IDs anymore) */
+    GHashTable *read_map = NULL;
+    if (cfg->save_read_to_cb)
+        read_map = g_hash_table_new_full(g_str_hash, g_str_equal, free, free);
 
     bam1_t *b = bam_init1();
-    long long recs=0, used=0;
+    long long recs=0;
     while (sam_read1(in, hdr, b) >= 0) {
         if (cfg->max_records && recs>=cfg->max_records) break;
         recs++;
+        const char *qname = bam_get_qname(b);
         uint16_t flag = b->core.flag;
-        if (cfg->primary_only && (flag & (BAM_FSECONDARY|BAM_FSUPPLEMENTARY))) continue;
-        if (cfg->skip_dup && (flag & BAM_FDUP)) continue;
-        if (b->core.qual < cfg->min_mapq) continue;
+        if (cfg->primary_only && (flag & (BAM_FSECONDARY|BAM_FSUPPLEMENTARY))) {
+            continue; 
+        }
+        if (cfg->skip_dup && (flag & BAM_FDUP)) { 
+            continue; 
+        }
+        if (b->core.qual < cfg->min_mapq) { 
+            continue; 
+        }
 
         /* Tags */
         const uint8_t *cb_tag = bam_aux_get(b, cfg->cb_tag);
         const uint8_t *ub_tag = bam_aux_get(b, cfg->ub_tag);
         const uint8_t *gx_tag = bam_aux_get(b, cfg->gene_tag);
         if (!gx_tag) gx_tag = bam_aux_get(b, FALLBACK_GENE_TAG);
-        if (!cb_tag || !ub_tag || !gx_tag) continue;
+        if (!cb_tag || !ub_tag || !gx_tag) { 
+            continue; 
+        }
         const char *cb = bam_aux2Z(cb_tag);
         const char *ub = bam_aux2Z(ub_tag);
         const char *gene = bam_aux2Z(gx_tag);
-        if (!cb || !ub || !gene) continue;
+        if (!cb || !ub || !gene) { 
+            continue; 
+        }
 
-        /* seen read guard */
-        uint64_t qhash = hash_qname(bam_get_qname(b), (flag & BAM_FREAD1)?1:2);
-        gpointer qk = (gpointer)(uintptr_t)qhash;
-        if (g_hash_table_contains(seen_reads, qk)) continue;
-
-        /* UMI pack */
-        int ok=1; uint64_t out=0; int len=0; 
-        for (; ub[len] && len<30; ++len){ 
-            char c=ub[len]; 
-            uint8_t bits=(c=='A'||c=='a')?0:(c=='C'||c=='c')?1:(c=='G'||c=='g')?2:(c=='T'||c=='t')?3:4; 
-            if (bits>3){ ok=0; break;} 
-            out |= ((uint64_t)bits)<<(len*2);
-        } 
-        out |= ((uint64_t)len)<<60; 
-        if (!ok) continue; 
-        uint64_t umi64 = out;
+        /* packed UMI stored in 'out' but no longer used for dedup */
 
         /* sample probe lookup */
         int sample_idx = 0;
@@ -466,122 +437,89 @@ static void process_bam_single(cfg_t *cfg,
         }
 
         guint32 cb_id = intern_get(cb_tab, cb);
-        guint32 gene_idx = intern_get(gene_tab, gene); /* for dedup only */
-        uint64_t cbk = cb_id; /* top bits unused */
 
-        TripKey tk = { .cbk=cbk, .gene_idx=gene_idx, .umi64=umi64 };
-        gpointer orig_key=NULL, value=NULL;
-        if (!g_hash_table_lookup_extended(shd->dedup_set, &tk, &orig_key, &value)){
-            TripKey *heap = g_slice_new(TripKey); *heap = tk;
-            GHashTable *votes = g_hash_table_new(g_direct_hash, g_direct_equal);
-            g_hash_table_insert(votes, GUINT_TO_POINTER(sample_idx), GUINT_TO_POINTER(1));
-            g_hash_table_insert(shd->dedup_set, heap, votes);
-        } else {
-            GHashTable *votes = (GHashTable*)value;
-            gpointer v = g_hash_table_lookup(votes, GUINT_TO_POINTER(sample_idx));
-            guint cnt = v ? GPOINTER_TO_UINT(v)+1 : 1;
-            g_hash_table_replace(votes, GUINT_TO_POINTER(sample_idx), GUINT_TO_POINTER(cnt));
-        }
         if (sample_idx>0){
-            used++;
+            /* get / create per-CB counts array */
+            gpointer pv = g_hash_table_lookup(shd->cb_counts, GUINT_TO_POINTER(cb_id));
+            uint16_t *arr;
+            if (!pv){
+                /* allocate from global pools if available, else g_malloc */
+                #ifdef CB_COUNTS_BLOCK_SIZE
+                if (global_pools && global_pools->cb_counts_pool){
+                    arr = allocate_memory_from_pool(global_pools->cb_counts_pool);
+                } else {
+                    arr = g_malloc0(nprobes * sizeof(uint16_t));
+                }
+                #else
+                arr = g_malloc0(nprobes * sizeof(uint16_t));
+                #endif
+                g_hash_table_insert(shd->cb_counts, GUINT_TO_POINTER(cb_id), arr);
+            } else {
+                arr = (uint16_t*)pv;
+            }
+            if (arr[sample_idx-1] < UINT16_MAX)
+                arr[sample_idx-1]++;
+
             shd->usable_reads++;
             shd->probe_tot[sample_idx-1]++;
         }
-        if (sample_idx > 0) {
-            g_hash_table_insert(seen_reads, qk, GUINT_TO_POINTER(1));
+        if (sample_idx>0 && cfg->save_read_to_cb){
+            char *val = g_strdup_printf("%s\t%s\t%s", cb, ub, gene);
+            g_hash_table_replace(read_map, g_strdup(qname), val);
         }
         shd->total_reads++;
     }
 
-    /* Majority resolution and counts */
-    GHashTableIter dit; gpointer key,value;
-    g_hash_table_iter_init(&dit, shd->dedup_set);
-    while (g_hash_table_iter_next(&dit, &key, &value)){
-        TripKey *tk = (TripKey*)key;
-        GHashTable *votes = (GHashTable*)value;
-        guint best_idx=0, best_cnt=0, second_idx=0, second_cnt=0;
-        GHashTableIter vit; gpointer k2,v2;
-        g_hash_table_iter_init(&vit, votes);
-        while (g_hash_table_iter_next(&vit, &k2, &v2)){
-            guint sidx = GPOINTER_TO_UINT(k2); guint cnt = GPOINTER_TO_UINT(v2);
-            if (cnt > best_cnt){ second_cnt=best_cnt; second_idx=best_idx; best_cnt=cnt; best_idx=sidx; }
-            else if (cnt > second_cnt){ second_cnt=cnt; second_idx=sidx; }
-        }
-        if (best_cnt>0 && second_cnt>0 && second_cnt==best_cnt && best_idx!=0 && second_idx!=0){
-            /* tie between non-zero sample indices → drop CB */
-            guint32 cb_id = (guint32)(tk->cbk & 0xffffffffULL);
-            g_hash_table_insert(shd->ambiguous_cb, GUINT_TO_POINTER(cb_id), GUINT_TO_POINTER(1));
-            continue;
-        }
-        /* accumulate single/multi stats */
-        if (best_idx>0){
-            if (second_cnt==0){
-                shd->single_reads++;
-                shd->probe_single[best_idx-1]++;
-            } else {
-                shd->multi_reads++;
-            }
-        }
+    /* TripKey dedupulation disabled (Stage 3). Stats simplified */
+    fprintf(stderr, "records=%lu usable=%lu\n",
+            (unsigned long)shd->total_reads,
+            (unsigned long)shd->usable_reads);
 
-        /* credit 1 to (cb_id, best_idx) if CB not ambiguous */
-        guint32 cb_id = (guint32)(tk->cbk & 0xffffffffULL);
-        if (g_hash_table_contains(shd->ambiguous_cb, GUINT_TO_POINTER(cb_id))) continue;
-        uint64_t *pair = g_new(uint64_t,1);
-        *pair = pair64(cb_id, best_idx);
-        gpointer val = g_hash_table_lookup(shd->counts_map, pair);
-        if (!val)
-            g_hash_table_insert(shd->counts_map, pair, GUINT_TO_POINTER(1));
-        else {
-            guint cnt = GPOINTER_TO_UINT(val) + 1;
-            g_hash_table_replace(shd->counts_map, pair, GUINT_TO_POINTER(cnt));
-        }
-    }
-
-    fprintf(stderr,"records=%lu usable=%lu single=%lu multi=%lu triplets=%u NNZ=%u CBs=%u Probes=%d\n",
-            (unsigned long)shd->total_reads, (unsigned long)shd->usable_reads,
-            (unsigned long)shd->single_reads, (unsigned long)shd->multi_reads,
-            g_hash_table_size(shd->dedup_set), g_hash_table_size(shd->counts_map),
-            cb_tab->id_to_str->len, probe_fa ? probe_fa->number_of_features : 0);
-
-    fprintf(stderr, "unique_qnames=%u\n", g_hash_table_size(seen_reads));
 
     /* Write outputs */
     if (mkdir_p(cfg->outdir)) { fprintf(stderr,"Failed to create outdir\n"); exit(EXIT_FAILURE);}    
     char path[FILENAME_LENGTH];
 
-    /* barcodes.tsv excluding ambiguous */
+    /* ---- Write barcodes.tsv & build CB→column map ---- */
+    GHashTableIter bit; gpointer bk,bv;
     GHashTable *cb_to_col = g_hash_table_new(g_direct_hash, g_direct_equal);
     snprintf(path,sizeof(path), "%s/barcodes.tsv", cfg->outdir);
     FILE *fbc = fopen(path,"w");
     guint32 col=0;
-    for (guint i=0;i<cb_tab->id_to_str->len;i++){
-        if (g_hash_table_contains(shd->ambiguous_cb, GUINT_TO_POINTER(i))) continue;
-        const char *cb = id_to_str(cb_tab,i);
-        fprintf(fbc, "%s\n", cb);
-        g_hash_table_insert(cb_to_col, GUINT_TO_POINTER(i), GUINT_TO_POINTER(++col));
+    g_hash_table_iter_init(&bit, shd->cb_counts);
+    while (g_hash_table_iter_next(&bit, &bk, &bv)){
+        guint32 cb_id = GPOINTER_TO_UINT(bk);
+        fprintf(fbc, "%s\n", id_to_str(cb_tab, cb_id));
+        g_hash_table_insert(cb_to_col, bk, GUINT_TO_POINTER(++col));
     }
     fclose(fbc);
 
     /* features.tsv = probe names */
     snprintf(path,sizeof(path), "%s/features.tsv", cfg->outdir);
     FILE *ffe = fopen(path,"w");
-    /* nprobes already declared earlier */
     for (int i=0;i<nprobes;i++) fprintf(ffe, "%s\n", probe_fa->feature_names[i]);
     fclose(ffe);
 
-    /* matrix.mtx: rows=probes, cols=kept CBs */
+    /* ---- Compute NNZ ---- */
+    guint64 nnz=0;
+    g_hash_table_iter_init(&bit, shd->cb_counts);
+    while (g_hash_table_iter_next(&bit, &bk, &bv)){
+        uint16_t *arr = (uint16_t*)bv;
+        for (int p=0;p<nprobes;p++) if (arr[p]) nnz++;
+    }
+
+    /* matrix.mtx */
     snprintf(path,sizeof(path), "%s/matrix.mtx", cfg->outdir);
     FILE *fmtx = fopen(path,"w");
-    fprintf(fmtx,"%%MatrixMarket matrix coordinate integer general\n");
-    fprintf(fmtx,"%d %u %u\n", nprobes, col, g_hash_table_size(shd->counts_map));
-    GHashTableIter it; gpointer k3, v3;
-    g_hash_table_iter_init(&it, shd->counts_map);
-    while (g_hash_table_iter_next(&it, &k3, &v3)){
-        uint64_t pair = *(uint64_t*)k3;
-        guint32 cb_id = pair>>32; guint32 sidx = pair & 0xffffffffU;
-        gpointer colp = g_hash_table_lookup(cb_to_col, GUINT_TO_POINTER(cb_id));
-        if (!colp) continue; /* ambiguous dropped */
-        fprintf(fmtx, "%u %u %u\n", sidx, GPOINTER_TO_UINT(colp), GPOINTER_TO_UINT(v3));
+    fprintf(fmtx, "%%MatrixMarket matrix coordinate integer general\n");
+    fprintf(fmtx, "%d %u %llu\n", nprobes, col, (unsigned long long)nnz);
+
+    g_hash_table_iter_init(&bit, shd->cb_counts);
+    while (g_hash_table_iter_next(&bit, &bk, &bv)){
+        uint32_t col_idx = GPOINTER_TO_UINT(g_hash_table_lookup(cb_to_col, bk));
+        uint16_t *arr = (uint16_t*)bv;
+        for (int p=0;p<nprobes;p++)
+            if (arr[p]) fprintf(fmtx, "%d %u %u\n", p+1, col_idx, arr[p]);
     }
     fclose(fmtx);
 
@@ -590,12 +528,10 @@ static void process_bam_single(cfg_t *cfg,
     FILE *fst = fopen(path,"w");
     fprintf(fst,"Total_records\t%lu\n", (unsigned long)shd->total_reads);
     fprintf(fst,"Usable_records\t%lu\n", (unsigned long)shd->usable_reads);
-    fprintf(fst,"Fraction_single_barcode\t%.6f\n", shd->usable_reads? (double)shd->single_reads/shd->usable_reads:0.0);
-    fprintf(fst,"Fraction_multi_barcode\t%.6f\n", shd->usable_reads? (double)shd->multi_reads/shd->usable_reads:0.0);
-    fprintf(fst,"BC_ID\tTotal_reads\tSingle_barcode_reads\n");
+    fprintf(fst,"BC_ID\tTotal_reads\n");
     for(int i=0;i<nprobes;i++){
-        fprintf(fst,"%s\t%lu\t%lu\n", probe_fa->feature_names[i],
-                (unsigned long)shd->probe_tot[i], (unsigned long)shd->probe_single[i]);
+        fprintf(fst,"%s\t%lu\n", probe_fa->feature_names[i],
+                (unsigned long)shd->probe_tot[i]);
     }
     fclose(fst);
 
@@ -604,8 +540,19 @@ static void process_bam_single(cfg_t *cfg,
     sam_hdr_destroy(hdr);
     sam_close(in);
 
-    g_free(shd->probe_tot);
-    g_free(shd->probe_single);
+    /* probe_single removed */
+
+    /* write read_to_cb and rejected_qnames */
+    if (cfg->save_read_to_cb){
+        char path[FILENAME_LENGTH];
+        snprintf(path, sizeof(path), "%s/read_to_cb_umi_gene.txt", cfg->outdir);
+        FILE *fp = fopen(path, "w");
+        if (!fp) { perror("read_to_cb"); exit(EXIT_FAILURE);} 
+        GHashTableIter iter; gpointer k,v; g_hash_table_iter_init(&iter, read_map);
+        while (g_hash_table_iter_next(&iter, &k, &v)) fprintf(fp, "%s\t%s\n", (char*)k, (char*)v);
+        fclose(fp);
+        g_hash_table_destroy(read_map);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -627,10 +574,15 @@ int main(int argc, char **argv) {
         direct_probe = 0;          /* disable direct search for now */
     }
 
+    /* ---- Stage 4: set up memory pools for CB×probe counts ---- */
+    dynamic_struct_sizes.cb_probe_counts = (probe_fa?probe_fa->number_of_features:1) * sizeof(uint16_t);
+    global_pools = initialize_memory_pool_collection();
+
     intern_table *cb_tab = intern_table_new();
     intern_table *gene_tab = intern_table_new();
 
     process_bam_single(&cfg, cb_tab, gene_tab);
 
+    if (global_pools) free_memory_pool_collection(global_pools);
     return 0;
 }
