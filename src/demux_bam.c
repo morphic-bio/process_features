@@ -407,6 +407,9 @@ static void process_bam_single(cfg_t *cfg,
         if (!cb || !ub || !gene) { 
             continue; 
         }
+        if (gene[0] == '-') {
+            continue;
+        }
 
         /* packed UMI stored in 'out' but no longer used for dedup */
 
