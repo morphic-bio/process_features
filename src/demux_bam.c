@@ -160,6 +160,7 @@ typedef struct {
     int direct_probe;
     int save_read_to_cb;
     int search_nearby; /* if non-zero, enable fallback search for probes */
+    int count_intergene;        /* keep GX starting with ‘-’     */
 } cfg_t;
 
 static void usage(const char *prog) {
@@ -178,7 +179,9 @@ static void usage(const char *prog) {
         "  --no_primary_filter      Keep secondary/supplementary\n"
         "  --keep_dup               Keep duplicate reads\n"
         "  --max_records N          Process first N records only\n"
-        "  -v                       Debug\n",
+        "  -v                       Debug\n"
+        "  --search_nearby           Try offsets ±1,±2 for probe search\n"
+        "  --count_intergene         Include reads whose GX tag starts with ‘-’\n",
         prog);
 }
 
@@ -314,6 +317,7 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         {"max_records", required_argument,0,0},
         {"save_read_to_cb", no_argument,0,0},
         {"search_nearby", no_argument, 0, 0},
+        {"count_intergene", no_argument, 0, 0},
         {"debug", no_argument,0,'v'},
         {0,0,0,0}
     };
@@ -342,6 +346,7 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         else if (!strcmp(opt_name, "max_records")) cfg->max_records = atoll(optarg);
         else if (!strcmp(opt_name, "save_read_to_cb")) cfg->save_read_to_cb = 1;
         else if (!strcmp(opt_name, "search_nearby")) cfg->search_nearby = 1;
+        else if (!strcmp(opt_name, "count_intergene")) cfg->count_intergene = 1;
         else {
             fprintf(stderr, "Error: unsupported option --%s\n", opt_name);
             usage(argv[0]);
@@ -404,12 +409,9 @@ static void process_bam_single(cfg_t *cfg,
         const char *cb = bam_aux2Z(cb_tag);
         const char *ub = bam_aux2Z(ub_tag);
         const char *gene = bam_aux2Z(gx_tag);
-        if (!cb || !ub || !gene) { 
-            continue; 
-        }
-        if (gene[0] == '-') {
-            continue;
-        }
+        if (!cb || !ub || !gene)         continue;
+        if (gene[0] == '-' && !cfg->count_intergene)
+            continue;                   /* skip inter-genic unless flag set */
 
         /* packed UMI stored in 'out' but no longer used for dedup */
 
@@ -444,23 +446,23 @@ static void process_bam_single(cfg_t *cfg,
         if (sample_idx>0){
             /* get / create per-CB counts array */
             gpointer pv = g_hash_table_lookup(shd->cb_counts, GUINT_TO_POINTER(cb_id));
-            uint16_t *arr;
+            uint32_t *arr;
             if (!pv){
                 /* allocate from global pools if available, else g_malloc */
                 #ifdef CB_COUNTS_BLOCK_SIZE
                 if (global_pools && global_pools->cb_counts_pool){
                     arr = allocate_memory_from_pool(global_pools->cb_counts_pool);
                 } else {
-                    arr = g_malloc0(nprobes * sizeof(uint16_t));
+                    arr = g_malloc0(nprobes * sizeof(uint32_t));
                 }
                 #else
-                arr = g_malloc0(nprobes * sizeof(uint16_t));
+                arr = g_malloc0(nprobes * sizeof(uint32_t));
                 #endif
                 g_hash_table_insert(shd->cb_counts, GUINT_TO_POINTER(cb_id), arr);
             } else {
-                arr = (uint16_t*)pv;
+                arr = (uint32_t*)pv;
             }
-            if (arr[sample_idx-1] < UINT16_MAX)
+            if (arr[sample_idx-1] < UINT32_MAX)
                 arr[sample_idx-1]++;
 
             shd->usable_reads++;
@@ -507,7 +509,7 @@ static void process_bam_single(cfg_t *cfg,
     guint64 nnz=0;
     g_hash_table_iter_init(&bit, shd->cb_counts);
     while (g_hash_table_iter_next(&bit, &bk, &bv)){
-        uint16_t *arr = (uint16_t*)bv;
+        uint32_t *arr = (uint32_t*)bv;
         for (int p=0;p<nprobes;p++) if (arr[p]) nnz++;
     }
 
@@ -520,7 +522,7 @@ static void process_bam_single(cfg_t *cfg,
     g_hash_table_iter_init(&bit, shd->cb_counts);
     while (g_hash_table_iter_next(&bit, &bk, &bv)){
         uint32_t col_idx = GPOINTER_TO_UINT(g_hash_table_lookup(cb_to_col, bk));
-        uint16_t *arr = (uint16_t*)bv;
+        uint32_t *arr = (uint32_t*)bv;
         for (int p=0;p<nprobes;p++)
             if (arr[p]) fprintf(fmtx, "%d %u %u\n", p+1, col_idx, arr[p]);
     }
@@ -578,7 +580,7 @@ int main(int argc, char **argv) {
     }
 
     /* ---- Stage 4: set up memory pools for CB×probe counts ---- */
-    dynamic_struct_sizes.cb_probe_counts = (probe_fa?probe_fa->number_of_features:1) * sizeof(uint16_t);
+    dynamic_struct_sizes.cb_probe_counts = (probe_fa?probe_fa->number_of_features:1) * sizeof(uint32_t);
     global_pools = initialize_memory_pool_collection();
 
     intern_table *cb_tab = intern_table_new();
