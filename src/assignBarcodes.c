@@ -6,7 +6,7 @@
 #include "../include/memory.h"
 #include "../include/io.h"
 #include "../include/plot_histogram.h"
-#include "../include/EMfit.h"
+// EMfit.h removed - EM functionality no longer needed
 #include "../include/heatmap.h"
 
 //will  print if DEBUG is set or debug=1
@@ -1888,7 +1888,7 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
 }
 
 
-void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, double gposterior, GHashTable *filtered_barcodes_hash, int min_em_counts, double em_cumulative_limit){
+void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, GHashTable *filtered_barcodes_hash){
     process_pending_barcodes(hashes, pools, stats,min_posterior);
     double elapsed_time = get_time_in_seconds() - stats->start_time;
     fprintf(stderr, "Finished processing %ld reads in %.2f seconds (%.1f thousand reads/second)\n", stats->number_of_reads, elapsed_time, stats->number_of_reads / (double)elapsed_time / 1000.0);
@@ -1980,36 +1980,10 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     int feature_printed[features->number_of_features];
     memset(feature_printed, 0, features->number_of_features * sizeof(int));
 
-    // Define constants for the EM fitting
-    const double em_cutoff = gposterior;
-    const int em_max_iter = 200;
-    const double em_tol = 1e-6;
+    // EM fitting removed - using simple counts only
 
-    NBSignalCut cumulative_fit = {0};
-    int cumulative_fit_done = 0;
-
-    // Process cumulative histogram first
+    // Process cumulative histogram (simplified - no EM fitting)
     {
-        GArray *h = feature_hist[0];
-        long total_counts_in_hist = 0;
-        if (h && h->len > 0) {
-            for(unsigned int j=0; j<h->len; ++j) {
-                total_counts_in_hist += g_array_index(h, uint32_t, j);
-            }
-        }
-
-        if (total_counts_in_hist < min_em_counts) {
-            fprintf(stderr, "Warning: Cumulative counts (%ld) are below the minimum of %d. Skipping all EM fitting.\n", total_counts_in_hist, min_em_counts);
-        } else {
-            cumulative_fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
-                                               em_cutoff, em_max_iter, em_tol, em_cumulative_limit);
-            cumulative_fit_done = 1;
-
-            if (cumulative_fit.reverted_from_3_to_2) {
-                fprintf(stderr, "Warning: Cumulative fit preferred 3 components by BIC, but reverted to 2 because the multiplet component weight was too low.\n");
-            }
-        }
-
         long cumulative_deduped_counts = 0;
         long cumulative_barcoded_counts = 0;
         long cumulative_feature_counts = 0;
@@ -2019,83 +1993,29 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
             cumulative_feature_counts += total_feature_counts[i];
         }
 
-        NBSignalCut fit_to_print = cumulative_fit_done ? cumulative_fit : (NBSignalCut){0};
-        fprintf(feature_statsfp, "cumulative %ld %ld %ld %d %d %d %.2f\n",
-                cumulative_deduped_counts, cumulative_barcoded_counts, cumulative_feature_counts,
-                fit_to_print.k_min_signal, fit_to_print.k_max_signal, fit_to_print.n_comp, fit_to_print.bic);
-        fprintf(signal_range_fp, "cumulative\t%d\t%d\n", fit_to_print.k_min_signal, fit_to_print.k_max_signal);
-        fprintf(mixfp, "cumulative\t%d", fit_to_print.n_comp);
-        for (int k=0; k < fit_to_print.n_comp; ++k) {
-            fprintf(mixfp, "\t%.4f\t%.4f\t%.4f", fit_to_print.weight[k], fit_to_print.r[k], fit_to_print.p[k]);
-        }
-        for (int k=fit_to_print.n_comp; k < 3; ++k) {
-            fprintf(mixfp, "\t0.0\t0.0\t0.0");
-        }
-        fprintf(mixfp, "\t%.2f\n", fit_to_print.bic);
+        // Simplified output without EM parameters
+        fprintf(feature_statsfp, "cumulative %ld %ld %ld 0 0 0 0.00\n",
+                cumulative_deduped_counts, cumulative_barcoded_counts, cumulative_feature_counts);
+        fprintf(signal_range_fp, "cumulative\t0\t0\n");
+        fprintf(mixfp, "cumulative\t0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.00\n");
         
-        // Generate cumulative histogram plot with EM fit
-        if (cumulative_fit_done) {
-            plot_combined_histogram_with_em(directory, feature_hist, cumulative_fit, em_cutoff, features->number_of_features, em_cumulative_limit);
-        }
+        // Generate simple histogram plot without EM fit
+        plot_simple_histogram(directory, "umi_counts_histogram", "UMI Counts Distribution", 
+                             "UMI Count", "Frequency", feature_hist[0]);
     }
 
+    // Process individual features (simplified - no EM fitting)
     for (int i = 0; i < features->number_of_features; i++) {
         if (!feature_printed[i]) {
-            NBSignalCut fit = {0};
-            if (cumulative_fit_done) {
-                GArray *h = feature_hist[i + 1]; // Histograms are 1-indexed
-                long total_counts_in_hist = 0;
-                if (h && h->len > 0) {
-                    for(unsigned int j=0; j<h->len; ++j) {
-                        total_counts_in_hist += g_array_index(h, uint32_t, j);
-                    }
-                }
-
-                if (total_counts_in_hist < min_em_counts) {
-                    // Use the fitted model parameters from cumulative fit
-                    // but recalculate cutoffs for this feature's histogram
-                    fit = cumulative_fit; // Copy the model parameters
-                    fit.total_counts_in_hist = total_counts_in_hist;
-                    
-                    // Recalculate signal cutoffs using the cumulative model
-                    // but applied to this feature's histogram length
-                    if (h && h->len > 0) {
-                        determine_signal_cutoff_from_fit(&fit, h->len, em_cutoff, em_cumulative_limit);
-                    } else {
-                        // If no histogram data, set cutoffs to end of range
-                        fit.k_min_signal = 0;
-                        fit.k_max_signal = 0;
-                    }
-                } else {
-                    // This feature has enough data, so perform its own fit
-                    for(unsigned int j=0; j<h->len; ++j) if(!g_array_index(h,uint32_t,j))
-                                                   g_array_index(h,uint32_t,j) = 0;
-                    fit = em_nb_signal_cut((uint32_t*)h->data, h->len,
-                                                       em_cutoff, em_max_iter, em_tol, em_cumulative_limit);
-                }
-            }
-
-            // Now, print the results for this feature
-            fprintf(feature_statsfp, "%s %d %d %d %d %d %d %.2f\n",
+            // Simplified output without EM parameters
+            fprintf(feature_statsfp, "%s %d %d %d 0 0 0 0.00\n",
                     features->feature_names[i],
                     total_deduped_counts[i],
                     total_barcoded_counts[i],
-                    total_feature_counts[i],
-                    fit.k_min_signal,
-                    fit.k_max_signal,
-                    fit.n_comp,
-                    fit.bic);
+                    total_feature_counts[i]);
 
-            fprintf(signal_range_fp, "%s\t%d\t%d\n", features->feature_names[i], fit.k_min_signal, fit.k_max_signal);
-
-            fprintf(mixfp, "%s\t%d", features->feature_names[i], fit.n_comp);
-            for (int k=0; k < fit.n_comp; ++k) {
-                fprintf(mixfp, "\t%.4f\t%.4f\t%.4f", fit.weight[k], fit.r[k], fit.p[k]);
-            }
-            for (int k=fit.n_comp; k < 3; ++k) {
-                fprintf(mixfp, "\t0.0\t0.0\t0.0");
-            }
-            fprintf(mixfp, "\t%.2f\n", fit.bic);
+            fprintf(signal_range_fp, "%s\t0\t0\n", features->feature_names[i]);
+            fprintf(mixfp, "%s\t0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.00\n", features->feature_names[i]);
 
             feature_printed[i] = 1;
         }
@@ -2808,7 +2728,7 @@ void process_files_in_sample(sample_args *args) {
     //allocate buffers here
     //number of lines to read into the buffer
     double  min_posterior=args->min_posterior;
-    double  gposterior=args->gposterior;
+    // gposterior removed - EM functionality no longer needed
     const int sample_index = args->sample_index;
     const int nconsumers = args->consumer_threads_per_set;
     fastq_processor processor_args[nconsumers]; // Array of processor args
@@ -2930,7 +2850,7 @@ void process_files_in_sample(sample_args *args) {
         //[i] = NULL; // Avoid double-free in later cleanup
     }
     // Since merging is not required, finalize using the first thread's data.
-    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior, gposterior, args->filtered_barcodes_hash, args->min_em_counts, args->em_cumulative_limit);
+    finalize_processing(args->features, &args->hashes[0], args->directory, args->pools[0], &args->stats[0], args->stringency, args->min_counts, min_posterior, args->filtered_barcodes_hash);
    
     // Free the reader sets
     for (int i = 0; i < sample_size; ++i)

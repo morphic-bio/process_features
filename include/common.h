@@ -72,18 +72,7 @@ typedef struct _storage_block {
     unsigned char *storage;
 } storage_block;
 
-/* result of em_nb_signal_cut */
-typedef struct {
-    int     n_comp;                /* chosen K (2 or 3)         */
-    int     reverted_from_3_to_2;  /* flag for user warning     */
-    int     k_min_signal, k_max_signal;
-    double  bic;
-    long    total_counts_in_hist;  /* total observations in histogram */
-    /* parameters for up to 3 components                       *
-     *    weight[k]  – prior π_k                               *
-     *    r[k], p[k] – NB parameters                           */
-    double  weight[3], r[3], p[3];
-} NBSignalCut;
+/* NBSignalCut struct removed - EM functionality no longer needed */
 
 typedef struct feature_search_tables{
     struct feature_arrays *features;
@@ -229,11 +218,8 @@ typedef struct sample_args {
     int feature_constant_offset;
     int parallel_by_file;
     double min_posterior;
-    double gposterior;
     int consumer_threads_per_set;
     GHashTable *filtered_barcodes_hash;
-    int min_em_counts;
-    double em_cumulative_limit;
     int heatmap_minimum_counts;
     int min_prediction;
     int min_heatmap;

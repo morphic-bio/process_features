@@ -83,13 +83,9 @@ The tool can accept input FASTQ files in two ways:
 | `--max_reads` | `[long]` | Maximum number of reads to process from each FASTQ file. | `0` (all) |
 | `--min_prediction` | `[int]` | Minimum prediction threshold for feature assignment (advanced, rarely needed). | `1` |
 
-### EM Fitting
+### EM Fitting (Removed)
 
-| Flag | Argument | Description | Default |
-| :--- | :--- | :--- | :--- |
-| `--gposterior` | `[float]` | Global posterior probability threshold for the EM algorithm. | `0.9` |
-| `--min_EM_counts` | `[int]` | Minimum total counts for a barcode to be included in the EM fitting process. | `100` |
-| `--em_cumulative_limit` | `[float]` | Cumulative probability limit for including features in the EM model. | `0.0` |
+*The EM fitting functionality has been removed from this version. Feature assignment now uses direct counting only.*
 
 ### Performance & Parallelism
 
@@ -142,30 +138,9 @@ To handle N's the user specifies a maximum number of Ns (`--barcode_n`) that are
 ### Feature barcodes
 To handle sequencing errors, the user specifies a maximum Hamming distance (`-m`). If a sequence matches a feature barcode within the Hamming distance and uniquely to a sequence with a minimum distance then it is assigned to that feature barcode. For N's up to a maximum specified by the user (`--feature_n`), all possible variations are generated for the N's and checked against the possible sequences. If there is a unique best match (minimum Hamming distance) that is less or equal to the maximum Hamming distance then it is assigned to that feature barcode. Assignments are tentative, pending the completion of the comprehensive search (unless there is an exact match). If there is no exact match, the comprehensive search attempts to find a better match.
 
-## Feature Assignment by Expectation-Maximization
+## Feature Assignment (Simplified)
 
-For barcodes associated with multiple features, an Expectation-Maximization (EM) algorithm is used to probabilistically assign reads to their most likely source feature. This is particularly effective for resolving ambiguity in high-background datasets or when feature sequences are highly similar.
-
-The core of this process is a sophisticated mixture model that describes the distribution of read counts for each feature.
-
-### Mixture Model Components
-
-The algorithm fits the observed count data to a mixture of distributions, with each component representing a distinct biological or technical phenomenon:
-
-1.  **Noise Component (Poisson Distribution):** A Poisson distribution is used to model the background noise, which typically consists of low-frequency, randomly occurring reads.
-2.  **Signal Component (Negative Binomial Distribution):** The primary signal from correctly identified feature barcodes is modeled using a Negative Binomial (NB) distribution. The NB distribution is well-suited for the overdispersed nature of single-cell count data.
-3.  **Multiplet Component (Negative Binomial Distribution):** An optional third component, also an NB distribution, is used to model multiplets—barcodes that have captured more than one distinct feature.
-
-### Model Selection and Safeguards
-
-To ensure a robust and accurate fit, `assignBarcodes` incorporates several safeguards:
-
-*   **Model Selection with BIC:** The tool fits both a 2-component (Noise + Signal) and a 3-component (Noise + Signal + Multiplet) model. The optimal model is selected based on the **Bayesian Information Criterion (BIC)**, which penalizes model complexity to prevent overfitting.
-*   **Multiplet Component Safeguard:** A 3-component model is chosen only if it has a better BIC score *and* the multiplet component accounts for a significant portion of the reads (default: >5% weight). This prevents the model from fitting a spurious multiplet component to noise.
-*   **Overdispersion Guard for Poisson:** The algorithm includes a check to prevent the Poisson (noise) component from fitting overdispersed data. If the variance of the data assigned to the noise component is much larger than its mean, the parameter updates are dampened, ensuring that this component correctly models only the background.
-*   **Global Default Distribution:** A global count histogram is first used to create a general-purpose model. This model serves as a scaled default for features with too few reads to derive a stable, independent fit.
-
-Based on the final fitted model, the algorithm calculates the posterior probability that a read belongs to the "signal" component. A feature is assigned a count if this probability exceeds the threshold set by `--gposterior`.
+Feature assignment now uses direct counting without probabilistic modeling. Each read that matches a feature sequence within the allowed Hamming distance is directly counted towards that feature. This provides a simpler, more transparent approach to feature quantification.
 
 ## UMI de-duplication
 
@@ -246,7 +221,7 @@ The repository is organized into the following main directories:
 -   **`src/`**: Contains all the C source code files.
     -   `main.c`: The main entry point of the application, handles command-line argument parsing and orchestrates the overall workflow.
     -   `assignBarcodes.c`: Core logic for barcode assignment, error correction, and feature matching.
-    -   `EMfit.c`: Implementation of the Expectation-Maximization algorithm for feature assignment.
+    -   ~~`EMfit.c`: Removed - Expectation-Maximization algorithm no longer used.~~
     -   `plot_histogram.c`: Functions for generating interactive QC histograms.
     -   `io.c`: Functions related to reading FASTQ files and handling input.
     -   `memory.c`: Memory management utilities, including memory pools for efficient allocation.
@@ -265,7 +240,7 @@ The repository is organized into the following main directories:
     -   `utils.h`: Header for utility functions.
     -   `plot_histogram.h`: Header for histogram plotting functions.
     -   `heatmap.h`: Header for heatmap generation functions.
-    -   `EMfit.h`: Header for EM fitting.
+    -   ~~`EMfit.h`: Removed - EM fitting header no longer needed.~~
     -   `process.h`: Header for process management.
 -   **`scripts/`**: Contains utility scripts for testing and other purposes.
 -   **`graphics/`**: Contains image files used in the documentation.
@@ -276,18 +251,12 @@ The repository is organized into the following main directories:
 
 ### Interactive UMI Count Histogram
 
-An interactive HTML plot (`umi_counts_histogram.html`) is generated in each sample’s output directory. This plot is crucial for quality control, allowing for a visual assessment of the EM model's performance and the resulting signal-to-noise separation. It visualizes the UMI count distributions overlaid with the Expectation-Maximization (EM) model fit.
+An interactive HTML plot (`umi_counts_histogram.html`) is generated in each sample's output directory. This plot provides a simple visualization of UMI count distributions for quality control purposes.
 
 **Key features:**
-- **Dual Views:** A dropdown menu allows switching between two views:
-  - **Cumulative View:** The histogram of total UMI counts across all features. This view reflects the global data distribution.
-  - **Average View:** The cumulative histogram normalized by the number of active features, representing the distribution for a typical feature.
-- **EM Model Fit:** For each view, the overall fit and its individual components (background, signal, and optionally multiplet) are plotted as separate lines. The Bayesian Information Criterion (BIC) for the chosen model is displayed in the title.
-- **Cutoff Lines:** Vertical lines indicate the minimum and maximum signal cutoffs determined by the EM model for assigning counts.
-- **Interactive Controls:**
-  - A dropdown menu to switch between `Cumulative` and `Average` views.
-  - A dropdown menu to toggle the Y-axis between `linear` and `logarithmic` scales for better visualization.
-- **Legend and Hover Info:** A detailed legend explains each trace. Hovering over the plot provides precise values for the observed histogram and the fitted model components.
+- **Simple Histogram:** Shows the frequency distribution of UMI counts across all features.
+- **Interactive Display:** Basic Plotly-based visualization with hover information.
+- **Quality Assessment:** Helps identify overall count distribution patterns and potential data quality issues.
 
 ---
 
@@ -422,7 +391,85 @@ With `--threads 4` on a 4-core laptop the producer saturates ~200 MB/s decompres
 
 ## demux_bam – BAM to probe×barcode matrix (intermediate sample-barcode assignment)
 
-`demux_bam` reads a STARsolo-aligned BAM and produces a Matrix Market triplet where rows are sample-barcode probes (e.g., BCxxx), columns are cell barcodes (CB), and values are the number of unique UMIs after deduplication.
+ // ... existing code ...
+
+ ## demux_bam – BAM → probe × cell-barcode matrix
+ `demux_bam` reads a STARsolo-aligned BAM and produces a Matrix-Market triplet
+ where rows are sample-barcode probes (e.g. `BC001`), columns are cell barcodes
+ (`CB`), and values are the number of UNIQUE UMIs that survived all filters
+ (duplicates, non-primary, map-quality, etc.).
+
+ ### Typical run
+ ```bash
+ ./demux_bam \
+     --bam input.bam \
+     --outdir out_probe_matrix \
+     --sample_probes tables/probe-barcodes-fixed-rna-profiling-rna.txt \
+     --probe_offset 68 \
+     --search_nearby            # optional ±1 / ±2 fallback
+     --count_intergene          # optional keep GX='-' reads
+     -S 4 -t 1
+ ```
+
+ ### CLI flags (current)
+ | flag | arg | description | default |
+ |------|-----|-------------|---------|
+ | `--bam`            | path | Input BAM (STARsolo style) | – |
+ | `--outdir`         | dir  | Output directory | `.` |
+ | `--sample_probes`  | path | TSV: variant-8-mer, unused, probe-name | – |
+ | `--probe_offset`   | int  | 0-based offset of the 8-mer inside the read | `68` |
+ | `--search_nearby`  | –   | Also test offsets +1, +2, -1, -2 | off |
+ | `--cb_tag`         | str  | BAM tag for cell barcode | `CB` |
+ | `--ub_tag`         | str  | BAM tag for UMI | `UB` |
+ | `--gene_tag`       | str  | Preferred gene tag (fallback `GE`) | `GX` |
+ | `--count_intergene`| –   | KEEP reads whose `GX` starts with `'-'` | off |
+ | `--save_read_to_cb`| –   | Write `read_to_cb_umi_gene.txt` map | off |
+ | `--hts_threads`, `-S` | int | BAM BGZF threads | `2` |
+ | `--threads`, `-t`  | int | Consumer shards (currently 1 = single-thread) | `1` |
+ | `--min_mapq`       | int  | Minimum MAPQ to keep | `0` |
+ | `--no_primary_filter` | – | Keep secondary & supplementary | **off** |
+ | `--keep_dup`       | –   | Keep PCR/optical duplicates | **off** |
+ | `--max_records`    | int | Process first *N* reads (debug) | `0` |
+ | `-v`, `--debug`    | –   | Verbose diagnostics | off |
+
+ ### Output files
+ * **barcodes.tsv**   – all CBs that received ≥1 probe count  
+ * **features.tsv**   – probe names (from `--sample_probes`)  
+ * **matrix.mtx**     – rows = probes, cols = CBs, vals = uint32 counts  
+ * **stats.txt**      – run summary (total / usable reads, per-probe totals)  
+ * **read_to_cb_umi_gene.txt** (only with `--save_read_to_cb`)  
+
+ ### Counting algorithm (v2, memory-friendly)
+ 1. **Tag extraction** – pull `CB`, `UB`, and preferred `gene_tag`
+    (fallback `GE`). Skip read if any tag missing; optionally skip when
+    `GX == '-'` unless `--count_intergene` is set.
+ 2. **Filtering**  
+    * primary-alignment filter (unless `--no_primary_filter`)  
+    * duplicate filter via `BAM_FDUP` (unless `--keep_dup`)  
+    * MAPQ filter (`--min_mapq`)  
+ 3. **Probe lookup** – slice 8-mer at `--probe_offset`; if not found and
+    `--search_nearby` is enabled, retry offsets ±1 / ±2 until located or
+    exhausted.
+ 4. **Counting** – For every accepted read:
+    * Convert probe index to 0-based `p` (0 = no match).  
+    * Maintain a `GHashTable<cb_id → uint32_t[n_probes]>`.  
+    * The table entry is allocated from a memory pool; each element is a
+      32-bit counter, allowing up to 4.29 × 10⁹ UMIs per (CB, probe).  
+    * Increment `arr[p-1]` (only if `p>0`).  
+ 5. **Output** – After all reads:
+    * Write `features.tsv`, `barcodes.tsv` (alphabetical CB order),
+      `matrix.mtx` (coordinate format, integer field).  
+    * Write summary stats and, if requested, the per-read map file.
+
+ Compared with the previous TripKey/majority-vote scheme this design:
+
+ * removes the heavy `(CB,UB,Gene)` dedup hash (60 + GB on large runs),
+ * relies on the BAM duplicate flag plus `primary_only` for deduplication,
+ * cuts memory to O(#active_CB × #probes × 4 bytes),
+ * eliminates ambiguous CB handling (each accepted read contributes
+   directly to counts).
+
+ // ... existing code ...
 
 ### Typical run
 ```bash

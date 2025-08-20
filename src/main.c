@@ -3,6 +3,31 @@
 #include "../include/prototypes.h"
 #include "../include/utils.h"
 #include "../include/io.h"
+#include <stdio.h>
+
+static void print_usage(const char *prog){
+    fprintf(stderr, "\nUsage: %s [options] <FASTQ directories or files>\n\n", prog);
+    fprintf(stderr, "Required flags:\n");
+    fprintf(stderr, "  -w, --whitelist <file>            10x-style barcode whitelist (one per line)\n");
+    fprintf(stderr, "  -f, --featurelist <file>          CSV with 'name' and 'sequence' columns\n");
+    fprintf(stderr, "  -d, --directory  <path>           Output directory; one subdir per sample\n\n");
+
+    fprintf(stderr, "Optional flags (most common):\n");
+    fprintf(stderr, "  -m, --maxHammingDistance <int>    Max Hamming distance for feature match (default 1)\n");
+    fprintf(stderr, "  -b, --barcode_length    <int>     Length of cell barcode (default 16)\n");
+    fprintf(stderr, "  -u, --umi_length        <int>     Length of UMI (default 12)\n");
+    fprintf(stderr, "  -t, --threads           <int>     Max concurrent sample processes (default 8)\n");
+    fprintf(stderr, "  -S, --search_threads    <int>     Threads per consumer for feature search (default 4)\n");
+    fprintf(stderr, "  -c, --consumer_threads_per_set <int> Consumer threads per sample (default 1)\n");
+    fprintf(stderr, "  -s, --stringency        <int>     UMI dedup stringency (see README)\n");
+    fprintf(stderr, "  -i, --min_counts        <int>     Min reads in UMI clique for counting (default 1)\n");
+    fprintf(stderr, "      --min_heatmap       <int>     Min deduped count to include feature in heatmap\n");
+    fprintf(stderr, "      --barcode_fastqs    <list>    Comma-separated R1 FASTQs (skip autodetect)\n");
+    fprintf(stderr, "      --forward_fastqs    <list>    Comma-separated R2 FASTQs\n");
+    fprintf(stderr, "      --reverse_fastqs    <list>    Comma-separated R3 FASTQs\n");
+    fprintf(stderr, "  -v, --debug                       Verbose debugging output\n");
+    fprintf(stderr, "  -h, --help                        Show this help and exit\n\n");
+}
 
 int main(int argc, char *argv[])
 {   
@@ -35,8 +60,6 @@ int main(int argc, char *argv[])
     int feature_constant_offset=0;
     int barcode_constant_offset=0;
     double min_posterior=MIN_POSTERIOR;
-    double gposterior = 0.9;
-    double em_cumulative_limit = 0.0;
 
     int max_concurrent_processes=8;
     int consumer_threads_per_set=1;
@@ -84,19 +107,19 @@ int main(int argc, char *argv[])
         {"reverse_fastq_pattern", required_argument, 0, 8},
         {"max_reads", required_argument, 0, 9},
         {"limit_search", required_argument, 0, 10},
-        {"gposterior", required_argument, 0, 11},
         {"filtered_barcodes", required_argument, 0, 12},
-        {"min_EM_counts", required_argument, 0, 13},
-        {"em_cumulative_limit", required_argument, 0, 14},
         {"min_prediction", required_argument, 0, 15},
         {"min_heatmap", required_argument, 0, 16},
         {"translate_NXT", no_argument, 0, 17},
+        {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "w:b:f:m:s:S:i:t:T:o:d:u:c:vakrDB:R:L:M:", long_options, &option_index)) != -1) {
+    if (argc == 1) { print_usage(argv[0]); return 0; }
+
+    while ((c = getopt_long(argc, argv, "w:b:f:m:s:S:i:t:T:o:d:u:c:vakrDB:R:L:M:h", long_options, &option_index)) != -1) {
         switch (c) {
             case 'w': strcpy(whitelist_filename, optarg); break;
             case 'b': barcode_length=atoi(optarg); barcode_code_length=(barcode_length+3)/4; break;
@@ -129,14 +152,12 @@ int main(int argc, char *argv[])
             case 8: strcpy(reverse_pattern, optarg); break;
             case 9: max_reads=atoll(optarg); break;
             case 10: limit_search = atoi(optarg); break;
-            case 11: gposterior = atof(optarg); break;
             case 12: filtered_barcodes_filename = strdup(optarg); break;
-            case 13: min_em_counts = atoi(optarg); break;
-            case 14: em_cumulative_limit = atof(optarg); break;
             case 15: min_prediction = atoi(optarg); break;
             case 16: min_heatmap = atoi(optarg); break;
             case 17: translate_NXT = 1; fprintf(stderr, "translate_NXT enabled: complementing positions 8 and 9 at output/filter time.\n"); break;
-            default: fprintf(stderr, "Usage: %s [options]\n", argv[0]); return 1;
+            case 'h': print_usage(argv[0]); return 0;
+            default: print_usage(argv[0]); return 1;
         }
     }
     GHashTable *filtered_barcodes_hash = NULL;
@@ -277,11 +298,8 @@ int main(int argc, char *argv[])
             args.read_buffer_lines = read_buffer_lines;
             args.average_read_length = average_read_length;
             args.min_posterior = min_posterior;
-            args.gposterior = gposterior;
             args.consumer_threads_per_set = consumer_threads_per_set;
             args.filtered_barcodes_hash = filtered_barcodes_hash;
-            args.min_em_counts = min_em_counts;
-            args.em_cumulative_limit = em_cumulative_limit;
             args.min_prediction = min_prediction;
             args.min_heatmap = min_heatmap;
             args.demux_nsamples = demux_nsamples;

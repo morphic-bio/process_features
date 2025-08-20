@@ -6,9 +6,7 @@
 #include <stdatomic.h>
 #include "queue.h"
 
-// Forward declare the struct to avoid full definition
-// struct NBSignalCut is defined in common.h, so forward declaration is not needed
-// if common.h is included.
+// Forward declarations
 
 // Function prototypes
 void initialize_complement();
@@ -62,7 +60,7 @@ int simpleCorrectFeature(char *line, feature_arrays *features, int maxN, int max
 int checkAndCorrectFeature(char *line, feature_arrays *features,int maxHammingDistance, int nThreads, int *hamming_distance, char *matching_sequence, int maxN,char *ambiguous, uint16_t *match_position);
 size_t barcode_code2number(unsigned char *code);
 int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools, statistics *stats, int barcode_constant_offset);
-void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, double gposterior, GHashTable *filtered_barcodes_hash, int min_em_counts, double em_cumulative_limit);
+void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, GHashTable *filtered_barcodes_hash);
 void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz);
 fastq_reader* allocate_fastq_reader( char **filenames, int nfiles, int filetype, size_t read_size, size_t read_buffer_lines);
 fastq_reader_set *  allocate_fastq_reader_set( char **barcode_filenames, char **forward_filenames, char **reverse_filenames, int nfiles, size_t read_size, size_t read_buffer_lines);
@@ -91,15 +89,7 @@ void translate_nxt_inplace(char *barcode, int len);
 void cleanup_sample(memory_pool_collection *pools, data_structures *hashes);
 void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order);
 
-// New functions for separated fitting and cutoff determination
-NBSignalCut fit_nb_model_to_histogram(const uint32_t *hist, int len,
-                                      int max_iter, double tol);
-void determine_signal_cutoff_from_fit(NBSignalCut *fit, int len, double gposterior,
-                                      double em_cumulative_limit);
-
-// Original function (now a wrapper)
-NBSignalCut em_nb_signal_cut(const uint32_t *hist, int len, double gposterior,
-                            int max_iter, double tol, double em_cumulative_limit);
+// EM functions removed - no longer needed
 void generate_heatmap(const char *directory, feature_arrays *features, int **coexpression_histograms);
 void generate_deduped_heatmap(const char *directory, feature_arrays *features, int **deduped_histograms, int max_deduped_count, int *total_deduped_counts, int histogram_minimum_counts);
 char* grab_sample_barcode(char *read, uint16_t feature_end, const sample_args *args);
