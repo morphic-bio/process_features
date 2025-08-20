@@ -1947,35 +1947,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     }
     fclose(deduped_hist_fp);
 
-    char feature_stats_filename[FILENAME_LENGTH];
-    sprintf(feature_stats_filename, "%s/features.txt", directory);
-    FILE *feature_statsfp = fopen(feature_stats_filename, "w");
-    if (feature_statsfp == NULL) {
-        perror("Failed to open feature stats file");
-        exit(EXIT_FAILURE);
-    }
-    fprintf(feature_statsfp, "Feature total_deduped_counts total_barcoded_counts total_feature_counts kmin_signal kmax_signal nComp BIC\n");
-
-    char signal_range_filename[FILENAME_LENGTH];
-    sprintf(signal_range_filename, "%s/signal_range.txt", directory);
-    FILE *signal_range_fp = fopen(signal_range_filename, "w");
-    if (signal_range_fp == NULL) {
-        perror("Failed to open signal range file");
-        exit(EXIT_FAILURE);
-    }
-    fprintf(signal_range_fp, "FeatureName\tMinSignalCount\tMaxSignalCount\n");
-
-    char mix_file[FILENAME_LENGTH];
-    sprintf(mix_file, "%s/feature_mixture_params.txt", directory);
-    FILE *mixfp = fopen(mix_file, "w");
-    if (!mixfp) { perror("mixture param file"); exit(EXIT_FAILURE); }
-    fprintf(mixfp,
-            "Feature\t"
-            "nComp\t"
-            "w1\tr1\tp1\t"
-            "w2\tr2\tp2\t"
-            "w3\tr3\tp3\t"
-            "BIC\n");
+    // EM-related output files removed - no longer needed without EM functionality
 
     int feature_printed[features->number_of_features];
     memset(feature_printed, 0, features->number_of_features * sizeof(int));
@@ -1993,53 +1965,31 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
             cumulative_feature_counts += total_feature_counts[i];
         }
 
-        // Simplified output without EM parameters
-        fprintf(feature_statsfp, "cumulative %ld %ld %ld 0 0 0 0.00\n",
+        // Output summary to stderr for logging
+        fprintf(stderr, "Cumulative counts: deduped=%ld, barcoded=%ld, features=%ld\n",
                 cumulative_deduped_counts, cumulative_barcoded_counts, cumulative_feature_counts);
-        fprintf(signal_range_fp, "cumulative\t0\t0\n");
-        fprintf(mixfp, "cumulative\t0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.00\n");
         
         // Generate simple histogram plot without EM fit
         plot_simple_histogram(directory, "umi_counts_histogram", "UMI Counts Distribution", 
                              "UMI Count", "Frequency", feature_hist[0]);
     }
 
-    // Process individual features (simplified - no EM fitting)
+    // Log individual feature counts to stderr
     for (int i = 0; i < features->number_of_features; i++) {
         if (!feature_printed[i]) {
-            // Simplified output without EM parameters
-            fprintf(feature_statsfp, "%s %d %d %d 0 0 0 0.00\n",
+            fprintf(stderr, "Feature %s: deduped=%d, barcoded=%d, total=%d\n",
                     features->feature_names[i],
                     total_deduped_counts[i],
                     total_barcoded_counts[i],
                     total_feature_counts[i]);
-
-            fprintf(signal_range_fp, "%s\t0\t0\n", features->feature_names[i]);
-            fprintf(mixfp, "%s\t0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.0\t0.00\n", features->feature_names[i]);
-
             feature_printed[i] = 1;
         }
     }
-
-    char feature_histograms_filename[FILENAME_LENGTH];
-    sprintf(feature_histograms_filename, "%s/feature_histograms.txt", directory);
-    FILE *feature_histograms_fp = fopen(feature_histograms_filename, "w");
-    if (feature_histograms_fp == NULL) {
-        perror("Failed to open feature histograms file");
-        exit(EXIT_FAILURE);
-    }
-    //the 0 indices of the histograms to find the rightmost non-zero index
-
 
     // Free the feature histogram arrays
     for(int i=0; i < features->number_of_features + 1; ++i)
         if(feature_hist[i]) g_array_unref(feature_hist[i]);
     g_free(feature_hist);
-
-    fclose(feature_statsfp);
-    fclose(feature_histograms_fp);
-    fclose(mixfp);
-    fclose(signal_range_fp);
 }
 
 void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz) {
