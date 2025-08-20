@@ -25,6 +25,7 @@ static void print_usage(const char *prog){
     fprintf(stderr, "      --barcode_fastqs    <list>    Comma-separated R1 FASTQs (skip autodetect)\n");
     fprintf(stderr, "      --forward_fastqs    <list>    Comma-separated R2 FASTQs\n");
     fprintf(stderr, "      --reverse_fastqs    <list>    Comma-separated R3 FASTQs\n");
+    fprintf(stderr, "      --translate_NXT               Complement positions 8 and 9 of cell barcodes at output/filter stages\n");
     fprintf(stderr, "  -v, --debug                       Verbose debugging output\n");
     fprintf(stderr, "  -h, --help                        Show this help and exit\n\n");
 }

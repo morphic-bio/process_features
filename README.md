@@ -102,6 +102,7 @@ The tool can accept input FASTQ files in two ways:
 | Flag | Argument | Description | Default |
 | :--- | :--- | :--- | :--- |
 | `-v`, `--debug` | | Enable verbose debug output. | `false` |
+| `--translate_NXT` | | Complement positions 8 and 9 of cell barcodes at output/filter stages. | `false` |
 
 
 ## Example Usage
