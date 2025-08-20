@@ -12,21 +12,47 @@ static void print_usage(const char *prog){
     fprintf(stderr, "  -f, --featurelist <file>          CSV with 'name' and 'sequence' columns\n");
     fprintf(stderr, "  -d, --directory  <path>           Output directory; one subdir per sample\n\n");
 
-    fprintf(stderr, "Optional flags (most common):\n");
-    fprintf(stderr, "  -m, --maxHammingDistance <int>    Max Hamming distance for feature match (default 1)\n");
+    fprintf(stderr, "Input & Output Files:\n");
+    fprintf(stderr, "      --barcode_fastqs    <list>    Comma-separated R1 FASTQ files\n");
+    fprintf(stderr, "      --forward_fastqs    <list>    Comma-separated R2 FASTQ files\n");
+    fprintf(stderr, "      --reverse_fastqs    <list>    Comma-separated R3 FASTQ files\n");
+    fprintf(stderr, "      --barcode_fastq_pattern <str> Pattern to identify barcode FASTQs (default _R1_)\n");
+    fprintf(stderr, "      --forward_fastq_pattern <str> Pattern to identify forward FASTQs (default _R2_)\n");
+    fprintf(stderr, "      --reverse_fastq_pattern <str> Pattern to identify reverse FASTQs (default _R3_)\n");
+    fprintf(stderr, "      --filtered_barcodes <file>    File with barcodes to process, one per line\n");
+    fprintf(stderr, "  -k, --keep_existing               Skip processing if output files exist\n");
+    fprintf(stderr, "  -a, --as_named                    Treat all input files as single sample\n\n");
+
+    fprintf(stderr, "Barcode & Feature Processing:\n");
     fprintf(stderr, "  -b, --barcode_length    <int>     Length of cell barcode (default 16)\n");
     fprintf(stderr, "  -u, --umi_length        <int>     Length of UMI (default 12)\n");
+    fprintf(stderr, "  -o, --feature_constant_offset <int> Expected start position of feature in read (default 0)\n");
+    fprintf(stderr, "  -B, --barcode_constant_offset <int> Start position of barcode and UMI (default 0)\n");
+    fprintf(stderr, "      --limit_search      <int>     Limit feature search to N bases around offset (-1 = entire read)\n");
+    fprintf(stderr, "  -r, --reverse_complement_whitelist Reverse complement whitelist barcodes\n\n");
+
+    fprintf(stderr, "Error Correction & Thresholds:\n");
+    fprintf(stderr, "  -m, --maxHammingDistance <int>    Max Hamming distance for feature match (default 1)\n");
+    fprintf(stderr, "  -s, --stringency        <int>     UMI dedup stringency (see README, default 1)\n");
+    fprintf(stderr, "  -i, --min_counts        <int>     Min reads in UMI clique for counting (default 1)\n");
+    fprintf(stderr, "  -M, --min_posterior     <float>   Min posterior probability for barcode rescue (default 0.975)\n");
+    fprintf(stderr, "      --max_barcode_mismatches <int> Max mismatches to rescue sequence barcode (default 3)\n");
+    fprintf(stderr, "      --feature_n         <int>     Max 'N' bases allowed in feature sequence (default 3)\n");
+    fprintf(stderr, "      --barcode_n         <int>     Max 'N' bases allowed in sequence barcode (default 1)\n");
+    fprintf(stderr, "      --max_reads         <long>    Max reads to process per FASTQ (0 = all)\n");
+    fprintf(stderr, "      --min_prediction    <int>     Min prediction threshold for feature assignment (default 1)\n");
+    fprintf(stderr, "      --min_heatmap       <int>     Min deduped count for feature in heatmap (default 0)\n\n");
+
+    fprintf(stderr, "Performance & Parallelism:\n");
     fprintf(stderr, "  -t, --threads           <int>     Max concurrent sample processes (default 8)\n");
     fprintf(stderr, "  -S, --search_threads    <int>     Threads per consumer for feature search (default 4)\n");
     fprintf(stderr, "  -c, --consumer_threads_per_set <int> Consumer threads per sample (default 1)\n");
-    fprintf(stderr, "  -s, --stringency        <int>     UMI dedup stringency (see README)\n");
-    fprintf(stderr, "  -i, --min_counts        <int>     Min reads in UMI clique for counting (default 1)\n");
-    fprintf(stderr, "      --min_heatmap       <int>     Min deduped count to include feature in heatmap\n");
-    fprintf(stderr, "      --barcode_fastqs    <list>    Comma-separated R1 FASTQs (skip autodetect)\n");
-    fprintf(stderr, "      --forward_fastqs    <list>    Comma-separated R2 FASTQs\n");
-    fprintf(stderr, "      --reverse_fastqs    <list>    Comma-separated R3 FASTQs\n");
+    fprintf(stderr, "  -R, --read_buffer_lines <int>     Lines for read buffer (default 1024)\n");
+    fprintf(stderr, "  -L, --average_read_length <int>   Estimated avg read length for buffer allocation (default 300)\n\n");
+
+    fprintf(stderr, "Miscellaneous:\n");
     fprintf(stderr, "      --translate_NXT               Complement positions 8 and 9 of cell barcodes at output/filter stages\n");
-    fprintf(stderr, "  -v, --debug                       Verbose debugging output\n");
+    fprintf(stderr, "  -v, --debug                       Enable verbose debug output\n");
     fprintf(stderr, "  -h, --help                        Show this help and exit\n\n");
 }
 
