@@ -991,6 +991,9 @@ void find_deduped_counts(data_structures *hashes, GHashTable* barcode_to_deduped
     gpointer lookup_key, result;
     g_hash_table_iter_init(&iter, hashes->sequence_umi_hash);
     uint32_t clique_counts[number_of_features+1];
+    
+    // Create tracking set for barcodes that might need cleanup (empty after deduping)
+    GHashTable *empty_candidates = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     while (g_hash_table_iter_next(&iter, &lookup_key, &result)) {
         feature_umi_counts *umi_counts = (feature_umi_counts*) result;
@@ -1011,8 +1014,33 @@ void find_deduped_counts(data_structures *hashes, GHashTable* barcode_to_deduped
             }
             
             add_deduped_count(temp_deduped_hash, clique_counts, stringency, min_counts);
+            
+            // If still empty after deduping, remember this barcode for cleanup
+            if (g_hash_table_size(temp_deduped_hash) == 0) {
+                g_hash_table_replace(empty_candidates,
+                                     s->sequence_code,   /* key */
+                                     NULL);              /* value */
+            }
         }
     }
+    
+    // --- FINAL CLEAN-UP SWEEP ---
+    // Remove barcodes that are truly empty after all deduping is complete
+    GHashTableIter del_iter;
+    gpointer bcode_key, unused_val;
+    g_hash_table_iter_init(&del_iter, empty_candidates);
+
+    while (g_hash_table_iter_next(&del_iter, &bcode_key, &unused_val)) {
+        GHashTable *dedup_hash =
+            g_hash_table_lookup(barcode_to_deduped_counts, bcode_key);
+
+        if (dedup_hash && g_hash_table_size(dedup_hash) == 0) {
+            /* Remove from main table and free inner hash */
+            g_hash_table_steal(barcode_to_deduped_counts, bcode_key);
+            g_hash_table_destroy(dedup_hash);
+        }
+    }
+    g_hash_table_destroy(empty_candidates);
 }
 
 void find_connected_component(gpointer start_key, uint32_t *counts, data_structures *hashes){
@@ -1177,7 +1205,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     }
 
     char matrix_file[LINE_LENGTH];
-    sprintf(matrix_file, "%s/features_matrix.mtx", output_directory);
+    sprintf(matrix_file, "%s/matrix.mtx", output_directory);
     FILE *matrixfp = fopen(matrix_file, "w");
     if (matrixfp == NULL) {
         fprintf(stderr, "Error opening matrix file %s\n", matrix_file);
@@ -1363,7 +1391,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
                 int c     = deduped_count;                       /* 0,1,2,…          */
 
                 update_feature_hist(feature_hist, f_idx, c);
-                fprintf(matrixfp, "%d %d %d\n", GPOINTER_TO_INT(dedup_key), total_barcodes, deduped_count);
+                fprintf(matrixfp, "%d %d %d\n", GPOINTER_TO_INT(dedup_key), total_barcodes + 1, deduped_count);
                 total_deduped_counts += deduped_count;
                 
             }
@@ -1564,6 +1592,78 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
         free(deduped_histograms[i]);
     }
     free(deduped_histograms);
+
+    char features_file[LINE_LENGTH];
+    sprintf(features_file,"%s/features.txt",output_directory);
+    FILE *featuresfp=fopen(features_file,"w");
+    if(!featuresfp){fprintf(stderr,"Error opening features file %s\n",features_file);exit(1);}
+    for(int idx=0;idx<features->number_of_features;idx++)
+        fprintf(featuresfp,"%s\n",features->feature_names[idx]);
+    fclose(featuresfp);
+
+    /* --- NEW: open the feature-per-cell CSV --- */
+    char fpc_file[LINE_LENGTH];
+    sprintf(fpc_file, "%s/feature_per_cell.csv", output_directory);
+    FILE *fpcfp = fopen(fpc_file, "w");
+    if (fpcfp == NULL) {
+        fprintf(stderr, "Error opening feature_per_cell.csv\n");
+        exit(1);
+    }
+    /* header */
+    fprintf(fpcfp,
+            "barcode,num_features,top_feature_index,total_deduped_umi\n");
+
+    g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
+    while (g_hash_table_iter_next(&iter, &barcode_key, &deduped_hash_value)) {
+        char barcode[barcode_length + 1];
+        code2string((unsigned char *)barcode_key, barcode, barcode_code_length);
+        if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
+
+        if (filtered_barcodes_hash &&
+            g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL){
+            skipped_barcodes++;
+            continue;
+        }
+        processed_barcodes++;
+
+        /* ------------------------------------
+         *  Data for feature_per_cell.csv
+         * ------------------------------------*/
+        GHashTable *features_in_barcode = (GHashTable *)deduped_hash_value;
+        guint       n_feats_in_bc       = g_hash_table_size(features_in_barcode);
+
+        guint32     total_umi  = 0;
+        guint32     top_count  = 0;
+        guint32     top_feat   = 0;
+        gboolean    tie        = FALSE;
+
+        GHashTableIter feat_iter;
+        gpointer      feat_k, feat_v;
+        g_hash_table_iter_init(&feat_iter, features_in_barcode);
+        while (g_hash_table_iter_next(&feat_iter, &feat_k, &feat_v)) {
+            guint32 feat_idx  = GPOINTER_TO_UINT(feat_k);
+            guint32 feat_cnt  = GPOINTER_TO_UINT(feat_v);
+            total_umi        += feat_cnt;
+
+            if (feat_cnt > top_count) {
+                top_count = feat_cnt;
+                top_feat  = feat_idx;
+                tie       = FALSE;
+            } else if (feat_cnt == top_count) {
+                tie = TRUE;
+            }
+        }
+        if (tie) top_feat = 0;
+
+        /* write the CSV line */
+        fprintf(fpcfp, "%s,%u,%u,%u\n",
+                barcode, n_feats_in_bc, top_feat, total_umi);
+
+        /* ------------------------------------ */
+    }
+
+    /* --- NEW: close CSV --- */
+    fclose(fpcfp);
 }
 
 int find_closest_barcodes(unsigned char* code,unsigned char *corrected_codes, unsigned char *indices){
@@ -1972,18 +2072,6 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         // Generate simple histogram plot without EM fit
         plot_simple_histogram(directory, "umi_counts_histogram", "UMI Counts Distribution", 
                              "UMI Count", "Frequency", feature_hist[0]);
-    }
-
-    // Log individual feature counts to stderr
-    for (int i = 0; i < features->number_of_features; i++) {
-        if (!feature_printed[i]) {
-            fprintf(stderr, "Feature %s: deduped=%d, barcoded=%d, total=%d\n",
-                    features->feature_names[i],
-                    total_deduped_counts[i],
-                    total_barcoded_counts[i],
-                    total_feature_counts[i]);
-            feature_printed[i] = 1;
-        }
     }
 
     // Free the feature histogram arrays
@@ -2852,7 +2940,7 @@ int existing_output_skip(char keep_existing, char *directory){
     if (keep_existing && file_exists(directory)){
         char matrix_filename[4096];
         strcpy(matrix_filename, directory);
-        strcat(matrix_filename, "features_matrix.mtx");
+        strcat(matrix_filename, "matrix.mtx");
         if (file_exists(matrix_filename)){
             fprintf(stderr, "Matrix file %s found and skipping %s\n", matrix_filename, get_basename(directory));
             return 1;

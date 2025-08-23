@@ -21,3 +21,5 @@ sc_test*
 .cursor*
 *.o
 feature_lists
+docs
+flex_test_out
