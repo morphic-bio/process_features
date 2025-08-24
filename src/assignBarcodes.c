@@ -1186,8 +1186,9 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     char barcodes_file[FILENAME_LENGTH];
     char stats_file[FILENAME_LENGTH];
 
-    memset(deduped_counts, 0, features->number_of_features * sizeof(int));
-    memset(barcoded_counts, 0, features->number_of_features * sizeof(int));
+    memset(deduped_counts, 0, (features->number_of_features + 1) * sizeof(int));
+    memset(barcoded_counts, 0, (features->number_of_features + 1) * sizeof(int));
+
 
     char output_directory[FILENAME_LENGTH];
     strcpy(output_directory, directory);
@@ -1438,8 +1439,7 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     if (feature_hist[0]) {
         plot_simple_histogram(output_directory, "feature_multiplicity_histogram.html", "Feature Multiplicity", "Deduplicated UMI Count", "Frequency", feature_hist[0]);
     }
-    memset(deduped_counts, 0, (features->number_of_features + 1) * sizeof(int));
-    // After writing the text files, generate the heatmaps
+        // After writing the text files, generate the heatmaps
     
     // --- Convert feature_hist (GArray**) to a dense matrix for the heatmap ---
     int max_len = 0;
