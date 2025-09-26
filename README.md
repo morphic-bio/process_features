@@ -412,6 +412,22 @@ With `--threads 4` on a 4-core laptop the producer saturates ~200 MB/s decompres
      -S 4 -t 1
  ```
 
+ ### CBUB mode (STAR cb/ub stream)
+ When using STARsolo with the `--soloMultiMappers Unique` option, STAR can output a binary file (`Aligned.out.cb_ub.bin`) containing pre-parsed cell barcode and UMI information. This can be used instead of extracting tags from the BAM file for improved performance:
+
+ ```bash
+ ./demux_bam \
+     --bam Aligned.out.bam \
+     --CBUB_file Aligned.out.cb_ub.bin \
+     --whitelist /path/to/737K-fixed-rna-profiling.txt \
+     --outdir out_probe_matrix \
+     --sample_probes tables/probe-barcodes-fixed-rna-profiling-rna.txt \
+     --probe_offset 68 \
+     -S 4 -t 1
+ ```
+
+ **Note:** The `--whitelist` parameter is required when using `--CBUB_file` to convert cell barcode indices back to actual barcode strings.
+
  ### CLI flags (current)
  | flag | arg | description | default |
  |------|-----|-------------|---------|
@@ -425,6 +441,7 @@ With `--threads 4` on a 4-core laptop the producer saturates ~200 MB/s decompres
  | `--gene_tag`       | str  | Preferred gene tag (fallback `GE`) | `GX` |
  | `--count_intergene`| –   | KEEP reads whose `GX` starts with `'-'` | off |
  | `--save_read_to_cb`| –   | Write `read_to_cb_umi_gene.txt` map | off |
+ | `--CBUB_file`      | path | Optional STAR cb/ub tag stream (`Aligned.out.cb_ub.bin`) | – |
  | `--hts_threads`, `-S` | int | BAM BGZF threads | `2` |
  | `--threads`, `-t`  | int | Consumer shards (currently 1 = single-thread) | `1` |
  | `--min_mapq`       | int  | Minimum MAPQ to keep | `0` |

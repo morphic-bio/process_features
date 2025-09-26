@@ -160,7 +160,10 @@ typedef struct {
     int direct_probe;
     int save_read_to_cb;
     int search_nearby; /* if non-zero, enable fallback search for probes */
-    int count_intergene;        /* keep GX starting with ‘-’     */
+    int count_intergene;        /* keep GX starting with '-'     */
+    const char *cbub_path;
+    int use_cbub;
+    const char *whitelist_path;
 } cfg_t;
 
 static void usage(const char *prog) {
@@ -181,7 +184,9 @@ static void usage(const char *prog) {
         "  --max_records N          Process first N records only\n"
         "  -v                       Debug\n"
         "  --search_nearby           Try offsets ±1,±2 for probe search\n"
-        "  --count_intergene         Include reads whose GX tag starts with ‘-’\n",
+        "  --count_intergene         Include reads whose GX tag starts with '-'\n"
+        "  --CBUB_file FILE         Optional STAR cb/ub tag stream (Aligned.out.cb_ub.bin)\n"
+        "  --whitelist FILE         Cell barcode whitelist (required for CBUB mode)\n",
         prog);
 }
 
@@ -318,6 +323,8 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         {"save_read_to_cb", no_argument,0,0},
         {"search_nearby", no_argument, 0, 0},
         {"count_intergene", no_argument, 0, 0},
+        {"CBUB_file", required_argument, 0, 0},
+        {"whitelist", required_argument, 0, 0},
         {"debug", no_argument,0,'v'},
         {0,0,0,0}
     };
@@ -347,6 +354,11 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         else if (!strcmp(opt_name, "save_read_to_cb")) cfg->save_read_to_cb = 1;
         else if (!strcmp(opt_name, "search_nearby")) cfg->search_nearby = 1;
         else if (!strcmp(opt_name, "count_intergene")) cfg->count_intergene = 1;
+        else if (!strcmp(opt_name, "CBUB_file")) {
+            cfg->cbub_path = optarg;
+            cfg->use_cbub = 1;
+        }
+        else if (!strcmp(opt_name, "whitelist")) cfg->whitelist_path = optarg;
         else {
             fprintf(stderr, "Error: unsupported option --%s\n", opt_name);
             usage(argv[0]);
@@ -354,12 +366,216 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         }
     }
     if (!cfg->bam_path || !cfg->outdir) { usage(argv[0]); exit(EXIT_FAILURE);}    
+    if (cfg->use_cbub && access(cfg->cbub_path, R_OK) != 0) {
+        perror("CBUB_file");
+        exit(EXIT_FAILURE);
+    }
+    if (cfg->use_cbub && !cfg->whitelist_path) {
+        fprintf(stderr, "Error: --whitelist is required when using --CBUB_file\n");
+        exit(EXIT_FAILURE);
+    }
+    if (cfg->whitelist_path && access(cfg->whitelist_path, R_OK) != 0) {
+        perror("whitelist");
+        exit(EXIT_FAILURE);
+    }
     if (!cfg->cb_tag) cfg->cb_tag = DEFAULT_CB_TAG;
     if (!cfg->ub_tag) cfg->ub_tag = DEFAULT_UB_TAG;
     if (!cfg->gene_tag) cfg->gene_tag = DEFAULT_GENE_TAG;
     if (cfg->hts_threads<=0) cfg->hts_threads=2;
     if (cfg->consumer_threads<=0) cfg->consumer_threads=1;
     if (cfg->probe_offset<=0) cfg->probe_offset = probe_offset;
+}
+
+/* ---------------- Whitelist Management ---------------- */
+
+typedef struct {
+    char **barcodes;
+    size_t count;
+} whitelist_t;
+
+static whitelist_t* load_whitelist(const char *path) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        perror("load_whitelist");
+        exit(EXIT_FAILURE);
+    }
+    
+    whitelist_t *wl = g_malloc0(sizeof(whitelist_t));
+    char line[256];
+    size_t capacity = 1000000; /* Start with 1M capacity */
+    wl->barcodes = g_malloc(capacity * sizeof(char*));
+    
+    while (fgets(line, sizeof(line), fp)) {
+        /* Remove newline */
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        
+        /* Skip empty lines */
+        if (strlen(line) == 0) continue;
+        
+        /* Expand capacity if needed */
+        if (wl->count >= capacity) {
+            capacity *= 2;
+            wl->barcodes = g_realloc(wl->barcodes, capacity * sizeof(char*));
+        }
+        
+        wl->barcodes[wl->count] = g_strdup(line);
+        wl->count++;
+    }
+    
+    fclose(fp);
+    fprintf(stderr, "Loaded %zu barcodes from whitelist\n", wl->count);
+    return wl;
+}
+
+static void free_whitelist(whitelist_t *wl) {
+    if (wl) {
+        for (size_t i = 0; i < wl->count; i++) {
+            g_free(wl->barcodes[i]);
+        }
+        g_free(wl->barcodes);
+        g_free(wl);
+    }
+}
+
+/* ---------------- CBUB Reader Abstraction ---------------- */
+
+typedef struct {
+    FILE *fp;
+    guint64 status_bits;
+    guint64 cb_bits;
+    guint64 umi_bits;
+    guint64 record_count;
+    guint64 record_idx;
+    size_t record_bytes;
+    unsigned char *raw;
+    size_t raw_cap;
+    size_t umi_len;
+} cbub_reader;
+
+static cbub_reader* cbub_reader_open(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        perror("cbub_reader_open");
+        exit(EXIT_FAILURE);
+    }
+    
+    cbub_reader *r = g_malloc0(sizeof(cbub_reader));
+    r->fp = fp;
+    
+    /* Read header: 4 uint64_t values */
+    uint64_t header[4];
+    if (fread(header, sizeof(uint64_t), 4, fp) != 4) {
+        fprintf(stderr, "Error reading CBUB header\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    r->status_bits = header[0];
+    r->cb_bits = header[1];
+    r->umi_bits = header[2];
+    r->record_count = header[3];
+    
+    /* Validate header */
+    if (r->status_bits != 1) {
+        fprintf(stderr, "Invalid CBUB file: status_bits must be 1, got %lu\n", 
+                (unsigned long)r->status_bits);
+        exit(EXIT_FAILURE);
+    }
+    if (r->umi_bits == 0 || r->umi_bits % 2 != 0 || r->umi_bits > 64) {
+        fprintf(stderr, "Invalid CBUB file: umi_bits must be even, non-zero, and <= 64, got %lu\n", 
+                (unsigned long)r->umi_bits);
+        exit(EXIT_FAILURE);
+    }
+    if (r->cb_bits < 1 || r->cb_bits > 32) {
+        fprintf(stderr, "Invalid CBUB file: cb_bits must be >= 1 and <= 32, got %lu\n", 
+                (unsigned long)r->cb_bits);
+        exit(EXIT_FAILURE);
+    }
+    if (r->record_count == 0) {
+        fprintf(stderr, "Invalid CBUB file: record_count must be > 0, got %lu\n", 
+                (unsigned long)r->record_count);
+        exit(EXIT_FAILURE);
+    }
+    
+    /* Compute record size and UMI length */
+    r->record_bytes = (r->status_bits + r->cb_bits + r->umi_bits + 7) / 8;
+    r->umi_len = r->umi_bits / 2;
+    
+    /* Allocate raw buffer */
+    r->raw_cap = r->record_bytes;
+    r->raw = g_malloc(r->raw_cap);
+    
+    /* Optional: sanity-check file length */
+    long current_pos = ftell(fp);
+    fseek(fp, 0, SEEK_END);
+    long file_size = ftell(fp);
+    long expected_size = 32 + r->record_count * r->record_bytes;
+    if (file_size != expected_size) {
+        fprintf(stderr, "Warning: CBUB file size mismatch. Expected %ld, got %ld\n",
+                expected_size, file_size);
+    }
+    fseek(fp, current_pos, SEEK_SET);
+    
+    return r;
+}
+
+static gboolean cbub_reader_next(cbub_reader *r, gboolean *has_tags, guint32 *cb_idx, char *umi_out) {
+    if (fread(r->raw, 1, r->record_bytes, r->fp) != r->record_bytes) {
+        return FALSE; /* EOF or error */
+    }
+    
+    /* Decode bitstream LSB-first */
+    guint64 accumulator = 0;
+    int bits_available = 0;
+    int byte_idx = 0;
+    
+    /* Helper function to get next N bits */
+    #define get_bits(n) ({ \
+        while (bits_available < (n) && byte_idx < (int)r->record_bytes) { \
+            accumulator |= ((guint64)r->raw[byte_idx]) << bits_available; \
+            bits_available += 8; \
+            byte_idx++; \
+        } \
+        guint64 result = accumulator & ((1ULL << (n)) - 1); \
+        accumulator >>= (n); \
+        bits_available -= (n); \
+        result; \
+    })
+    
+    /* Extract status (1 bit) */
+    guint64 status = get_bits(1);
+    
+    /* Extract CB index (cb_bits) */
+    guint64 cb_index = get_bits(r->cb_bits);
+    
+    /* Extract UMI (umi_bits, decode 2 bits per base) - read in reverse order */
+    for (int i = r->umi_len - 1; i >= 0; i--) {
+        guint64 code = get_bits(2);
+        switch (code) {
+            case 0: umi_out[i] = 'A'; break;
+            case 1: umi_out[i] = 'C'; break;
+            case 2: umi_out[i] = 'G'; break;
+            case 3: umi_out[i] = 'T'; break;
+        }
+    }
+    umi_out[r->umi_len] = '\0';
+    
+    /* Set outputs */
+    *has_tags = (status != 0 && cb_index != 0);
+    *cb_idx = (guint32)cb_index;
+    
+    r->record_idx++;
+    return TRUE;
+    
+    #undef get_bits
+}
+
+static void cbub_reader_close(cbub_reader *r) {
+    if (r) {
+        if (r->fp) fclose(r->fp);
+        if (r->raw) g_free(r->raw);
+        g_free(r);
+    }
 }
 
 /* ---------------- Worker function (single-thread) ---------------- */
@@ -372,6 +588,13 @@ static void process_bam_single(cfg_t *cfg,
     if (!in) { perror("sam_open"); exit(EXIT_FAILURE);}    
     bam_hdr_t *hdr = sam_hdr_read(in);
     hts_set_threads(in, cfg->hts_threads);
+
+    cbub_reader *cbub = NULL;
+    whitelist_t *whitelist = NULL;
+    if (cfg->use_cbub) {
+        cbub = cbub_reader_open(cfg->cbub_path);
+        whitelist = load_whitelist(cfg->whitelist_path);
+    }
 
     int nprobes = probe_fa ? probe_fa->number_of_features : 0;
     shard_data *shd = shard_data_new(nprobes);
@@ -386,6 +609,23 @@ static void process_bam_single(cfg_t *cfg,
     while (sam_read1(in, hdr, b) >= 0) {
         if (cfg->max_records && recs>=cfg->max_records) break;
         recs++;
+        
+        /* Read CBUB data for this record FIRST to keep streams synchronized */
+        const char *cb = NULL;
+        const char *ub = NULL;
+        gboolean has_tags = TRUE;
+        char umi_buf[65]; /* enough for umi_len<=64, overwritten each read */
+        guint32 cb_idx = 0;
+        const char *gene = NULL;
+        
+        if (cfg->use_cbub) {
+            if (!cbub_reader_next(cbub, &has_tags, &cb_idx, umi_buf)) {
+                fprintf(stderr, "CBUB stream ended early at record %" G_GUINT64_FORMAT "\n", cbub->record_idx);
+                exit(EXIT_FAILURE);
+            }
+        }
+        
+        /* Now apply BAM-level filters */
         const char *qname = bam_get_qname(b);
         uint16_t flag = b->core.flag;
         if (cfg->primary_only && (flag & (BAM_FSECONDARY|BAM_FSUPPLEMENTARY))) {
@@ -398,18 +638,40 @@ static void process_bam_single(cfg_t *cfg,
             continue; 
         }
 
-        /* Tags */
-        const uint8_t *cb_tag = bam_aux_get(b, cfg->cb_tag);
-        const uint8_t *ub_tag = bam_aux_get(b, cfg->ub_tag);
-        const uint8_t *gx_tag = bam_aux_get(b, cfg->gene_tag);
-        if (!gx_tag) gx_tag = bam_aux_get(b, FALLBACK_GENE_TAG);
-        if (!cb_tag || !ub_tag || !gx_tag) { 
-            continue; 
+        /* Tag acquisition - branch on CBUB vs BAM tags */
+        if (cfg->use_cbub) {
+            if (!has_tags) {
+                continue; /* mirror skip for missing tags */
+            }
+            if (cb_idx == 0 || cb_idx > whitelist->count) {
+                continue; /* invalid CB index */
+            }
+            /* Convert CB index to actual barcode string (1-based indexing) */
+            cb = whitelist->barcodes[cb_idx - 1];
+            ub = umi_buf;
+            
+            /* Still need gene tag from BAM */
+            const uint8_t *gx_tag = bam_aux_get(b, cfg->gene_tag);
+            if (!gx_tag) gx_tag = bam_aux_get(b, FALLBACK_GENE_TAG);
+            if (!gx_tag) continue;
+            gene = bam_aux2Z(gx_tag);
+            if (!gene) continue;
+        } else {
+            /* existing bam_aux_get logic */
+            const uint8_t *cb_tag = bam_aux_get(b, cfg->cb_tag);
+            const uint8_t *ub_tag = bam_aux_get(b, cfg->ub_tag);
+            const uint8_t *gx_tag = bam_aux_get(b, cfg->gene_tag);
+            if (!gx_tag) gx_tag = bam_aux_get(b, FALLBACK_GENE_TAG);
+            if (!cb_tag || !ub_tag || !gx_tag) { 
+                continue; 
+            }
+            cb = bam_aux2Z(cb_tag);
+            ub = bam_aux2Z(ub_tag);
+            gene = bam_aux2Z(gx_tag);
+            if (!cb || !ub || !gene) continue;
+            if (strcmp(cb, "-") == 0 || strcmp(ub, "-") == 0) continue; /* skip invalid CB/UB */
         }
-        const char *cb = bam_aux2Z(cb_tag);
-        const char *ub = bam_aux2Z(ub_tag);
-        const char *gene = bam_aux2Z(gx_tag);
-        if (!cb || !ub || !gene)         continue;
+        
         if (gene[0] == '-' && !cfg->count_intergene)
             continue;                   /* skip inter-genic unless flag set */
 
@@ -480,6 +742,14 @@ static void process_bam_single(cfg_t *cfg,
             (unsigned long)shd->total_reads,
             (unsigned long)shd->usable_reads);
 
+    if (cfg->use_cbub) {
+        if (cbub->record_idx != cbub->record_count) {
+            fprintf(stderr, "Warning: CBUB stream has %" G_GUINT64_FORMAT " leftover records\n",
+                    cbub->record_count - cbub->record_idx);
+        }
+        cbub_reader_close(cbub);
+        free_whitelist(whitelist);
+    }
 
     /* Write outputs */
     if (mkdir_p(cfg->outdir)) { fprintf(stderr,"Failed to create outdir\n"); exit(EXIT_FAILURE);}    
