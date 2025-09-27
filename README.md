@@ -390,11 +390,7 @@ With `--threads 4` on a 4-core laptop the producer saturates ~200 MB/s decompres
 ## test_files in version control
 `test_files/` contains large binary/FASTQ test datasets and is therefore **ignored** in version control.  The root `.gitignore` already includes a `test*` wildcard entry, which covers `test_files/` while still retaining useful scripts such as `scripts/test_demux.sh`.  No additional ignore patterns are required. 
 
-## demux_bam – BAM to probe×barcode matrix (intermediate sample-barcode assignment)
-
- // ... existing code ...
-
- ## demux_bam – BAM → probe × cell-barcode matrix
+## demux_bam – BAM → probe × cell-barcode matrix
  `demux_bam` reads a STARsolo-aligned BAM and produces a Matrix-Market triplet
  where rows are sample-barcode probes (e.g. `BC001`), columns are cell barcodes
  (`CB`), and values are the number of UNIQUE UMIs that survived all filters
@@ -412,38 +408,62 @@ With `--threads 4` on a 4-core laptop the producer saturates ~200 MB/s decompres
      -S 4 -t 1
  ```
 
- ### CBUB mode (STAR cb/ub stream)
- When using STARsolo with the `--soloMultiMappers Unique` option, STAR can output a binary file (`Aligned.out.cb_ub.bin`) containing pre-parsed cell barcode and UMI information. This can be used instead of extracting tags from the BAM file for improved performance:
+### CBUB mode (STAR cb/ub stream)
+When using STARsolo with the `--soloMultiMappers Unique` option, STAR can output a binary file (`Aligned.out.cb_ub.bin`) containing pre-parsed cell barcode and UMI information. This can be used instead of extracting tags from the BAM file for improved performance:
 
- ```bash
- ./demux_bam \
-     --bam Aligned.out.bam \
-     --CBUB_file Aligned.out.cb_ub.bin \
-     --whitelist /path/to/737K-fixed-rna-profiling.txt \
-     --outdir out_probe_matrix \
-     --sample_probes tables/probe-barcodes-fixed-rna-profiling-rna.txt \
-     --probe_offset 68 \
-     -S 4 -t 1
- ```
+```bash
+./demux_bam \
+    --bam Aligned.out.bam \
+    --CBUB_file Aligned.out.cb_ub.bin \
+    --whitelist /path/to/737K-fixed-rna-profiling.txt \
+    --outdir out_probe_matrix \
+    --sample_probes tables/probe-barcodes-fixed-rna-profiling-rna.txt \
+    --probe_offset 68 \
+    -S 4 -t 1
+```
 
- **Note:** The `--whitelist` parameter is required when using `--CBUB_file` to convert cell barcode indices back to actual barcode strings.
+**Note:** The `--whitelist` parameter is required when using `--CBUB_file` to convert cell barcode indices back to actual barcode strings.
 
- ### CLI flags (current)
- | flag | arg | description | default |
- |------|-----|-------------|---------|
- | `--bam`            | path | Input BAM (STARsolo style) | – |
+#### Binary format reference
+
+The binary file begins with a 32-byte header followed by fixed-width records. All integers are little-endian `uint64_t` unless noted otherwise.
+
+| Header field | Meaning | Typical value |
+|--------------|---------|---------------|
+| `status_bits` | Number of bits used for the missing-tag sentinel. Only `1` is currently supported. | `1` |
+| `cb_bits` | Bit width of the 1-based cell-barcode index. | `20` |
+| `umi_bits` | Bit width of the packed UMI (`2 × length`). Must be even. | `24` (12 bp UMI) |
+| `record_count` | Total number of records in the file. | matches number of BAM alignments |
+
+Each record packs `status_bits + cb_bits + umi_bits` bits, aligned to the next byte. Bits are stored least-significant-bit first.
+
+1. **Status (1 bit):** `1` indicates valid CB/UB; `0` marks the read as missing tags and causes `demux_bam` to skip the alignment.
+2. **CB index (`cb_bits` bits):** 1-based index into the STAR barcode whitelist; `0` is treated as missing.
+3. **UMI (`umi_bits` bits):** `umi_bits / 2` two-bit symbols encoding bases (`00=A`, `01=C`, `10=G`, `11=T`). `demux_bam` reconstructs the ASCII UMI string and re-uses existing counting logic.
+
+#### Processing flow in CBUB mode
+1. `demux_bam` opens the binary stream, validates the header, and precomputes the per-record byte width.
+2. For every BAM alignment read, the next CBUB record is decoded to retrieve the status flag, CB index, and UMI sequence.
+3. The CB index is translated back to a whitelist barcode string; the UMI string replaces the BAM `UB` tag.
+4. Gene tags are still taken from the BAM (`--gene_tag`, fallback `GE`), so downstream probe counting, filtering, and output generation remain unchanged.
+
+### CLI flags (current)
+| flag | arg | description | default |
+|------|-----|-------------|---------|
+| `--bam`            | path | Input BAM (STARsolo style) | – |
  | `--outdir`         | dir  | Output directory | `.` |
- | `--sample_probes`  | path | TSV: variant-8-mer, unused, probe-name | – |
- | `--probe_offset`   | int  | 0-based offset of the 8-mer inside the read | `68` |
- | `--search_nearby`  | –   | Also test offsets +1, +2, -1, -2 | off |
- | `--cb_tag`         | str  | BAM tag for cell barcode | `CB` |
- | `--ub_tag`         | str  | BAM tag for UMI | `UB` |
- | `--gene_tag`       | str  | Preferred gene tag (fallback `GE`) | `GX` |
- | `--count_intergene`| –   | KEEP reads whose `GX` starts with `'-'` | off |
- | `--save_read_to_cb`| –   | Write `read_to_cb_umi_gene.txt` map | off |
- | `--CBUB_file`      | path | Optional STAR cb/ub tag stream (`Aligned.out.cb_ub.bin`) | – |
- | `--hts_threads`, `-S` | int | BAM BGZF threads | `2` |
- | `--threads`, `-t`  | int | Consumer shards (currently 1 = single-thread) | `1` |
+| `--sample_probes`  | path | TSV: variant-8-mer, unused, probe-name | – |
+| `--probe_offset`   | int  | 0-based offset of the 8-mer inside the read | `68` |
+| `--search_nearby`  | –   | Also test offsets +1, +2, -1, -2 | off |
+| `--cb_tag`         | str  | BAM tag for cell barcode | `CB` |
+| `--ub_tag`         | str  | BAM tag for UMI | `UB` |
+| `--gene_tag`       | str  | Preferred gene tag (fallback `GE`) | `GX` |
+| `--whitelist`      | path | 10x-style whitelist; required with `--CBUB_file` | – |
+| `--count_intergene`| –   | KEEP reads whose `GX` starts with `'-'` | off |
+| `--save_read_to_cb`| –   | Write `read_to_cb_umi_gene.txt` map | off |
+| `--CBUB_file`      | path | Optional STAR cb/ub tag stream (`Aligned.out.cb_ub.bin`) | – |
+| `--hts_threads`, `-S` | int | BAM BGZF threads | `2` |
+| `--threads`, `-t`  | int | Consumer shards (currently 1 = single-thread) | `1` |
  | `--min_mapq`       | int  | Minimum MAPQ to keep | `0` |
  | `--no_primary_filter` | – | Keep secondary & supplementary | **off** |
  | `--keep_dup`       | –   | Keep PCR/optical duplicates | **off** |
@@ -457,80 +477,11 @@ With `--threads 4` on a 4-core laptop the producer saturates ~200 MB/s decompres
  * **stats.txt**      – run summary (total / usable reads, per-probe totals)  
  * **read_to_cb_umi_gene.txt** (only with `--save_read_to_cb`)  
 
- ### Counting algorithm (v2, memory-friendly)
- 1. **Tag extraction** – pull `CB`, `UB`, and preferred `gene_tag`
-    (fallback `GE`). Skip read if any tag missing; optionally skip when
-    `GX == '-'` unless `--count_intergene` is set.
- 2. **Filtering**  
-    * primary-alignment filter (unless `--no_primary_filter`)  
-    * duplicate filter via `BAM_FDUP` (unless `--keep_dup`)  
-    * MAPQ filter (`--min_mapq`)  
- 3. **Probe lookup** – slice 8-mer at `--probe_offset`; if not found and
-    `--search_nearby` is enabled, retry offsets ±1 / ±2 until located or
-    exhausted.
- 4. **Counting** – For every accepted read:
-    * Convert probe index to 0-based `p` (0 = no match).  
-    * Maintain a `GHashTable<cb_id → uint32_t[n_probes]>`.  
-    * The table entry is allocated from a memory pool; each element is a
-      32-bit counter, allowing up to 4.29 × 10⁹ UMIs per (CB, probe).  
-    * Increment `arr[p-1]` (only if `p>0`).  
- 5. **Output** – After all reads:
-    * Write `features.tsv`, `barcodes.tsv` (alphabetical CB order),
-      `matrix.mtx` (coordinate format, integer field).  
-    * Write summary stats and, if requested, the per-read map file.
+### Algorithm
+1. **Tag extraction** – pull `CB`, `UB`, and preferred `gene_tag` (fallback `GE`). In CBUB mode the CB/UB values come from the binary stream; otherwise they are read from BAM aux tags. Skip read if any tag missing; optionally skip when `GX == '-'` unless `--count_intergene` is set.
+2. **Filtering** – primary-alignment filter (unless `--no_primary_filter`), duplicate filter via `BAM_FDUP` (unless `--keep_dup`), MAPQ filter (`--min_mapq`)
+3. **Probe lookup** – slice 8-mer at `--probe_offset`; if not found and `--search_nearby` is enabled, retry offsets ±1 / ±2 until located or exhausted.
+4. **Counting** – For every accepted read: convert probe index to 0-based `p` (0 = no match), maintain a `GHashTable<cb_id → uint32_t[n_probes]>`, increment `arr[p-1]` (only if `p>0`).
+5. **Output** – Write `features.tsv`, `barcodes.tsv` (alphabetical CB order), `matrix.mtx` (coordinate format, integer field), and summary stats.
 
- Compared with the previous TripKey/majority-vote scheme this design:
-
- * removes the heavy `(CB,UB,Gene)` dedup hash (60 + GB on large runs),
- * relies on the BAM duplicate flag plus `primary_only` for deduplication,
- * cuts memory to O(#active_CB × #probes × 4 bytes),
- * eliminates ambiguous CB handling (each accepted read contributes
-   directly to counts).
-
- // ... existing code ...
-
-### Typical run
-```bash
-./demux_bam \
-  --bam        input.bam \
-  --outdir     out_probe_matrix \
-  --sample_probes tables/probe-barcodes-fixed-rna-profiling-rna.txt \
-  --probe_offset 68 \
-  -S 2 -t 1
-```
-
-### CLI flags
-
-| flag | arg | description | default |
-|------|-----|-------------|---------|
-| `--bam`            | path | Input BAM (STARsolo-style) | – |
-| `--outdir`         | dir  | Output directory | `.` |
-| `--sample_probes`  | path | TSV with columns: variant 8-mer, unused, BC name | – |
-| `--probe_offset`   | int  | 0-based offset of the 8-mer in the read | `68` |
-| `--cb_tag`         | str  | BAM tag for cell barcode | `CB` |
-| `--ub_tag`         | str  | BAM tag for UMI | `UB` |
-| `--gene_tag`       | str  | Preferred gene tag; fallback to `GE` if missing | `GX` |
-| `--hts_threads` / `-S` | int | BAM I/O threads | `2` |
-| `--threads` / `-t`     | int | Consumer shards (single-thread in current stage) | `1` |
-| `--min_mapq`       | int  | Minimum MAPQ filter | `0` |
-| `--no_primary_filter` | – | Keep secondary/supplementary alignments | off |
-| `--keep_dup`       | –    | Keep PCR/optical duplicates | off |
-| `--max_records`    | int  | Process first N reads (debug) | `0` |
-| `-v`, `--debug`    | –    | Verbose logging | off |
-
-### Output files
-- `barcodes.tsv`   – CB strings (ambiguous CBs dropped by majority rule)
-- `features.tsv`   – probe names (BCxxx) loaded from `--sample_probes`
-- `matrix.mtx`     – rows: probes; cols: CBs; values: # unique UMIs after dedup and majority selection
-
-### Algorithm (concise)
-1. Extract per-read tags: `CB`, `UB`, and `GX` (fallback `GE`).
-2. Dedup key = `(CB, UB, gene)`; pack `UB` into a 64-bit code; require A/C/G/T only.
-3. Probe detection: slice the 8-mer at `--probe_offset` from the read sequence; lookup with the shared k-mer matcher to obtain a probe index (0 = none).
-4. For each dedup triplet, accumulate votes per probe index observed among reads that map to it.
-5. At finalize, choose the majority probe index for each triplet; ties between non-zero indices mark the corresponding CB as ambiguous and it is excluded from outputs.
-6. Each non-ambiguous triplet contributes 1 to `(CB, chosen_probe_index)` in the final matrix.
-
-Notes:
-- This tool does not map probes to final sample IDs yet. It provides a probe×barcode matrix as an intermediate for downstream sample assignment.
-- `assignBarcodes` is unaffected by this executable. 
+This design removes the heavy `(CB,UB,Gene)` dedup hash, relies on the BAM duplicate flag plus `primary_only` for deduplication, cuts memory to O(#active_CB × #probes × 4 bytes), and eliminates ambiguous CB handling. 

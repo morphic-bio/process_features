@@ -33,6 +33,7 @@ Processes STAR Solo-aligned BAM files to produce probe × cell-barcode matrices 
 - Configurable filtering (MAPQ, duplicates, alignment type)
 - Memory-efficient counting without heavy deduplication tables
 - Matrix Market format output
+- Optional CB/UB binary stream ingestion via `--CBUB_file`
 
 ## Installation
 
@@ -95,6 +96,30 @@ docker build -t flex_demux .
     --search_nearby \
     -S 4 -t 1
 ```
+
+#### Using the STAR cb/ub stream
+When STARsolo produces `Aligned.out.cb_ub.bin`, enable the faster CBUB path:
+
+```bash
+./demux_bam \
+    --bam Aligned.out.bam \
+    --CBUB_file Aligned.out.cb_ub.bin \
+    --whitelist whitelists/737K-fixed-rna-profiling.txt \
+    --sample_probes tables/probe-barcodes.txt \
+    --probe_offset 68 \
+    -S 4 -t 1
+```
+
+`demux_bam` synchronizes each BAM alignment with one binary record, so truncated or oversized streams are flagged immediately. The whitelist is mandatory in this mode because STAR encodes barcodes as 1-based indices.
+
+##### CBUB binary layout
+
+| Component | Description |
+|-----------|-------------|
+| Header | Four little-endian `uint64_t`: `status_bits`, `cb_bits`, `umi_bits`, `record_count`. Only `status_bits = 1` is accepted; `umi_bits` must be even. |
+| Record | Packed `status_bits + cb_bits + umi_bits` bits (LSB-first, byte-aligned). `status=0` or `cb_index=0` are treated as missing tags. UMIs decode 2-bit bases (`00 A`, `01 C`, `10 G`, `11 T`). |
+
+The BAM still provides gene tags (`GX`/`GE`), so downstream filtering and Matrix Market emission remain unchanged.
 
 ## Performance Characteristics
 
