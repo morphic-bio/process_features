@@ -6,6 +6,8 @@
 #include "../include/prototypes.h"   /* for code2string() */
 #include "../include/memory.h"
 #include <htslib/sam.h>
+#include <endian.h>
+#include <libgen.h>
 
 static memory_pool_collection *global_pools = NULL;
 
@@ -164,6 +166,8 @@ typedef struct {
     const char *cbub_path;
     int use_cbub;
     const char *whitelist_path;
+    const char *bin_out_path;   /* binary sidecar output path */
+    int use_bin_out;             /* boolean: binary output mode active */
 } cfg_t;
 
 static void usage(const char *prog) {
@@ -186,7 +190,8 @@ static void usage(const char *prog) {
         "  --search_nearby           Try offsets ±1,±2 for probe search\n"
         "  --count_intergene         Include reads whose GX tag starts with '-'\n"
         "  --CBUB_file FILE         Optional STAR cb/ub tag stream (Aligned.out.cb_ub.bin)\n"
-        "  --whitelist FILE         Cell barcode whitelist (required for CBUB mode)\n",
+        "  --whitelist FILE         Cell barcode whitelist (required for CBUB mode)\n"
+        "  --bin_out FILE           Binary sidecar output (suppresses MatrixMarket TSVs)\n",
         prog);
 }
 
@@ -325,6 +330,7 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
         {"count_intergene", no_argument, 0, 0},
         {"CBUB_file", required_argument, 0, 0},
         {"whitelist", required_argument, 0, 0},
+        {"bin_out", required_argument, 0, 0},
         {"debug", no_argument,0,'v'},
         {0,0,0,0}
     };
@@ -359,6 +365,10 @@ static void parse_cli(cfg_t *cfg, int argc, char **argv) {
             cfg->use_cbub = 1;
         }
         else if (!strcmp(opt_name, "whitelist")) cfg->whitelist_path = optarg;
+        else if (!strcmp(opt_name, "bin_out")) {
+            cfg->bin_out_path = optarg;
+            cfg->use_bin_out = 1;
+        }
         else {
             fprintf(stderr, "Error: unsupported option --%s\n", opt_name);
             usage(argv[0]);
@@ -596,6 +606,38 @@ static void process_bam_single(cfg_t *cfg,
         whitelist = load_whitelist(cfg->whitelist_path);
     }
 
+    /* Binary output setup */
+    FILE *bin_fp = NULL;
+    uint64_t bytes_written = 0;
+    if (cfg->use_bin_out) {
+        /* Create parent directories for bin_out_path */
+        char *path_copy = g_strdup(cfg->bin_out_path);
+        char *parent_dir = dirname(path_copy);
+        if (strcmp(parent_dir, ".") != 0 && strcmp(parent_dir, "/") != 0) {
+            if (mkdir_p(parent_dir)) {
+                fprintf(stderr, "Failed to create parent directory for bin_out: %s\n", parent_dir);
+                g_free(path_copy);
+                exit(EXIT_FAILURE);
+            }
+        }
+        g_free(path_copy);
+        
+        bin_fp = fopen(cfg->bin_out_path, "wb");
+        if (!bin_fp) {
+            perror("bin_out");
+            exit(EXIT_FAILURE);
+        }
+        /* Write 9-byte placeholder header: 8-byte uint64 length + 1-byte probe count */
+        uint64_t placeholder = 0;
+        uint8_t probe_count_placeholder = 0;
+        if (fwrite(&placeholder, sizeof(uint64_t), 1, bin_fp) != 1 ||
+            fwrite(&probe_count_placeholder, sizeof(uint8_t), 1, bin_fp) != 1) {
+            perror("bin_out header write");
+            exit(EXIT_FAILURE);
+        }
+        bytes_written = 9;
+    }
+
     int nprobes = probe_fa ? probe_fa->number_of_features : 0;
     shard_data *shd = shard_data_new(nprobes);
     /* seen_reads guard removed: we rely on primary-only filter and TripKey dedup */
@@ -638,12 +680,27 @@ static void process_bam_single(cfg_t *cfg,
             continue; 
         }
 
+        /* Binary output: write byte for each record that passes BAM-level filters */
+        uint8_t output_byte = 0;
+
         /* Tag acquisition - branch on CBUB vs BAM tags */
         if (cfg->use_cbub) {
             if (!has_tags) {
+                if (cfg->use_bin_out) {
+                    if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
+                        perror("bin_out write"); exit(EXIT_FAILURE);
+                    }
+                    bytes_written++;
+                }
                 continue; /* mirror skip for missing tags */
             }
             if (cb_idx == 0 || cb_idx > whitelist->count) {
+                if (cfg->use_bin_out) {
+                    if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
+                        perror("bin_out write"); exit(EXIT_FAILURE);
+                    }
+                    bytes_written++;
+                }
                 continue; /* invalid CB index */
             }
             /* Convert CB index to actual barcode string (1-based indexing) */
@@ -653,27 +710,72 @@ static void process_bam_single(cfg_t *cfg,
             /* Still need gene tag from BAM */
             const uint8_t *gx_tag = bam_aux_get(b, cfg->gene_tag);
             if (!gx_tag) gx_tag = bam_aux_get(b, FALLBACK_GENE_TAG);
-            if (!gx_tag) continue;
+            if (!gx_tag) {
+                if (cfg->use_bin_out) {
+                    if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
+                        perror("bin_out write"); exit(EXIT_FAILURE);
+                    }
+                    bytes_written++;
+                }
+                continue;
+            }
             gene = bam_aux2Z(gx_tag);
-            if (!gene) continue;
+            if (!gene) {
+                if (cfg->use_bin_out) {
+                    if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
+                        perror("bin_out write"); exit(EXIT_FAILURE);
+                    }
+                    bytes_written++;
+                }
+                continue;
+            }
         } else {
             /* existing bam_aux_get logic */
             const uint8_t *cb_tag = bam_aux_get(b, cfg->cb_tag);
             const uint8_t *ub_tag = bam_aux_get(b, cfg->ub_tag);
             const uint8_t *gx_tag = bam_aux_get(b, cfg->gene_tag);
             if (!gx_tag) gx_tag = bam_aux_get(b, FALLBACK_GENE_TAG);
-            if (!cb_tag || !ub_tag || !gx_tag) { 
+            if (!cb_tag || !ub_tag || !gx_tag) {
+                if (cfg->use_bin_out) {
+                    if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
+                        perror("bin_out write"); exit(EXIT_FAILURE);
+                    }
+                    bytes_written++;
+                }
                 continue; 
             }
             cb = bam_aux2Z(cb_tag);
             ub = bam_aux2Z(ub_tag);
             gene = bam_aux2Z(gx_tag);
-            if (!cb || !ub || !gene) continue;
-            if (strcmp(cb, "-") == 0 || strcmp(ub, "-") == 0) continue; /* skip invalid CB/UB */
+            if (!cb || !ub || !gene) {
+                if (cfg->use_bin_out) {
+                    if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
+                        perror("bin_out write"); exit(EXIT_FAILURE);
+                    }
+                    bytes_written++;
+                }
+                continue;
+            }
+            if (strcmp(cb, "-") == 0 || strcmp(ub, "-") == 0) {
+                if (cfg->use_bin_out) {
+                    if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
+                        perror("bin_out write"); exit(EXIT_FAILURE);
+                    }
+                    bytes_written++;
+                }
+                continue; /* skip invalid CB/UB */
+            }
         }
         
-        if (gene[0] == '-' && !cfg->count_intergene)
+        if (gene[0] == '-' && !cfg->count_intergene) {
+            if (cfg->use_bin_out) {
+                if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
+                    perror("bin_out write"); exit(EXIT_FAILURE);
+                }
+                bytes_written++;
+            }
             continue;                   /* skip inter-genic unless flag set */
+        }
 
         /* packed UMI stored in 'out' but no longer used for dedup */
 
@@ -701,6 +803,16 @@ static void process_bam_single(cfg_t *cfg,
                         sample_idx = idx;   /* early exit once found */
                 }
             }
+        }
+
+        /* Write binary output byte */
+        if (cfg->use_bin_out) {
+            output_byte = (sample_idx > 0) ? (uint8_t)sample_idx : 0;
+            if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
+                perror("bin_out write");
+                exit(EXIT_FAILURE);
+            }
+            bytes_written++;
         }
 
         guint32 cb_id = intern_get(cb_tab, cb);
@@ -751,64 +863,90 @@ static void process_bam_single(cfg_t *cfg,
         free_whitelist(whitelist);
     }
 
-    /* Write outputs */
-    if (mkdir_p(cfg->outdir)) { fprintf(stderr,"Failed to create outdir\n"); exit(EXIT_FAILURE);}    
-    char path[FILENAME_LENGTH];
-
-    /* ---- Write barcodes.tsv & build CB→column map ---- */
-    GHashTableIter bit; gpointer bk,bv;
-    GHashTable *cb_to_col = g_hash_table_new(g_direct_hash, g_direct_equal);
-    snprintf(path,sizeof(path), "%s/barcodes.tsv", cfg->outdir);
-    FILE *fbc = fopen(path,"w");
-    guint32 col=0;
-    g_hash_table_iter_init(&bit, shd->cb_counts);
-    while (g_hash_table_iter_next(&bit, &bk, &bv)){
-        guint32 cb_id = GPOINTER_TO_UINT(bk);
-        fprintf(fbc, "%s\n", id_to_str(cb_tab, cb_id));
-        g_hash_table_insert(cb_to_col, bk, GUINT_TO_POINTER(++col));
-    }
-    fclose(fbc);
-
-    /* features.tsv = probe names */
-    snprintf(path,sizeof(path), "%s/features.tsv", cfg->outdir);
-    FILE *ffe = fopen(path,"w");
-    for (int i=0;i<nprobes;i++) fprintf(ffe, "%s\n", probe_fa->feature_names[i]);
-    fclose(ffe);
-
-    /* ---- Compute NNZ ---- */
-    guint64 nnz=0;
-    g_hash_table_iter_init(&bit, shd->cb_counts);
-    while (g_hash_table_iter_next(&bit, &bk, &bv)){
-        uint32_t *arr = (uint32_t*)bv;
-        for (int p=0;p<nprobes;p++) if (arr[p]) nnz++;
+    /* Finalize binary output header */
+    if (cfg->use_bin_out) {
+        uint8_t probe_count = (uint8_t)nprobes;
+        /* Seek to beginning and write actual header */
+        if (fseek(bin_fp, 0, SEEK_SET) != 0) {
+            perror("bin_out seek");
+            exit(EXIT_FAILURE);
+        }
+        /* Convert to little-endian and write 8-byte total length including header */
+        uint64_t length_le = htole64(bytes_written);
+        if (fwrite(&length_le, sizeof(uint64_t), 1, bin_fp) != 1) {
+            perror("bin_out header finalize");
+            exit(EXIT_FAILURE);
+        }
+        /* Write probe count */
+        if (fwrite(&probe_count, sizeof(uint8_t), 1, bin_fp) != 1) {
+            perror("bin_out header finalize");
+            exit(EXIT_FAILURE);
+        }
+        fclose(bin_fp);
+        fprintf(stderr, "Binary output: wrote %lu bytes (%lu records, %u probes)\n",
+                (unsigned long)bytes_written, (unsigned long)(bytes_written - 9), probe_count);
     }
 
-    /* matrix.mtx */
-    snprintf(path,sizeof(path), "%s/matrix.mtx", cfg->outdir);
-    FILE *fmtx = fopen(path,"w");
-    fprintf(fmtx, "%%MatrixMarket matrix coordinate integer general\n");
-    fprintf(fmtx, "%d %u %llu\n", nprobes, col, (unsigned long long)nnz);
+    /* Write outputs (skip MatrixMarket if binary mode) */
+    if (!cfg->use_bin_out) {
+        if (mkdir_p(cfg->outdir)) { fprintf(stderr,"Failed to create outdir\n"); exit(EXIT_FAILURE);}    
+        char path[FILENAME_LENGTH];
 
-    g_hash_table_iter_init(&bit, shd->cb_counts);
-    while (g_hash_table_iter_next(&bit, &bk, &bv)){
-        uint32_t col_idx = GPOINTER_TO_UINT(g_hash_table_lookup(cb_to_col, bk));
-        uint32_t *arr = (uint32_t*)bv;
-        for (int p=0;p<nprobes;p++)
-            if (arr[p]) fprintf(fmtx, "%d %u %u\n", p+1, col_idx, arr[p]);
-    }
-    fclose(fmtx);
+        /* ---- Write barcodes.tsv & build CB→column map ---- */
+        GHashTableIter bit; gpointer bk,bv;
+        GHashTable *cb_to_col = g_hash_table_new(g_direct_hash, g_direct_equal);
+        snprintf(path,sizeof(path), "%s/barcodes.tsv", cfg->outdir);
+        FILE *fbc = fopen(path,"w");
+        guint32 col=0;
+        g_hash_table_iter_init(&bit, shd->cb_counts);
+        while (g_hash_table_iter_next(&bit, &bk, &bv)){
+            guint32 cb_id = GPOINTER_TO_UINT(bk);
+            fprintf(fbc, "%s\n", id_to_str(cb_tab, cb_id));
+            g_hash_table_insert(cb_to_col, bk, GUINT_TO_POINTER(++col));
+        }
+        fclose(fbc);
 
-    /* stats.txt */
-    snprintf(path,sizeof(path), "%s/stats.txt", cfg->outdir);
-    FILE *fst = fopen(path,"w");
-    fprintf(fst,"Total_records\t%lu\n", (unsigned long)shd->total_reads);
-    fprintf(fst,"Usable_records\t%lu\n", (unsigned long)shd->usable_reads);
-    fprintf(fst,"BC_ID\tTotal_reads\n");
-    for(int i=0;i<nprobes;i++){
-        fprintf(fst,"%s\t%lu\n", probe_fa->feature_names[i],
-                (unsigned long)shd->probe_tot[i]);
+        /* features.tsv = probe names */
+        snprintf(path,sizeof(path), "%s/features.tsv", cfg->outdir);
+        FILE *ffe = fopen(path,"w");
+        for (int i=0;i<nprobes;i++) fprintf(ffe, "%s\n", probe_fa->feature_names[i]);
+        fclose(ffe);
+
+        /* ---- Compute NNZ ---- */
+        guint64 nnz=0;
+        g_hash_table_iter_init(&bit, shd->cb_counts);
+        while (g_hash_table_iter_next(&bit, &bk, &bv)){
+            uint32_t *arr = (uint32_t*)bv;
+            for (int p=0;p<nprobes;p++) if (arr[p]) nnz++;
+        }
+
+        /* matrix.mtx */
+        snprintf(path,sizeof(path), "%s/matrix.mtx", cfg->outdir);
+        FILE *fmtx = fopen(path,"w");
+        fprintf(fmtx, "%%MatrixMarket matrix coordinate integer general\n");
+        fprintf(fmtx, "%d %u %llu\n", nprobes, col, (unsigned long long)nnz);
+
+        g_hash_table_iter_init(&bit, shd->cb_counts);
+        while (g_hash_table_iter_next(&bit, &bk, &bv)){
+            uint32_t col_idx = GPOINTER_TO_UINT(g_hash_table_lookup(cb_to_col, bk));
+            uint32_t *arr = (uint32_t*)bv;
+            for (int p=0;p<nprobes;p++)
+                if (arr[p]) fprintf(fmtx, "%d %u %u\n", p+1, col_idx, arr[p]);
+        }
+        fclose(fmtx);
+
+        /* stats.txt */
+        snprintf(path,sizeof(path), "%s/stats.txt", cfg->outdir);
+        FILE *fst = fopen(path,"w");
+        fprintf(fst,"Total_records\t%lu\n", (unsigned long)shd->total_reads);
+        fprintf(fst,"Usable_records\t%lu\n", (unsigned long)shd->usable_reads);
+        fprintf(fst,"BC_ID\tTotal_reads\n");
+        for(int i=0;i<nprobes;i++){
+            fprintf(fst,"%s\t%lu\n", probe_fa->feature_names[i],
+                    (unsigned long)shd->probe_tot[i]);
+        }
+        fclose(fst);
     }
-    fclose(fst);
 
     /* Clean */
     bam_destroy1(b);
@@ -817,8 +955,9 @@ static void process_bam_single(cfg_t *cfg,
 
     /* probe_single removed */
 
-    /* write read_to_cb and rejected_qnames */
+    /* write read_to_cb (works in both binary and MatrixMarket modes) */
     if (cfg->save_read_to_cb){
+        if (mkdir_p(cfg->outdir)) { fprintf(stderr,"Failed to create outdir\n"); exit(EXIT_FAILURE);}
         char path[FILENAME_LENGTH];
         snprintf(path, sizeof(path), "%s/read_to_cb_umi_gene.txt", cfg->outdir);
         FILE *fp = fopen(path, "w");
@@ -847,6 +986,19 @@ int main(int argc, char **argv) {
         probe_fa     = load_probe_variants_to_features(cfg.sample_probes);
         probe_offset = cfg.probe_offset;
         direct_probe = 0;          /* disable direct search for now */
+    }
+
+    /* Validate probe count for binary output mode */
+    if (cfg.use_bin_out) {
+        if (!probe_fa) {
+            fprintf(stderr, "Error: --bin_out requires --sample_probes to be specified\n");
+            exit(EXIT_FAILURE);
+        }
+        if (probe_fa->number_of_features > 255) {
+            fprintf(stderr, "Error: --bin_out requires probe count <= 255, got %d\n", 
+                    probe_fa->number_of_features);
+            exit(EXIT_FAILURE);
+        }
     }
 
     /* ---- Stage 4: set up memory pools for CB×probe counts ---- */
