@@ -113,23 +113,43 @@ This confirms what salmon detected and can inform future runs with explicit mode
 - [Alevin-fry Documentation](https://alevin-fry.readthedocs.io/)
 - [10x Genomics Library Structure](https://www.10xgenomics.com/)
 
-## Impact on This Pipeline
+## Implementation in runMultiAlign.sh
 
 For the `runMultiAlign.sh` script:
 - Current implementation uses `--expected-ori fw` (explicit mode)
 - This is correct for standard 10x single-cell RNA-seq
-- To enable auto-detection, change to `--expected-ori both` or omit the parameter (depending on tool version)
+- To enable auto-detection, the syntax varies by tool
 
-**Example modification for auto mode:**
+**Important:** The specific syntax for auto-detection depends on the tool version. Always consult the documentation for your specific tool version before making changes.
+
+### Tool-Specific Auto Mode Syntax
+
+**For simpleaf (recommended for alevin-fry):**
 ```bash
 # Current (explicit):
 --expected-ori fw --unfiltered-pl
 
-# Auto mode option 1:
+# Auto mode (simpleaf):
 --expected-ori both --unfiltered-pl
-
-# Auto mode option 2 (if supported):
---expected-ori auto --unfiltered-pl
 ```
 
-Note: The specific syntax may vary between salmon, piscem, and simpleaf versions. Always consult the tool's documentation for the version you're using.
+**For direct salmon-alevin usage:**
+```bash
+# Check your salmon version documentation
+# Older versions: may not support auto
+# Newer versions: typically support 'A' or 'both'
+```
+
+**For piscem:**
+```bash
+# Piscem typically follows salmon conventions
+# Consult piscem documentation for your version
+```
+
+### Verification Steps
+
+Before changing to auto mode in production:
+1. Test on a small subset of data first
+2. Check the output logs to confirm detected library type matches expectations
+3. Compare quantification results between explicit and auto modes
+4. Ensure detected type is consistently reported across samples
