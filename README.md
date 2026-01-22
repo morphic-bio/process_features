@@ -233,6 +233,7 @@ The repository is organized into the following main directories:
     -   `plasma_colormap_16.h`, `plasma_colormap_64.h`, `plasma_colormap_256.h`, `plasma_colormap_1024.h`: Color map definitions for heatmaps.
 -   **`include/`**: Contains all the header files.
     -   `common.h`: Common headers, structs, and macros used throughout the project.
+    -   `khash_wrapper.h`: Wrapper for klib's khash library providing hash table implementations.
     -   `prototypes.h`: Function prototypes for functions defined in the `src` directory.
     -   `globals.h`: Header for global variables.
     -   `io.h`: Header for I/O functions.
