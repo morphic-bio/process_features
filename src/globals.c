@@ -10,8 +10,8 @@ unit_sizes dynamic_struct_sizes;
 int debug;
 
 unsigned char *whitelist;
-GHashTable *whitelist_hash; 
-GHashTable *feature_code_hash;
+khash_t(u32ptr) *whitelist_hash; 
+khash_t(codeu32) *feature_code_hash;
 
 
 int barcode_length=BARCODE_LENGTH;

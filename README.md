@@ -15,7 +15,7 @@ Key features include:
 On Ubuntu/Debian:
 ```bash
 sudo apt-get update
-sudo apt-get -y install build-essential zlib1g-dev libglib2.0-dev libcairo2-dev
+sudo apt-get -y install build-essential zlib1g-dev libcairo2-dev
 cd process_features
 make
 sudo cp assignBarcodes /usr/local/bin

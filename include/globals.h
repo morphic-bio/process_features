@@ -14,9 +14,9 @@ extern int debug;
 
 // Valid barcode list and hash
 extern unsigned char *whitelist;
-extern GHashTable *whitelist_hash; 
+extern khash_t(u32ptr) *whitelist_hash; 
 
-extern GHashTable *feature_code_hash;
+extern khash_t(codeu32) *feature_code_hash;
 
 // Size globals to replace constants
 extern int barcode_length;

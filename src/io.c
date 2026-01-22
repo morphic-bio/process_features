@@ -24,31 +24,38 @@ feature_arrays* read_features_file(const char* filename) {
     }
     find_name_and_sequence_fields(line, &nameIndex, &seqIndex);
     
-    GHashTable* length_counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+    khash_t(u32u32)* length_counts = kh_init(u32u32);
 
     while (fgets(line, LINE_LENGTH, file) != NULL) {
         int length = get_feature_line_sizes(line, nameIndex, seqIndex, &name_size, &seq_size, &code_size, &maxFeatureLength);
         if (length > 0) {
-            uintptr_t current_count = GPOINTER_TO_UINT(g_hash_table_lookup(length_counts, GINT_TO_POINTER(length)));
-            g_hash_table_replace(length_counts, GINT_TO_POINTER(length), GUINT_TO_POINTER(current_count + 1));
+            khint_t k = kh_get(u32u32, length_counts, length);
+            uint32_t current_count = 1;
+            if (k != kh_end(length_counts)) {
+                current_count = kh_val(length_counts, k) + 1;
+                kh_val(length_counts, k) = current_count;
+            } else {
+                int ret;
+                khint_t kh = kh_put(u32u32, length_counts, length, &ret);
+                kh_val(length_counts, kh) = current_count;
+            }
         }
         count++;
     }
 
-    GHashTableIter iter;
-    gpointer key, value;
     int most_common_length = 0;
     int max_count = 0;
-    g_hash_table_iter_init(&iter, length_counts);
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
-        int length = GPOINTER_TO_INT(key);
-        int current_count = GPOINTER_TO_UINT(value);
+    khint_t k;
+    for (k = kh_begin(length_counts); k != kh_end(length_counts); ++k) {
+        if (!kh_exist(length_counts, k)) continue;
+        int length = kh_key(length_counts, k);
+        int current_count = kh_val(length_counts, k);
         if (current_count > max_count) {
             max_count = current_count;
             most_common_length = length;
         }
     }
-    g_hash_table_destroy(length_counts);
+    kh_destroy(u32u32, length_counts);
 
     fprintf(stderr, "Read %d tags with max length %d and most common length %d\n", count, maxFeatureLength, most_common_length);
     feature_arrays *myfeatures = allocate_feature_arrays(name_size, seq_size, code_size, count, maxFeatureLength);
@@ -124,8 +131,10 @@ void process_feature_line(char *line, int nameIndex, int seqIndex, feature_array
     myfeatures->feature_lengths[count] = strlen(tmpSeq);
     myfeatures->feature_code_lengths[count] = string2code(tmpSeq, strlen(tmpSeq), myfeatures->feature_codes[count]);
     if (myfeatures->feature_lengths[count] == myfeatures->common_length) {
-        GBytes *key = g_bytes_new_static(myfeatures->feature_codes[count], myfeatures->feature_code_lengths[count]);
-        g_hash_table_insert(feature_code_hash, key, GUINT_TO_POINTER(count + 1));
+        var_key_t key = {.ptr = myfeatures->feature_codes[count], .len = myfeatures->feature_code_lengths[count]};
+        int ret;
+        khint_t k = kh_put(codeu32, feature_code_hash, key, &ret);
+        kh_val(feature_code_hash, k) = count + 1;
     }
     if (count + 1 < myfeatures->number_of_features) {
         myfeatures->feature_sequences[count + 1] = myfeatures->feature_sequences[count] + strlen(tmpSeq) + 1;
@@ -448,6 +457,10 @@ void organize_fastq_files_by_directory(int positional_arg_count, int argc, char 
             fastq_files->sample_names[i] = strdup(get_basename(directory));
             fprintf(stderr, "directory %s Sample name %s\n", directory,fastq_files->sample_names[i]);
             free(directory);
+            // Free the temporary arrays (individual strings were transferred, not copied)
+            free(sample_barcode_fastq);
+            if (sample_forward_fastq) free(sample_forward_fastq);
+            if (sample_reverse_fastq) free(sample_reverse_fastq);
         }
     }    
     sort_samples_by_size(fastq_files, fastq_files->sorted_index);
@@ -647,7 +660,7 @@ void organize_fastq_files_by_type(int positional_arg_count, int argc, char *argv
     //check that memory allocations are non null and free them
 }
 
-void read_barcodes_into_hash(char *filename, GHashTable *hash) {
+void read_barcodes_into_hash(char *filename, khash_t(strptr)* hash) {
     FILE *file = fopen(filename, "r");
     if (file == NULL) {
         fprintf(stderr, "Failed to open barcode file %s\n", filename);
@@ -656,9 +669,23 @@ void read_barcodes_into_hash(char *filename, GHashTable *hash) {
     char line[LINE_LENGTH];
     while (fgets(line, LINE_LENGTH, file) != NULL) {
         line[strcspn(line, "\r\n")] = 0;
-        g_hash_table_insert(hash, g_strdup(line), GUINT_TO_POINTER(1));
+        char *line_copy = strdup(line);
+        int ret;
+        khint_t k = kh_put(strptr, hash, line_copy, &ret);
+        kh_val(hash, k) = (void*)1; // Store as pointer to indicate presence
     }
     fclose(file);
+}
+
+void free_strptr_hash(khash_t(strptr)* hash) {
+    if (!hash) return;
+    khint_t k;
+    for (k = kh_begin(hash); k != kh_end(hash); ++k) {
+        if (kh_exist(hash, k)) {
+            free((char*)kh_key(hash, k));  // Free the strdup'd key
+        }
+    }
+    kh_destroy(strptr, hash);
 }
 
 int file_exists(const char *filename){

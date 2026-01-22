@@ -333,7 +333,7 @@ void generate_deduped_heatmap(const char *directory,
     
     for (int i = 0; i < num_rows; i++) {
         if(filter_mask[i]){
-            for(guint j=1; j <= num_cols; ++j){
+            for(unsigned int j=1; j <= num_cols; ++j){
                 column_sums[j] += deduped_histograms[i+1][j];
             }
         }
@@ -348,7 +348,7 @@ void generate_deduped_heatmap(const char *directory,
     int max_value = 0;
     for (int i = 0; i < num_rows; ++i) {
         if (!filter_mask[i]) continue;
-        for (guint j = 1; j <= num_cols; ++j) {     /* start at 1 */
+        for (unsigned int j = 1; j <= num_cols; ++j) {     /* start at 1 */
             int v = deduped_histograms[i + 1][j];
             if (v > max_value) max_value = v;
         }

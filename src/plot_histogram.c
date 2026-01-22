@@ -19,8 +19,8 @@ void plot_simple_histogram(const char *directory,
                            const char *title,
                            const char *xtitle,
                            const char *ytitle,
-                           GArray *hist_data) {
-    if (!hist_data || hist_data->len == 0) {
+                           vec_u32_t *hist_data) {
+    if (!hist_data || vec_u32_size(hist_data) == 0) {
         fprintf(stderr, "Warning: Empty histogram data provided for plotting '%s'\n", title);
         return;
     }
@@ -34,8 +34,8 @@ void plot_simple_histogram(const char *directory,
         return;
     }
 
-    int hist_len = hist_data->len;
-    uint32_t *data = (uint32_t*)hist_data->data;
+    int hist_len = vec_u32_size(hist_data);
+    uint32_t *data = hist_data->a;
 
     // --- Write HTML and Plotly JavaScript ---
     fprintf(fp, "<!DOCTYPE html><html><head><title>%s</title>", title);

@@ -63,7 +63,7 @@ int main(int argc, char *argv[])
     initcode2seq();
     initdiff2hamming(diff2Hamming);
     initialize_complement();
-    feature_code_hash = g_hash_table_new_full(g_bytes_hash, g_bytes_equal, (GDestroyNotify)g_bytes_unref, NULL);
+    feature_code_hash = kh_init(codeu32);
     feature_arrays *features=0;
     int reverse_complement_whitelist=0;
     char *barcodeFastqFilesString=0;
@@ -187,7 +187,7 @@ int main(int argc, char *argv[])
             default: print_usage(argv[0]); return 1;
         }
     }
-    GHashTable *filtered_barcodes_hash = NULL;
+    khash_t(strptr) *filtered_barcodes_hash = NULL;
     if (filtered_barcodes_filename) {
         int filtered_barcodes_found = 0;
         if (!file_exists(filtered_barcodes_filename)) {
@@ -213,7 +213,7 @@ int main(int argc, char *argv[])
         }
         
         if (filtered_barcodes_found) {
-            filtered_barcodes_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+            filtered_barcodes_hash = kh_init(strptr);
             read_barcodes_into_hash(filtered_barcodes_filename, filtered_barcodes_hash);
         }
     }
@@ -237,7 +237,7 @@ int main(int argc, char *argv[])
     else{
         organize_fastq_files_by_type(positional_arg_count, argc, argv,optind, barcodeFastqFilesString, forwardFastqFilesString, reverseFastqFilesString, &fastq_files, barcode_pattern, forward_pattern, reverse_pattern,sample_flag);
     }
-    whitelist_hash = g_hash_table_new(hash_int32, equal_int32 );
+    whitelist_hash = kh_init(u32ptr);
     read_whiteList(whitelist_filename, whitelist_hash, reverse_complement_whitelist);
     if (sample_barcodes_filename) {
         sample_barcodes = read_features_file(sample_barcodes_filename);
@@ -350,13 +350,13 @@ int main(int argc, char *argv[])
         wait(NULL);
         concurrent_processes--;
     }
-    g_hash_table_destroy(whitelist_hash);
+    kh_destroy(u32ptr, whitelist_hash);
     free(whitelist);
     if (barcodeFastqFilesString) free(barcodeFastqFilesString);
     if (forwardFastqFilesString) free(forwardFastqFilesString);
     if (reverseFastqFilesString) free(reverseFastqFilesString);
     if (filtered_barcodes_filename) free(filtered_barcodes_filename);
-    if (filtered_barcodes_hash) g_hash_table_destroy(filtered_barcodes_hash);
+    if (filtered_barcodes_hash) free_strptr_hash(filtered_barcodes_hash);
     free_feature_arrays(features);
     free_fastq_files_collection(&fastq_files);
     return 0;

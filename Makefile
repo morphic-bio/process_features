@@ -5,9 +5,7 @@ SRCDIR = src
 INCDIR = include
 VPATH = $(SRCDIR)
 
-# Use pkg-config to get the correct flags for glib-2.0 and cairo
-GLIB_CFLAGS := $(shell pkg-config --cflags glib-2.0)
-GLIB_LIBS := $(shell pkg-config --libs glib-2.0)
+# Use pkg-config to get the correct flags for cairo
 HTS_LIBS := -lhts
 
 CAIRO_CFLAGS :=
@@ -29,11 +27,11 @@ endif
 
 # Compiler flags: optimise by default, but if DEBUG=1 build with symbols and no optimisations
 ifeq ($(DEBUG),1)
-    CFLAGS=-g -ggdb -Wall -O0 -I$(INCDIR) -fopenmp $(GLIB_CFLAGS) $(CAIRO_CFLAGS) $(DEFINES)
+    CFLAGS=-g -ggdb -Wall -O0 -I$(INCDIR) -fopenmp $(CAIRO_CFLAGS) $(DEFINES)
 else
-    CFLAGS=-g -Wall -O3 -I$(INCDIR) -fopenmp $(GLIB_CFLAGS) $(CAIRO_CFLAGS) $(DEFINES)
+    CFLAGS=-g -Wall -O3 -I$(INCDIR) -fopenmp $(CAIRO_CFLAGS) $(DEFINES)
 endif
-LDFLAGS=-lm -lpthread -lz -fopenmp $(GLIB_LIBS) $(CAIRO_LIBS) $(HTS_LIBS)
+LDFLAGS=-lm -lpthread -lz -fopenmp $(CAIRO_LIBS) $(HTS_LIBS)
 
 # Object files
 OBJS=$(SRCS:.c=.o)

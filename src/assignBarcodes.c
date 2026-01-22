@@ -12,23 +12,245 @@
 //will  print if DEBUG is set or debug=1
 //code for feature sequences stats
 
+static int pf_trace_rescue_inited = 0;
+static int pf_trace_rescue_enabled = 0;
+static const char *pf_trace_rescue_list = NULL;
+static FILE *pf_trace_rescue_fp = NULL;
+static int pf_trace_counts_inited = 0;
+static int pf_trace_counts_enabled = 0;
+static const char *pf_trace_counts_list = NULL;
+static FILE *pf_trace_counts_fp = NULL;
+static int pf_trace_dedup_inited = 0;
+static int pf_trace_dedup_enabled = 0;
+static const char *pf_trace_dedup_list = NULL;
+static FILE *pf_trace_dedup_fp = NULL;
+static int pf_trace_dedup_active = 0;
+static const char *pf_trace_dedup_barcode = NULL;
+static const char *pf_trace_dedup_umi = NULL;
+static uint32_t pf_current_dedup_barcode_key = 0;
+static int pf_trace_dedup_count_inited = 0;
+static int pf_trace_dedup_count_enabled = 0;
+static char pf_trace_dedup_count_bc1[64];
+static char pf_trace_dedup_count_bc2[64];
+static unsigned long long pf_trace_dedup_count1 = 0;
+static unsigned long long pf_trace_dedup_count2 = 0;
+static int pf_trace_reads_inited = 0;
+static int pf_trace_reads_enabled = 0;
+static const char *pf_trace_reads_list = NULL;
+static FILE *pf_trace_reads_fp = NULL;
+static int pf_trace_keys_inited = 0;
+static int pf_trace_keys_enabled = 0;
+static const char *pf_trace_keys_list = NULL;
+static FILE *pf_trace_keys_fp = NULL;
+static int pf_trace_keys_feature = 0;
+
+static void pf_trace_rescue_init_once(void) {
+    if (pf_trace_rescue_inited) {
+        return;
+    }
+    pf_trace_rescue_inited = 1;
+    const char *trace_env = getenv("PF_TRACE_RESCUE");
+    const char *list_env = getenv("PF_TRACE_RESCUE_BARCODES");
+    if ((trace_env && trace_env[0] && strcmp(trace_env, "0") != 0) ||
+        (list_env && list_env[0])) {
+        pf_trace_rescue_enabled = 1;
+        pf_trace_rescue_list = list_env;
+    }
+    if (pf_trace_rescue_enabled) {
+        const char *log_path = getenv("PF_TRACE_RESCUE_LOG");
+        if (log_path && log_path[0]) {
+            pf_trace_rescue_fp = fopen(log_path, "a");
+        }
+        if (!pf_trace_rescue_fp) {
+            pf_trace_rescue_fp = stderr;
+        }
+    }
+}
+
+static int pf_trace_list_contains(const char *list, const char *barcode) {
+    if (!list || !barcode || !barcode[0]) {
+        return 0;
+    }
+    size_t blen = strlen(barcode);
+    const char *p = list;
+    while (*p) {
+        while (*p == ',' || *p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+        const char *start = p;
+        while (*p && *p != ',' && *p != ' ' && *p != '\t') {
+            ++p;
+        }
+        size_t n = (size_t)(p - start);
+        if (n == blen && strncmp(start, barcode, blen) == 0) {
+            return 1;
+        }
+        if (*p) {
+            ++p;
+        }
+    }
+    return 0;
+}
+
+static void pf_trace_counts_init_once(void) {
+    if (pf_trace_counts_inited) {
+        return;
+    }
+    pf_trace_counts_inited = 1;
+    const char *trace_env = getenv("PF_TRACE_COUNTS");
+    const char *list_env = getenv("PF_TRACE_COUNTS_BARCODES");
+    if ((trace_env && trace_env[0] && strcmp(trace_env, "0") != 0) ||
+        (list_env && list_env[0])) {
+        pf_trace_counts_enabled = 1;
+        pf_trace_counts_list = list_env;
+    }
+    if (pf_trace_counts_enabled) {
+        const char *log_path = getenv("PF_TRACE_COUNTS_LOG");
+        if (log_path && log_path[0]) {
+            pf_trace_counts_fp = fopen(log_path, "a");
+        }
+        if (!pf_trace_counts_fp) {
+            pf_trace_counts_fp = stderr;
+        }
+    }
+}
+
+static void pf_trace_copy_token(const char **pp, char *dst, size_t dst_len) {
+    const char *p = *pp;
+    while (*p == ',' || *p == ' ' || *p == '\t') {
+        ++p;
+    }
+    size_t n = 0;
+    while (*p && *p != ',' && *p != ' ' && *p != '\t') {
+        if (n + 1 < dst_len) {
+            dst[n++] = *p;
+        }
+        ++p;
+    }
+    dst[n] = '\0';
+    *pp = p;
+}
+
+static void pf_trace_dedup_init_once(void) {
+    if (pf_trace_dedup_inited) {
+        return;
+    }
+    pf_trace_dedup_inited = 1;
+    const char *trace_env = getenv("PF_TRACE_DEDUP");
+    const char *list_env = getenv("PF_TRACE_DEDUP_BARCODES");
+    if ((trace_env && trace_env[0] && strcmp(trace_env, "0") != 0) ||
+        (list_env && list_env[0])) {
+        pf_trace_dedup_enabled = 1;
+        pf_trace_dedup_list = list_env;
+    }
+    if (pf_trace_dedup_enabled) {
+        const char *log_path = getenv("PF_TRACE_DEDUP_LOG");
+        if (log_path && log_path[0]) {
+            pf_trace_dedup_fp = fopen(log_path, "a");
+        }
+        if (!pf_trace_dedup_fp) {
+            pf_trace_dedup_fp = stderr;
+        }
+    }
+}
+
+static void pf_trace_dedup_count_init_once(void) {
+    if (pf_trace_dedup_count_inited) {
+        return;
+    }
+    pf_trace_dedup_count_inited = 1;
+    pf_trace_dedup_init_once();
+    if (!pf_trace_dedup_enabled || !pf_trace_dedup_list) {
+        return;
+    }
+    const char *p = pf_trace_dedup_list;
+    pf_trace_copy_token(&p, pf_trace_dedup_count_bc1, sizeof(pf_trace_dedup_count_bc1));
+    pf_trace_copy_token(&p, pf_trace_dedup_count_bc2, sizeof(pf_trace_dedup_count_bc2));
+    if (pf_trace_dedup_count_bc1[0]) {
+        pf_trace_dedup_count_enabled = 1;
+    }
+}
+
+static void pf_trace_reads_init_once(void) {
+    if (pf_trace_reads_inited) {
+        return;
+    }
+    pf_trace_reads_inited = 1;
+    const char *trace_env = getenv("PF_TRACE_READS");
+    const char *list_env = getenv("PF_TRACE_READS_BARCODES");
+    if ((trace_env && trace_env[0] && strcmp(trace_env, "0") != 0) ||
+        (list_env && list_env[0])) {
+        pf_trace_reads_enabled = 1;
+        pf_trace_reads_list = list_env;
+    }
+    if (pf_trace_reads_enabled) {
+        const char *log_path = getenv("PF_TRACE_READS_LOG");
+        if (log_path && log_path[0]) {
+            pf_trace_reads_fp = fopen(log_path, "a");
+        }
+        if (!pf_trace_reads_fp) {
+            pf_trace_reads_fp = stderr;
+        }
+    }
+}
+
+static void pf_trace_keys_init_once(void) {
+    if (pf_trace_keys_inited) {
+        return;
+    }
+    pf_trace_keys_inited = 1;
+    const char *trace_env = getenv("PF_TRACE_KEYS");
+    const char *list_env = getenv("PF_TRACE_KEYS_BARCODES");
+    const char *feature_env = getenv("PF_TRACE_KEYS_FEATURE");
+    if ((trace_env && trace_env[0] && strcmp(trace_env, "0") != 0) ||
+        (list_env && list_env[0]) || (feature_env && feature_env[0])) {
+        pf_trace_keys_enabled = 1;
+        pf_trace_keys_list = list_env;
+        if (feature_env && feature_env[0]) {
+            pf_trace_keys_feature = atoi(feature_env);
+        }
+    }
+    if (pf_trace_keys_enabled) {
+        const char *log_path = getenv("PF_TRACE_KEYS_LOG");
+        if (log_path && log_path[0]) {
+            pf_trace_keys_fp = fopen(log_path, "a");
+        }
+        if (!pf_trace_keys_fp) {
+            pf_trace_keys_fp = stderr;
+        }
+    }
+}
+
+static void pf_trace_trim_newline(char *s) {
+    if (!s) {
+        return;
+    }
+    char *p = strchr(s, '\n');
+    if (p) {
+        *p = '\0';
+    }
+}
+
 //code for heatmap generation
 #ifndef NO_HEATMAP
 // Heatmap functionality is now in src/heatmap.c
 #endif
 
-void destroy_feature_counts(gpointer data) {
+void destroy_feature_counts(void *data) {
     feature_counts *fc = (feature_counts*)data;
     if (fc && fc->counts) {
-        g_hash_table_destroy(fc->counts);
+        kh_destroy(u32u32, fc->counts);
     }
     // fc itself is pool-allocated, so we don't free it here.
 }
 
-void destroy_feature_umi_counts(gpointer data) {
+void destroy_feature_umi_counts(void *data) {
     feature_umi_counts *umi_counts = (feature_umi_counts*)data;
     if (umi_counts && umi_counts->counts) {
-        g_hash_table_destroy(umi_counts->counts);
+        kh_destroy(u32u32, umi_counts->counts);
     }
     // We do NOT free(umi_counts) itself, because it was allocated
     // from our custom memory pool, which is freed all at once later.
@@ -167,9 +389,9 @@ void read_unmatched_barcodes_features_block(unmatched_barcodes_features_block *e
     entry->Qscores=entry->closest_barcodes+(barcode_code_length)*(max_barcode_mismatches+1);
 }
 int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned char hamming_distance, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools){
-    gpointer *value=g_hash_table_lookup(hashes->unique_features_match, sequence);
-    if (value){
-        feature_sequences *entry = (feature_sequences*)value;
+    khint_t k = kh_get(strptr, hashes->unique_features_match, sequence);
+    if (k != kh_end(hashes->unique_features_match)){
+        feature_sequences *entry = (feature_sequences*)kh_val(hashes->unique_features_match, k);
         entry->counts++;
         return 0;
     }
@@ -180,7 +402,9 @@ int insert_feature_sequence(char *sequence, uint32_t feature_index, unsigned cha
         new_entry->hamming_distance=hamming_distance;
         new_entry->match_position=match_position;
         new_entry->counts=1;
-        g_hash_table_insert(hashes->unique_features_match, new_entry->sequence, new_entry);
+        int ret;
+        khint_t kh = kh_put(strptr, hashes->unique_features_match, new_entry->sequence, &ret);
+        kh_val(hashes->unique_features_match, kh) = new_entry;
         return 1;
     }   
 }
@@ -194,20 +418,20 @@ int print_feature_sequences(feature_arrays *features, int *total_counts, char *d
         fprintf(stderr, "Failed to open feature sequences file\n");
         exit(EXIT_FAILURE);
     }   
-    GHashTableIter iter;
-    gpointer key, value;
     int i=0;
-    g_hash_table_iter_init(&iter, hashes->unique_features_match);
-    int count = g_hash_table_size(hashes->unique_features_match);
-    gpointer *array = g_new(gpointer, count);
+    int count = kh_size(hashes->unique_features_match);
+    void **array = malloc(count * sizeof(void*));
     if(!array){
         fprintf(stderr, "Failed to allocate memory for array\n");
         exit(EXIT_FAILURE);
     }   
-    while (g_hash_table_iter_next(&iter, &key, &value)) { 
-        array[i++] = value;
+    khint_t k;
+    for (k = kh_begin(hashes->unique_features_match); k != kh_end(hashes->unique_features_match); ++k) {
+        if (kh_exist(hashes->unique_features_match, k)) {
+            array[i++] = kh_val(hashes->unique_features_match, k);
+        }
     }
-    qsort(array, count, sizeof(gpointer), compare_feature_sequences);
+    qsort(array, count, sizeof(void*), compare_feature_sequences);
     fprintf(feature_sequencesfp, "Feature Index Sequence Hamming Distance Counts Match Position Feature Name\n");   
     for (i = 0; i < count; i++) {
         char annotated_sequence[LINE_LENGTH];
@@ -219,7 +443,7 @@ int print_feature_sequences(feature_arrays *features, int *total_counts, char *d
         lowerCaseDifferences(features->feature_sequences[entry->feature_index-1],annotated_sequence,feature_length);
         fprintf(feature_sequencesfp, "%7u %s %2d %7d %5u %s\n", entry->feature_index,annotated_sequence, entry->hamming_distance,entry->counts, entry->match_position, features->feature_names[entry->feature_index-1]);
     }
-    g_free(array);
+    free(array);
     return 0;
 }
 
@@ -256,7 +480,7 @@ unmatched_barcodes_features_block* add_unmatched_barcode_store_feature(unsigned 
 }
 
 
-unsigned char* read_whiteList(char *whitelist_filename,GHashTable *hash, int reverse_complement_flag){
+unsigned char* read_whiteList(char *whitelist_filename, khash_t(u32ptr) *hash, int reverse_complement_flag){
     FILE *whitelist_file = fopen(whitelist_filename, "r");
     if (whitelist_file == NULL) {
         fprintf(stderr, "Failed to open whitelist file %s\n", whitelist_filename);
@@ -332,10 +556,14 @@ unsigned char* read_whiteList(char *whitelist_filename,GHashTable *hash, int rev
             i++;
             j+=4;
         }
-        if(!g_hash_table_insert(hash,  (uint32_t*)(whitelist+offset) , whitelist+offset)){
+        uint32_t key = *(uint32_t*)(whitelist+offset);
+        int ret;
+        khint_t kh = kh_put(u32ptr, hash, key, &ret);
+        if (ret < 0) {
             fprintf(stderr, "Error: Failed to insert barcode %s into the hash table %ld\n", line, nBarcodes);
-            exit(EXIT_FAILURE); 
+            exit(EXIT_FAILURE);
         }
+        kh_val(hash, kh) = whitelist+offset;
         nBarcodes++;
     }
     fprintf(stderr, "Read %ld barcodes\n", nBarcodes);
@@ -366,7 +594,9 @@ int check_barcode(char *barcode, unsigned char *code){
     for (int i=0; i<barcode_code_length; i++){
         string2code(barcode, barcode_length, code);
     }
-    if (g_hash_table_lookup(whitelist_hash,code) == NULL){
+    uint32_t key = *(uint32_t*)code;
+    khint_t k = kh_get(u32ptr, whitelist_hash, key);
+    if (k == kh_end(whitelist_hash)){
         return 1;
     }
     return 0;
@@ -635,14 +865,11 @@ int simple_hash_search(feature_arrays *features, char *sequence){
     unsigned char code[sequence_code_length];
     string2code(local_line, feature_sequence_length, code);
     
-    // Create a GBytes key for lookup.
-    GBytes *key = g_bytes_new(code, sequence_code_length);
-    gpointer value = g_hash_table_lookup(feature_code_hash, key);
-    g_bytes_unref(key); // Free the GBytes wrapper
-
-    if (value){
-        // The value is the feature index, convert it back from a pointer.
-        return GPOINTER_TO_INT(value);
+    // Create a var_key_t key for lookup.
+    var_key_t key = {.ptr = code, .len = sequence_code_length};
+    khint_t k = kh_get(codeu32, feature_code_hash, key);
+    if (k != kh_end(feature_code_hash)){
+        return kh_val(feature_code_hash, k);
     }
     //check against the mismatched features
     for (int i=0; i<features->number_of_mismatched_features; i++){
@@ -882,10 +1109,31 @@ void update_feature_counts(char *barcodeString, char *umi, uint32_t feature_inde
 // In src/assignBarcodes.c
 
 void update_feature_counts_from_code(unsigned char *code, char *umi, uint32_t feature_index, data_structures *hashes, memory_pool_collection *pools){
+    pf_trace_counts_init_once();
+    if (pf_trace_counts_enabled) {
+        char bcode_str[4 * barcode_code_length + 1];
+        char umi_str[umi_length + 1];
+        int trace = 0;
+        code2string(code, bcode_str, barcode_code_length);
+        if (!pf_trace_counts_list) {
+            trace = 1;
+        } else if (pf_trace_list_contains(pf_trace_counts_list, bcode_str)) {
+            trace = 1;
+        }
+        if (trace) {
+            strncpy(umi_str, umi, (size_t)umi_length);
+            umi_str[umi_length] = '\0';
+            fprintf(pf_trace_counts_fp,
+                    "COUNT bc=%s umi=%s feat=%u\n",
+                    bcode_str, umi_str, feature_index);
+        }
+    }
     update_umi_counts(code, umi, feature_index, hashes, pools);
-    feature_counts *s = g_hash_table_lookup(hashes->filtered_hash, code);
+    uint32_t key = *(uint32_t*)code;
+    khint_t k = kh_get(u32ptr, hashes->filtered_hash, key);
+    feature_counts *s;
 
-    if (s == NULL) {
+    if (k == kh_end(hashes->filtered_hash)) {
         // Logic for a NEW barcode
         s = (feature_counts*) allocate_memory_from_pool(pools->feature_counts_pool);
         if (s == NULL) return; // Error check
@@ -893,31 +1141,50 @@ void update_feature_counts_from_code(unsigned char *code, char *umi, uint32_t fe
         memcpy(s->sequence_code, code, barcode_code_length);
 
         // NEW: Initialize the inner hash table for this barcode's counts.
-        // We don't provide destroy functions because the keys/values are not allocated pointers.
-        s->counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+        s->counts = kh_init(u32u32);
         if (s->counts == NULL) {
-            fprintf(stderr, "Fatal: GHashTable creation for counts failed.\n");
+            fprintf(stderr, "Fatal: khash creation for counts failed.\n");
             exit(EXIT_FAILURE);
         }
 
-        g_hash_table_insert(hashes->filtered_hash, s->sequence_code, s);
+        int ret;
+        khint_t kh = kh_put(u32ptr, hashes->filtered_hash, key, &ret);
+        kh_val(hashes->filtered_hash, kh) = s;
 
         // For a new entry, the count for this feature is 1.
-        g_hash_table_insert(s->counts, GUINT_TO_POINTER(feature_index), GUINT_TO_POINTER(1));
+        int ret2;
+        khint_t kh2 = kh_put(u32u32, s->counts, feature_index, &ret2);
+        kh_val(s->counts, kh2) = 1;
         // The total count (at index 0) is also 1.
-        g_hash_table_insert(s->counts, GUINT_TO_POINTER(0), GUINT_TO_POINTER(1));
+        khint_t kh3 = kh_put(u32u32, s->counts, 0, &ret2);
+        kh_val(s->counts, kh3) = 1;
 
     } else {
+        s = (feature_counts*)kh_val(hashes->filtered_hash, k);
         // Logic for an EXISTING barcode
         // 1. Increment the specific feature's count
-        uintptr_t current_count = GPOINTER_TO_UINT(g_hash_table_lookup(s->counts, GUINT_TO_POINTER(feature_index)));
-        current_count++;
-        g_hash_table_replace(s->counts, GUINT_TO_POINTER(feature_index), GUINT_TO_POINTER(current_count));
+        khint_t k2 = kh_get(u32u32, s->counts, feature_index);
+        uint32_t current_count = 1;
+        if (k2 != kh_end(s->counts)) {
+            current_count = kh_val(s->counts, k2) + 1;
+            kh_val(s->counts, k2) = current_count;
+        } else {
+            int ret;
+            khint_t kh2 = kh_put(u32u32, s->counts, feature_index, &ret);
+            kh_val(s->counts, kh2) = current_count;
+        }
 
         // 2. Increment the total count stored at key '0'
-        uintptr_t total = GPOINTER_TO_UINT(g_hash_table_lookup(s->counts, GUINT_TO_POINTER(0)));
-        total++;
-        g_hash_table_replace(s->counts, GUINT_TO_POINTER(0), GUINT_TO_POINTER(total));
+        khint_t k3 = kh_get(u32u32, s->counts, 0);
+        uint32_t total = 1;
+        if (k3 != kh_end(s->counts)) {
+            total = kh_val(s->counts, k3) + 1;
+            kh_val(s->counts, k3) = total;
+        } else {
+            int ret;
+            khint_t kh3 = kh_put(u32u32, s->counts, 0, &ret);
+            kh_val(s->counts, kh3) = total;
+        }
     }
 }
 void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,data_structures *hashes, memory_pool_collection *pools){
@@ -926,9 +1193,11 @@ void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,d
     memcpy(code8,code,barcode_code_length);
     string2code(umi, umi_length, code8+barcode_code_length);
 
-    feature_umi_counts *s = g_hash_table_lookup(hashes->sequence_umi_hash, code8);
+    uint64_t key = *(uint64_t*)code8;
+    khint_t k = kh_get(u64ptr, hashes->sequence_umi_hash, key);
+    feature_umi_counts *s;
     
-    if (s == NULL) {
+    if (k == kh_end(hashes->sequence_umi_hash)) {
         // Logic for a NEW barcode-UMI combination
         s = (feature_umi_counts*) allocate_memory_from_pool(pools->feature_umi_counts_pool);
         if (s == NULL) return; // Error check
@@ -936,42 +1205,63 @@ void update_umi_counts(unsigned char *code, char *umi,  uint32_t feature_index,d
         memcpy(s->sequence_umi_code, code8, 8);
         
         // Create the new inner hash table for this UMI's feature counts
-        s->counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+        s->counts = kh_init(u32u32);
         
         // Set initial count for this feature to 1
-        g_hash_table_insert(s->counts, GUINT_TO_POINTER(feature_index), GUINT_TO_POINTER(1));
+        int ret;
+        khint_t kh2 = kh_put(u32u32, s->counts, feature_index, &ret);
+        kh_val(s->counts, kh2) = 1;
         // Mark as unvisited for the connected components algorithm by setting key '0' to 0.
-        g_hash_table_insert(s->counts, GUINT_TO_POINTER(0), GUINT_TO_POINTER(0));
+        khint_t kh3 = kh_put(u32u32, s->counts, 0, &ret);
+        kh_val(s->counts, kh3) = 0;
 
-        g_hash_table_insert(hashes->sequence_umi_hash, s->sequence_umi_code, s);
+        khint_t kh = kh_put(u64ptr, hashes->sequence_umi_hash, key, &ret);
+        kh_val(hashes->sequence_umi_hash, kh) = s;
     } else {
+        s = (feature_umi_counts*)kh_val(hashes->sequence_umi_hash, k);
         // Logic for an EXISTING barcode-UMI combination
-        uintptr_t current_count = GPOINTER_TO_UINT(g_hash_table_lookup(s->counts, GUINT_TO_POINTER(feature_index)));
-        current_count++;
-        g_hash_table_replace(s->counts, GUINT_TO_POINTER(feature_index), GUINT_TO_POINTER(current_count));
+        khint_t k2 = kh_get(u32u32, s->counts, feature_index);
+        uint32_t current_count = 1;
+        if (k2 != kh_end(s->counts)) {
+            current_count = kh_val(s->counts, k2) + 1;
+            kh_val(s->counts, k2) = current_count;
+        } else {
+            int ret;
+            khint_t kh2 = kh_put(u32u32, s->counts, feature_index, &ret);
+            kh_val(s->counts, kh2) = current_count;
+        }
     }
 }
 char check_neighbor(uint64_t code64,uint32_t *counts, data_structures *hashes){
-    feature_umi_counts *result = g_hash_table_lookup(hashes->sequence_umi_hash, &code64);
+    khint_t k = kh_get(u64ptr, hashes->sequence_umi_hash, code64);
+    feature_umi_counts *result = (k != kh_end(hashes->sequence_umi_hash)) ? kh_val(hashes->sequence_umi_hash, k) : NULL;
 
     if (result && result->counts) {
         // Check if this node has been visited using key '0'
-        uintptr_t visited_flag = GPOINTER_TO_UINT(g_hash_table_lookup(result->counts, GUINT_TO_POINTER(0)));
+        khint_t k2 = kh_get(u32u32, result->counts, 0);
+        uint32_t visited_flag = (k2 != kh_end(result->counts)) ? kh_val(result->counts, k2) : 0;
         
         if (visited_flag == 0) { // If not visited
             // --- NEW: Iterate through the hash table to sum counts ---
-            GHashTableIter iter;
-            gpointer key, value;
-            g_hash_table_iter_init(&iter, result->counts);
-            while (g_hash_table_iter_next(&iter, &key, &value)) {
-                uint32_t feature_index = GPOINTER_TO_UINT(key);
-                if (feature_index > 0) { // Don't add the visited flag to the temp counts array
-                    counts[feature_index] += GPOINTER_TO_UINT(value);
+            khint_t iter;
+            for (iter = kh_begin(result->counts); iter != kh_end(result->counts); ++iter) {
+                if (kh_exist(result->counts, iter)) {
+                    uint32_t feature_index = kh_key(result->counts, iter);
+                    if (feature_index > 0) { // Don't add the visited flag to the temp counts array
+                        counts[feature_index] += kh_val(result->counts, iter);
+                    }
                 }
             }
 
             // Mark as visited by replacing the value at key '0' with 1
-            g_hash_table_replace(result->counts, GUINT_TO_POINTER(0), GUINT_TO_POINTER(1));
+            khint_t k3 = kh_get(u32u32, result->counts, 0);
+            if (k3 != kh_end(result->counts)) {
+                kh_val(result->counts, k3) = 1;
+            } else {
+                int ret;
+                khint_t kh3 = kh_put(u32u32, result->counts, 0, &ret);
+                kh_val(result->counts, kh3) = 1;
+            }
             return 1; // Indicate success
         }
     }
@@ -996,67 +1286,146 @@ int find_neighbors(uint64_t key64, uint64_t *neighbors, uint32_t *counts, data_s
     }
     return neighbor_count;
 }
-void find_deduped_counts(data_structures *hashes, GHashTable* barcode_to_deduped_counts, uint16_t stringency, uint16_t min_counts){
-    GHashTableIter iter;
-    gpointer lookup_key, result;
-    g_hash_table_iter_init(&iter, hashes->sequence_umi_hash);
+void find_deduped_counts(data_structures *hashes, khash_t(u32ptr)* barcode_to_deduped_counts, uint16_t stringency, uint16_t min_counts){
     uint32_t clique_counts[number_of_features+1];
     
     // Create tracking set for barcodes that might need cleanup (empty after deduping)
-    GHashTable *empty_candidates = g_hash_table_new(g_direct_hash, g_direct_equal);
+    khash_t(u32ptr) *empty_candidates = kh_init(u32ptr);
+    pf_trace_dedup_init_once();
+    pf_trace_dedup_count_init_once();
+    if (pf_trace_dedup_count_enabled) {
+        pf_trace_dedup_count1 = 0;
+        pf_trace_dedup_count2 = 0;
+    }
+    const uint32_t trace_key1 = 0xbc43274bU; /* CAGTAGCTCAATGTTA */
+    const uint32_t trace_key2 = 0xcb4b2fb9U; /* GTGCAGTTCAGTTAGT */
 
-    while (g_hash_table_iter_next(&iter, &lookup_key, &result)) {
-        feature_umi_counts *umi_counts = (feature_umi_counts*) result;
-        if (GPOINTER_TO_UINT(g_hash_table_lookup(umi_counts->counts, GUINT_TO_POINTER(0)))) {
+    khint_t k;
+    for (k = kh_begin(hashes->sequence_umi_hash); k != kh_end(hashes->sequence_umi_hash); ++k) {
+        if (!kh_exist(hashes->sequence_umi_hash, k)) continue;
+        uint64_t lookup_key = kh_key(hashes->sequence_umi_hash, k);
+        feature_umi_counts *umi_counts = (feature_umi_counts*)kh_val(hashes->sequence_umi_hash, k);
+        
+        khint_t k2 = kh_get(u32u32, umi_counts->counts, 0);
+        uint32_t visited = (k2 != kh_end(umi_counts->counts)) ? kh_val(umi_counts->counts, k2) : 0;
+        if (visited) {
             continue; // Already processed if the flag is 1
         }
         memset(clique_counts, 0, sizeof(clique_counts));
         
         find_connected_component(lookup_key, clique_counts, hashes);
 
-        feature_counts *s = g_hash_table_lookup(hashes->filtered_hash, umi_counts->sequence_umi_code);
-        if (s) {
+        uint32_t bcode_key = *(uint32_t*)umi_counts->sequence_umi_code;
+        khint_t k3 = kh_get(u32ptr, hashes->filtered_hash, bcode_key);
+        if (k3 != kh_end(hashes->filtered_hash)) {
+            feature_counts *s = (feature_counts*)kh_val(hashes->filtered_hash, k3);
             // Get or create the inner hash table for this barcode's deduped counts
-            GHashTable* temp_deduped_hash = g_hash_table_lookup(barcode_to_deduped_counts, s->sequence_code);
-            if (temp_deduped_hash == NULL) {
-                temp_deduped_hash = g_hash_table_new(g_direct_hash, g_direct_equal);
-                g_hash_table_insert(barcode_to_deduped_counts, s->sequence_code, temp_deduped_hash);
+            uint32_t s_key = *(uint32_t*)s->sequence_code;
+            khint_t k4 = kh_get(u32ptr, barcode_to_deduped_counts, s_key);
+            khash_t(u32u32)* temp_deduped_hash;
+            if (k4 == kh_end(barcode_to_deduped_counts)) {
+                temp_deduped_hash = kh_init(u32u32);
+                int ret;
+                khint_t kh = kh_put(u32ptr, barcode_to_deduped_counts, s_key, &ret);
+                kh_val(barcode_to_deduped_counts, kh) = temp_deduped_hash;
+                if (pf_trace_dedup_count_enabled) {
+                    if (s_key == trace_key1) {
+                        pf_trace_dedup_count1++;
+                    } else if (s_key == trace_key2) {
+                        pf_trace_dedup_count2++;
+                    }
+                }
+            } else {
+                temp_deduped_hash = (khash_t(u32u32)*)kh_val(barcode_to_deduped_counts, k4);
+            }
+            int trace = 0;
+            char bcode_str[4 * barcode_code_length + 1];
+            char umi_str[4 * umi_code_length + 1];
+            if (pf_trace_dedup_enabled) {
+                unsigned char *code8 = (unsigned char *)&lookup_key;
+                code2string(code8, bcode_str, barcode_code_length);
+                code2string(code8 + barcode_code_length, umi_str, umi_code_length);
+                if (pf_trace_dedup_count_enabled) {
+                    if (pf_trace_dedup_count_bc1[0] &&
+                        strcmp(bcode_str, pf_trace_dedup_count_bc1) == 0) {
+                        pf_trace_dedup_count1++;
+                    } else if (pf_trace_dedup_count_bc2[0] &&
+                               strcmp(bcode_str, pf_trace_dedup_count_bc2) == 0) {
+                        pf_trace_dedup_count2++;
+                    }
+                }
+                if (!pf_trace_dedup_list ||
+                    pf_trace_list_contains(pf_trace_dedup_list, bcode_str)) {
+                    trace = 1;
+                    fprintf(pf_trace_dedup_fp,
+                            "DEDUP clique bc=%s umi=%s\n",
+                            bcode_str, umi_str);
+                    fprintf(pf_trace_dedup_fp, "  counts:");
+                    for (int i = 1; i < number_of_features + 1; i++) {
+                        if (clique_counts[i]) {
+                            fprintf(pf_trace_dedup_fp, " %d:%u", i, clique_counts[i]);
+                        }
+                    }
+                    fprintf(pf_trace_dedup_fp, "\n");
+                }
+            }
+            if (trace) {
+                pf_trace_dedup_active = 1;
+                pf_trace_dedup_barcode = bcode_str;
+                pf_trace_dedup_umi = umi_str;
+            } else {
+                pf_trace_dedup_active = 0;
+                pf_trace_dedup_barcode = NULL;
+                pf_trace_dedup_umi = NULL;
+            }
+            pf_current_dedup_barcode_key = s_key;
+            add_deduped_count(temp_deduped_hash, clique_counts, stringency, min_counts);
+            pf_current_dedup_barcode_key = 0;
+            if (trace) {
+                pf_trace_dedup_active = 0;
+                pf_trace_dedup_barcode = NULL;
+                pf_trace_dedup_umi = NULL;
             }
             
-            add_deduped_count(temp_deduped_hash, clique_counts, stringency, min_counts);
-            
             // If still empty after deduping, remember this barcode for cleanup
-            if (g_hash_table_size(temp_deduped_hash) == 0) {
-                g_hash_table_replace(empty_candidates,
-                                     s->sequence_code,   /* key */
-                                     NULL);              /* value */
+            if (kh_size(temp_deduped_hash) == 0) {
+                int ret;
+                khint_t kh2 = kh_put(u32ptr, empty_candidates, s_key, &ret);
+                kh_val(empty_candidates, kh2) = NULL;
             }
         }
     }
     
     // --- FINAL CLEAN-UP SWEEP ---
     // Remove barcodes that are truly empty after all deduping is complete
-    GHashTableIter del_iter;
-    gpointer bcode_key, unused_val;
-    g_hash_table_iter_init(&del_iter, empty_candidates);
-
-    while (g_hash_table_iter_next(&del_iter, &bcode_key, &unused_val)) {
-        GHashTable *dedup_hash =
-            g_hash_table_lookup(barcode_to_deduped_counts, bcode_key);
-
-        if (dedup_hash && g_hash_table_size(dedup_hash) == 0) {
-            /* Remove from main table and free inner hash */
-            g_hash_table_steal(barcode_to_deduped_counts, bcode_key);
-            g_hash_table_destroy(dedup_hash);
+    if (pf_trace_dedup_count_enabled) {
+        fprintf(pf_trace_dedup_fp,
+                "DEDUP_KEY_COUNTS bc1=%s count=%llu bc2=%s count=%llu\n",
+                pf_trace_dedup_count_bc1[0] ? pf_trace_dedup_count_bc1 : "-",
+                pf_trace_dedup_count1,
+                pf_trace_dedup_count_bc2[0] ? pf_trace_dedup_count_bc2 : "-",
+                pf_trace_dedup_count2);
+    }
+    for (k = kh_begin(empty_candidates); k != kh_end(empty_candidates); ++k) {
+        if (!kh_exist(empty_candidates, k)) continue;
+        uint32_t bcode_key = kh_key(empty_candidates, k);
+        khint_t k5 = kh_get(u32ptr, barcode_to_deduped_counts, bcode_key);
+        if (k5 != kh_end(barcode_to_deduped_counts)) {
+            khash_t(u32u32)* dedup_hash = (khash_t(u32u32)*)kh_val(barcode_to_deduped_counts, k5);
+            if (dedup_hash && kh_size(dedup_hash) == 0) {
+                /* Remove from main table and free inner hash */
+                kh_del(u32ptr, barcode_to_deduped_counts, k5);
+                kh_destroy(u32u32, dedup_hash);
+            }
         }
     }
-    g_hash_table_destroy(empty_candidates);
+    kh_destroy(u32ptr, empty_candidates);
 }
 
-void find_connected_component(gpointer start_key, uint32_t *counts, data_structures *hashes){
+void find_connected_component(uint64_t start_key, uint32_t *counts, data_structures *hashes){
     uint64_t neighbors[umi_length*3];
     clear_queue(hashes->neighbors_queue);
-    enqueue(hashes->neighbors_queue,*(uint64_t*)start_key);
+    enqueue(hashes->neighbors_queue, start_key);
     while (!is_empty(hashes->neighbors_queue)) {
         uint64_t code = dequeue(hashes->neighbors_queue);
         check_neighbor(code,counts,hashes);
@@ -1076,8 +1445,11 @@ void find_connected_component(gpointer start_key, uint32_t *counts, data_structu
  * @param stringency The user-defined stringency for deduplication.
  * @param min_counts The minimum count threshold.
  */
- void add_deduped_count(GHashTable* temp_deduped_hash, uint32_t *clique_counts, uint16_t stringency, uint16_t min_counts) {
+ void add_deduped_count(khash_t(u32u32)* temp_deduped_hash, uint32_t *clique_counts, uint16_t stringency, uint16_t min_counts) {
     uint32_t winning_feature_index = 0;
+    uint32_t trace_total_counts = 0;
+    uint32_t trace_max_counts = 0;
+    unsigned char trace_unique = 0;
 
     // --- STRINGENCY LOGIC (Restored from original code) ---
     if (!stringency) {
@@ -1085,10 +1457,28 @@ void find_connected_component(gpointer start_key, uint32_t *counts, data_structu
         // This is a special case as it can increment multiple features.
         for (int i = 1; i < number_of_features + 1; i++) {
             if (clique_counts[i] > min_counts) {
-                uintptr_t count = GPOINTER_TO_UINT(g_hash_table_lookup(temp_deduped_hash, GUINT_TO_POINTER(i)));
-                count++;
-                g_hash_table_replace(temp_deduped_hash, GUINT_TO_POINTER(i), GUINT_TO_POINTER(count));
+                khint_t k = kh_get(u32u32, temp_deduped_hash, i);
+                uint32_t count = 1;
+                if (k != kh_end(temp_deduped_hash)) {
+                    count = kh_val(temp_deduped_hash, k) + 1;
+                    kh_val(temp_deduped_hash, k) = count;
+                } else {
+                    int ret;
+                    khint_t kh = kh_put(u32u32, temp_deduped_hash, i, &ret);
+                    kh_val(temp_deduped_hash, kh) = count;
+                }
             }
+        }
+        if (pf_trace_dedup_active) {
+            uint32_t total_counts = 0;
+            for (int i = 1; i < number_of_features + 1; i++) {
+                total_counts += clique_counts[i];
+            }
+            fprintf(pf_trace_dedup_fp,
+                    "DEDUP winner bc=%s umi=%s winner=multi total=%u stringency=%u min_counts=%u\n",
+                    pf_trace_dedup_barcode ? pf_trace_dedup_barcode : "-",
+                    pf_trace_dedup_umi ? pf_trace_dedup_umi : "-",
+                    total_counts, stringency, min_counts);
         }
         return; // Return early as the logic is different
     }
@@ -1110,6 +1500,9 @@ void find_connected_component(gpointer start_key, uint32_t *counts, data_structu
         if (feature_index && total_counts > min_counts) {
             winning_feature_index = feature_index;
         }
+        trace_total_counts = total_counts;
+        trace_max_counts = total_counts;
+        trace_unique = (winning_feature_index != 0);
     } else {
         // Mid-stringency: find the feature with the highest, unique count.
         uint32_t feature_index = 0;
@@ -1131,66 +1524,179 @@ void find_connected_component(gpointer start_key, uint32_t *counts, data_structu
         if (unique && (double)max_counts > total_counts * stringency / 1000.0 && total_counts > min_counts) {
             winning_feature_index = feature_index;
         }
+        trace_total_counts = total_counts;
+        trace_max_counts = max_counts;
+        trace_unique = unique;
     }
 
     // --- If a single winner was found, increment its count in the temporary hash table ---
-    if (winning_feature_index > 0) {
-        uintptr_t current_deduped_count = GPOINTER_TO_UINT(
-            g_hash_table_lookup(temp_deduped_hash, GUINT_TO_POINTER(winning_feature_index))
-        );
-        current_deduped_count++;
-        g_hash_table_replace(temp_deduped_hash, 
-                             GUINT_TO_POINTER(winning_feature_index), 
-                             GUINT_TO_POINTER(current_deduped_count));
+    if (pf_trace_dedup_active) {
+        fprintf(pf_trace_dedup_fp,
+                "DEDUP winner bc=%s umi=%s winner=%u total=%u max=%u unique=%u stringency=%u min_counts=%u\n",
+                pf_trace_dedup_barcode ? pf_trace_dedup_barcode : "-",
+                pf_trace_dedup_umi ? pf_trace_dedup_umi : "-",
+                winning_feature_index,
+                trace_total_counts, trace_max_counts, trace_unique,
+                stringency, min_counts);
     }
+    if (winning_feature_index > 0) {
+        khint_t k = kh_get(u32u32, temp_deduped_hash, winning_feature_index);
+        uint32_t current_deduped_count = 1;
+        if (k != kh_end(temp_deduped_hash)) {
+            current_deduped_count = kh_val(temp_deduped_hash, k) + 1;
+            kh_val(temp_deduped_hash, k) = current_deduped_count;
+        } else {
+            int ret;
+            khint_t kh = kh_put(u32u32, temp_deduped_hash, winning_feature_index, &ret);
+            kh_val(temp_deduped_hash, kh) = current_deduped_count;
+        }
+    }
+}
+
+static void pf_trace_validate_keys(data_structures *hashes, khash_t(u32ptr)* barcode_to_deduped_hash) {
+    pf_trace_keys_init_once();
+    if (!pf_trace_keys_enabled || !hashes || !hashes->filtered_hash || !barcode_to_deduped_hash) {
+        return;
+    }
+
+    if (barcode_code_length != (int)sizeof(uint32_t)) {
+        fprintf(pf_trace_keys_fp,
+                "KEY_WARN barcode_code_length=%d (expected %zu); key checks may be incomplete\n",
+                barcode_code_length, sizeof(uint32_t));
+    }
+
+    size_t filtered_total = 0;
+    size_t filtered_mismatch = 0;
+    khint_t k;
+    for (k = kh_begin(hashes->filtered_hash); k != kh_end(hashes->filtered_hash); ++k) {
+        if (!kh_exist(hashes->filtered_hash, k)) continue;
+        filtered_total++;
+        uint32_t key = kh_key(hashes->filtered_hash, k);
+        feature_counts *entry = (feature_counts*)kh_val(hashes->filtered_hash, k);
+        uint32_t derived = *(uint32_t*)entry->sequence_code;
+        if (key != derived) {
+            filtered_mismatch++;
+            if (barcode_code_length == (int)sizeof(uint32_t)) {
+                unsigned char key_code[sizeof(uint32_t)];
+                char key_barcode[barcode_length + 1];
+                memcpy(key_code, &key, sizeof(uint32_t));
+                code2string(key_code, key_barcode, barcode_code_length);
+                fprintf(pf_trace_keys_fp,
+                        "KEY_MISMATCH filtered key=0x%08x derived=0x%08x bc=%s\n",
+                        key, derived, key_barcode);
+            } else {
+                fprintf(pf_trace_keys_fp,
+                        "KEY_MISMATCH filtered key=0x%08x derived=0x%08x\n",
+                        key, derived);
+            }
+        }
+        if (pf_trace_keys_list) {
+            char barcode[barcode_length + 1];
+            code2string(entry->sequence_code, barcode, barcode_code_length);
+            if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
+            if (pf_trace_list_contains(pf_trace_keys_list, barcode)) {
+                fprintf(pf_trace_keys_fp,
+                        "KEY_OK filtered bc=%s key=0x%08x derived=0x%08x\n",
+                        barcode, key, derived);
+            }
+        }
+    }
+
+    size_t dedup_total = 0;
+    size_t dedup_missing = 0;
+    size_t dedup_mismatch = 0;
+    for (k = kh_begin(barcode_to_deduped_hash); k != kh_end(barcode_to_deduped_hash); ++k) {
+        if (!kh_exist(barcode_to_deduped_hash, k)) continue;
+        dedup_total++;
+        uint32_t key = kh_key(barcode_to_deduped_hash, k);
+        khint_t kf = kh_get(u32ptr, hashes->filtered_hash, key);
+        if (kf == kh_end(hashes->filtered_hash)) {
+            dedup_missing++;
+            fprintf(pf_trace_keys_fp, "KEY_MISSING dedup key=0x%08x\n", key);
+            continue;
+        }
+        feature_counts *entry = (feature_counts*)kh_val(hashes->filtered_hash, kf);
+        uint32_t derived = *(uint32_t*)entry->sequence_code;
+        if (derived != key) {
+            dedup_mismatch++;
+            fprintf(pf_trace_keys_fp,
+                    "KEY_MISMATCH dedup key=0x%08x derived=0x%08x\n",
+                    key, derived);
+        }
+        if (pf_trace_keys_list || pf_trace_keys_feature > 0) {
+            char barcode[barcode_length + 1];
+            code2string(entry->sequence_code, barcode, barcode_code_length);
+            if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
+            if (pf_trace_keys_list &&
+                pf_trace_list_contains(pf_trace_keys_list, barcode)) {
+                fprintf(pf_trace_keys_fp,
+                        "KEY_DEDUP bc=%s key=0x%08x derived=0x%08x\n",
+                        barcode, key, derived);
+            }
+            if (pf_trace_keys_feature > 0) {
+                khash_t(u32u32) *deduped_hash =
+                    (khash_t(u32u32)*)kh_val(barcode_to_deduped_hash, k);
+                khint_t kfeat = kh_get(u32u32, deduped_hash,
+                                       (uint32_t)pf_trace_keys_feature);
+                if (kfeat != kh_end(deduped_hash)) {
+                    fprintf(pf_trace_keys_fp,
+                            "KEY_FEATURE bc=%s key=0x%08x feature=%d count=%u\n",
+                            barcode, key, pf_trace_keys_feature,
+                            kh_val(deduped_hash, kfeat));
+                }
+            }
+        }
+    }
+
+    fprintf(pf_trace_keys_fp,
+            "KEY_SUMMARY filtered_total=%zu filtered_mismatch=%zu dedup_total=%zu dedup_missing=%zu dedup_mismatch=%zu\n",
+            filtered_total, filtered_mismatch, dedup_total, dedup_missing, dedup_mismatch);
 }
 
 /* moved to barcode_match.c */
 
 /* Increment (and lazily allocate/resize) the histogram for one feature. */
-static void update_feature_hist(GArray **feature_hist,
+static void update_feature_hist(vec_u32_t **feature_hist,
                                 int feature_idx, int count)
 {
-    GArray *h = feature_hist[feature_idx];
+    vec_u32_t *h = feature_hist[feature_idx];
     if (!h)
-        h = feature_hist[feature_idx] =
-                 g_array_new(FALSE, TRUE, sizeof(uint32_t));
+        h = feature_hist[feature_idx] = vec_u32_init();
 
-    if (h->len <= (guint)count)
-        g_array_set_size(h, count + 1);
+    if (vec_u32_size(h) <= (size_t)count)
+        vec_u32_set_size(h, count + 1);
 
-    g_array_index(h, uint32_t, count)++;
+    vec_u32_inc(h, count);
 }
 
 /* Build the cumulative histogram in slot 0 once all features are done. */
 static void build_cumulative_feature_hist(feature_arrays *features,
-                                          GArray **feature_hist)
+                                          vec_u32_t **feature_hist)
 {
-    feature_hist[0] = g_array_new(FALSE, TRUE, sizeof(uint32_t));
+    feature_hist[0] = vec_u32_init();
     if (!feature_hist[0])
         return;
 
     /* find maximum length */
     size_t max_len = 0;
     for (int i = 1; i <= features->number_of_features; ++i)
-        if (feature_hist[i] && feature_hist[i]->len > max_len)
-            max_len = feature_hist[i]->len;
+        if (feature_hist[i] && vec_u32_size(feature_hist[i]) > max_len)
+            max_len = vec_u32_size(feature_hist[i]);
 
-    g_array_set_size(feature_hist[0], max_len);
-    for (guint j = 0; j < max_len; ++j)
-        g_array_index(feature_hist[0], uint32_t, j) = 0;
+    vec_u32_set_size(feature_hist[0], max_len);
+    for (size_t j = 0; j < max_len; ++j)
+        vec_u32_set(feature_hist[0], j, 0);
 
     /* accumulate */
     for (int i = 1; i <= features->number_of_features; ++i) {
-        GArray *h = feature_hist[i];
+        vec_u32_t *h = feature_hist[i];
         if (!h) continue;
-        for (guint j = 0; j < h->len; ++j)
-            g_array_index(feature_hist[0], uint32_t, j) +=
-                g_array_index(h, uint32_t, j);
+        for (size_t j = 0; j < vec_u32_size(h); ++j)
+            vec_u32_set(feature_hist[0], j, vec_u32_get(feature_hist[0], j) + vec_u32_get(h, j));
     }
 }
 
-void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts, GArray **feature_hist, char *directory, data_structures *hashes, statistics *stats, GHashTable *barcode_to_deduped_hash, GHashTable *filtered_barcodes_hash){
+void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barcoded_counts, vec_u32_t **feature_hist, char *directory, data_structures *hashes, statistics *stats, khash_t(u32ptr)* barcode_to_deduped_hash, khash_t(strptr)* filtered_barcodes_hash){
     int total_deduped_counts = 0;
     int total_raw_counts = 0;
     char barcodes_file[FILENAME_LENGTH];
@@ -1226,31 +1732,34 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     // --- Step 2: Calculate stats and write the Matrix Market header ---
     size_t number_of_features_seen = 0;
     size_t number_of_barcode_entries = 0;
-    GHashTableIter iter;
-    gpointer key, value;
 
-    GArray *feature_richness_hist = g_array_new(FALSE, TRUE, sizeof(uint32_t));
+    vec_u32_t *feature_richness_hist = vec_u32_init();
 
-    g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
+    khint_t k;
+    for (k = kh_begin(barcode_to_deduped_hash); k != kh_end(barcode_to_deduped_hash); ++k) {
+        if (!kh_exist(barcode_to_deduped_hash, k)) continue;
+        uint32_t bcode_key = kh_key(barcode_to_deduped_hash, k);
+        void *value = kh_val(barcode_to_deduped_hash, k);
+        
         if (filtered_barcodes_hash) {
             char barcode[barcode_length + 1];
-            code2string((unsigned char *)key, barcode, barcode_code_length);
+            code2string((unsigned char *)&bcode_key, barcode, barcode_code_length);
             if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
-            if (g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL) {
+            khint_t kf = kh_get(strptr, filtered_barcodes_hash, barcode);
+            if (kf == kh_end(filtered_barcodes_hash)) {
                 continue;
             }
         }
         number_of_barcode_entries++;
-        GHashTable *deduped_hash = (GHashTable *)value;
-        guint n_features_in_barcode = g_hash_table_size(deduped_hash);
+        khash_t(u32u32) *deduped_hash = (khash_t(u32u32)*)value;
+        size_t n_features_in_barcode = kh_size(deduped_hash);
         number_of_features_seen += n_features_in_barcode;
 
         if (feature_richness_hist && n_features_in_barcode > 0) {
-            if (feature_richness_hist->len <= n_features_in_barcode) {
-                g_array_set_size(feature_richness_hist, n_features_in_barcode + 1);
+            if (vec_u32_size(feature_richness_hist) <= n_features_in_barcode) {
+                vec_u32_set_size(feature_richness_hist, n_features_in_barcode + 1);
             }
-            g_array_index(feature_richness_hist, uint32_t, n_features_in_barcode)++;
+            vec_u32_inc(feature_richness_hist, n_features_in_barcode);
         }
     }
     
@@ -1263,43 +1772,52 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     // A more direct approach to building the histograms.
 
     // Step 1: Find max co-occurrence and build an inverted index (feature -> barcodes).
-    GHashTable *feature_to_barcodes_hash =
-        g_hash_table_new(g_direct_hash, g_direct_equal);
+    khash_t(u32ptr) *feature_to_barcodes_hash = kh_init(u32ptr);
     int global_max_cooccur = 0;
 
-    gpointer       barcode_key, deduped_hash_value;
     int skipped_barcodes = 0;
     int processed_barcodes = 0;
-    g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
-    while (g_hash_table_iter_next(&iter, &barcode_key, &deduped_hash_value)) {
+    for (k = kh_begin(barcode_to_deduped_hash); k != kh_end(barcode_to_deduped_hash); ++k) {
+        if (!kh_exist(barcode_to_deduped_hash, k)) continue;
+        uint32_t barcode_key = kh_key(barcode_to_deduped_hash, k);
+        void *deduped_hash_value = kh_val(barcode_to_deduped_hash, k);
+        
         char barcode[barcode_length + 1];
-        code2string((unsigned char *)barcode_key, barcode, barcode_code_length);
+        code2string((unsigned char *)&barcode_key, barcode, barcode_code_length);
         if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
-        if (filtered_barcodes_hash &&
-            g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL){
-            skipped_barcodes++;
-            continue;
+        if (filtered_barcodes_hash) {
+            khint_t kf = kh_get(strptr, filtered_barcodes_hash, barcode);
+            if (kf == kh_end(filtered_barcodes_hash)) {
+                skipped_barcodes++;
+                continue;
+            }
         }
         processed_barcodes++;
-        GHashTable *features_in_barcode = (GHashTable *)deduped_hash_value;
-        guint       n_feats_in_bc       = g_hash_table_size(features_in_barcode);
+        khash_t(u32u32) *features_in_barcode = (khash_t(u32u32)*)deduped_hash_value;
+        size_t n_feats_in_bc = kh_size(features_in_barcode);
         if (n_feats_in_bc == 0) continue;
-        if (n_feats_in_bc  > global_max_cooccur) {
+        if (n_feats_in_bc > global_max_cooccur) {
             global_max_cooccur = n_feats_in_bc;
         }
 
-        GList *feat_idxs = g_hash_table_get_keys(features_in_barcode);
-        for (GList *l = feat_idxs; l; l = l->next) {
-            int f_idx = GPOINTER_TO_INT(l->data);
+        khint_t kf;
+        for (kf = kh_begin(features_in_barcode); kf != kh_end(features_in_barcode); ++kf) {
+            if (!kh_exist(features_in_barcode, kf)) continue;
+            uint32_t f_idx = kh_key(features_in_barcode, kf);
             if (f_idx <= 0) continue;
 
-            GList *barcodes_for_feature =
-                g_hash_table_lookup(feature_to_barcodes_hash, l->data);
-            barcodes_for_feature = g_list_prepend(barcodes_for_feature, barcode_key);
-            g_hash_table_insert(feature_to_barcodes_hash, l->data,
-                                barcodes_for_feature);
+            khint_t kfb = kh_get(u32ptr, feature_to_barcodes_hash, f_idx);
+            barcode_list_t *barcodes_for_feature;
+            if (kfb == kh_end(feature_to_barcodes_hash)) {
+                barcodes_for_feature = barcode_list_init();
+                int ret;
+                khint_t kh = kh_put(u32ptr, feature_to_barcodes_hash, f_idx, &ret);
+                kh_val(feature_to_barcodes_hash, kh) = barcodes_for_feature;
+            } else {
+                barcodes_for_feature = (barcode_list_t*)kh_val(feature_to_barcodes_hash, kfb);
+            }
+            barcode_list_add(barcodes_for_feature, barcode_key);
         }
-        g_list_free(feat_idxs);
     }
     fprintf(stderr, "Skipped barcodes: %d\n", skipped_barcodes);
     fprintf(stderr, "Processed barcodes: %d\n", processed_barcodes);
@@ -1312,24 +1830,23 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     }
 
     // Step 3: Populate the histogram matrix using the inverted index.
-    GList *active_features = g_hash_table_get_keys(feature_to_barcodes_hash);
-    for (GList *l = active_features; l; l = l->next) {
-        int   f_idx    = GPOINTER_TO_INT(l->data);
-        GList *barcodes = g_hash_table_lookup(feature_to_barcodes_hash, l->data);
+    for (k = kh_begin(feature_to_barcodes_hash); k != kh_end(feature_to_barcodes_hash); ++k) {
+        if (!kh_exist(feature_to_barcodes_hash, k)) continue;
+        uint32_t f_idx = kh_key(feature_to_barcodes_hash, k);
+        barcode_list_t *barcodes = (barcode_list_t*)kh_val(feature_to_barcodes_hash, k);
 
-        for (GList *b_node = barcodes; b_node; b_node = b_node->next) {
-            char *      barcode_str = (char *)b_node->data;
-            GHashTable *deduped_hash =
-                g_hash_table_lookup(barcode_to_deduped_hash, barcode_str);
-
-            int num_feats          = g_hash_table_size(deduped_hash);
+        for (size_t i = 0; i < barcodes->n; ++i) {
+            uint32_t bcode_key = barcodes->keys[i];
+            khint_t kb = kh_get(u32ptr, barcode_to_deduped_hash, bcode_key);
+            if (kb == kh_end(barcode_to_deduped_hash)) continue;
+            khash_t(u32u32) *deduped_hash = (khash_t(u32u32)*)kh_val(barcode_to_deduped_hash, kb);
+            int num_feats = kh_size(deduped_hash);
 
             if (num_feats > 0) {
                 coexpression_histograms[f_idx][num_feats]++;
             }
         }
     }
-    g_list_free(active_features);
 
     // Step 4: Set column 0 to the max co-occurrence for each feature.
     for (int i = 1; i <= features->number_of_features; ++i) {
@@ -1344,14 +1861,12 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     }
 
     // --- Clean up ---
-    // The barcode strings are owned by barcode_to_deduped_hash, so we only
-    // need to free the lists themselves.
-    GList *f2b_values = g_hash_table_get_values(feature_to_barcodes_hash);
-    for (GList *l = f2b_values; l; l = l->next) {
-        g_list_free(l->data);
+    for (k = kh_begin(feature_to_barcodes_hash); k != kh_end(feature_to_barcodes_hash); ++k) {
+        if (kh_exist(feature_to_barcodes_hash, k)) {
+            barcode_list_destroy((barcode_list_t*)kh_val(feature_to_barcodes_hash, k));
+        }
     }
-    g_list_free(f2b_values);
-    g_hash_table_destroy(feature_to_barcodes_hash);
+    kh_destroy(u32ptr, feature_to_barcodes_hash);
 
     generate_heatmap(output_directory, features, coexpression_histograms);
 
@@ -1362,53 +1877,59 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     // --- Step 3: Iterate through all barcodes to write files and calculate final stats ---
     int total_barcodes=0;
     int total_excluded_barcodes=0;
-    g_hash_table_iter_init(&iter, hashes->filtered_hash);
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
-        feature_counts *entry = (feature_counts*)value;
-        total_raw_counts += GPOINTER_TO_UINT(g_hash_table_lookup(entry->counts, GUINT_TO_POINTER(0)));
+    for (k = kh_begin(hashes->filtered_hash); k != kh_end(hashes->filtered_hash); ++k) {
+        if (!kh_exist(hashes->filtered_hash, k)) continue;
+        feature_counts *entry = (feature_counts*)kh_val(hashes->filtered_hash, k);
+        
+        khint_t k0 = kh_get(u32u32, entry->counts, 0);
+        uint32_t total = (k0 != kh_end(entry->counts)) ? kh_val(entry->counts, k0) : 0;
+        total_raw_counts += total;
+        
         // --- Populate total_barcoded_counts (raw counts) ---
-        GHashTableIter raw_iter;
-        gpointer raw_key, raw_value;
-        g_hash_table_iter_init(&raw_iter, entry->counts);
-        while (g_hash_table_iter_next(&raw_iter, &raw_key, &raw_value)) {
-            int feature_index = GPOINTER_TO_INT(raw_key);
+        khint_t kraw;
+        for (kraw = kh_begin(entry->counts); kraw != kh_end(entry->counts); ++kraw) {
+            if (!kh_exist(entry->counts, kraw)) continue;
+            uint32_t feature_index = kh_key(entry->counts, kraw);
             if (feature_index > 0) { // Skip the total stored at index 0
-                barcoded_counts[feature_index - 1] += GPOINTER_TO_INT(raw_value);
+                barcoded_counts[feature_index - 1] += kh_val(entry->counts, kraw);
             }
         }
 
         // Check if this barcode has any deduplicated counts
-        GHashTable* deduped_hash = g_hash_table_lookup(barcode_to_deduped_hash, entry->sequence_code);
-        if (deduped_hash && g_hash_table_size(deduped_hash) > 0) {
-            
-            char barcode[barcode_length + 1];
-            code2string(entry->sequence_code, barcode, barcode_code_length);
-            if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
-            if (filtered_barcodes_hash && g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL) {
-                total_excluded_barcodes++;
-                continue;
-            }
-            
-            fprintf(barcodesfp, "%s\n", barcode);
-            // Write its matrix entries
-            GHashTableIter dedup_iter;
-            gpointer dedup_key, dedup_value;
-            g_hash_table_iter_init(&dedup_iter, deduped_hash);
-            while (g_hash_table_iter_next(&dedup_iter, &dedup_key, &dedup_value)) {
-                int deduped_count = GPOINTER_TO_INT(dedup_value);
-
-                int f_idx = GPOINTER_TO_INT(dedup_key);          /* 1-based          */
-                deduped_counts[f_idx - 1] += deduped_count;      /* This was missing */
-                int c     = deduped_count;                       /* 0,1,2,…          */
-
-                update_feature_hist(feature_hist, f_idx, c);
-                fprintf(matrixfp, "%d %d %d\n", GPOINTER_TO_INT(dedup_key), total_barcodes + 1, deduped_count);
-                total_deduped_counts += deduped_count;
+        uint32_t bcode_key = *(uint32_t*)entry->sequence_code;
+        khint_t kdedup = kh_get(u32ptr, barcode_to_deduped_hash, bcode_key);
+        if (kdedup != kh_end(barcode_to_deduped_hash)) {
+            khash_t(u32u32)* deduped_hash = (khash_t(u32u32)*)kh_val(barcode_to_deduped_hash, kdedup);
+            if (deduped_hash && kh_size(deduped_hash) > 0) {
+                char barcode[barcode_length + 1];
+                code2string(entry->sequence_code, barcode, barcode_code_length);
+                if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
+                if (filtered_barcodes_hash) {
+                    khint_t kf = kh_get(strptr, filtered_barcodes_hash, barcode);
+                    if (kf == kh_end(filtered_barcodes_hash)) {
+                        total_excluded_barcodes++;
+                        continue;
+                    }
+                }
                 
-            }
-            total_barcodes++;
-        }
+                fprintf(barcodesfp, "%s\n", barcode);
+                // Write its matrix entries
+                khint_t kdedup_iter;
+                for (kdedup_iter = kh_begin(deduped_hash); kdedup_iter != kh_end(deduped_hash); ++kdedup_iter) {
+                    if (!kh_exist(deduped_hash, kdedup_iter)) continue;
+                    uint32_t f_idx = kh_key(deduped_hash, kdedup_iter);
+                    uint32_t deduped_count = kh_val(deduped_hash, kdedup_iter);
 
+                    deduped_counts[f_idx - 1] += deduped_count;
+                    int c = deduped_count;
+
+                    update_feature_hist(feature_hist, f_idx, c);
+                    fprintf(matrixfp, "%d %d %d\n", f_idx, total_barcodes + 1, deduped_count);
+                    total_deduped_counts += deduped_count;
+                }
+                total_barcodes++;
+            }
+        }
     }
     
     // --- Step 3.5: Create cumulative histogram at index 0 ---
@@ -1428,34 +1949,34 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     fprintf (stderr, "Total deduped feature counts %d\n", total_deduped_counts);
     fprintf (stderr, "Total barcodes %d\n", total_barcodes);
     fprintf (stderr, "Total excluded barcodes %d\n", total_excluded_barcodes);
-    fprintf (stderr, "Total unique barcode UMIs %d\n", g_hash_table_size(hashes->sequence_umi_hash));
-    fprintf (stderr, "Total whitelisted barcodes %d\n", g_hash_table_size(hashes->filtered_hash));
+    fprintf (stderr, "Total unique barcode UMIs %d\n", kh_size(hashes->sequence_umi_hash));
+    fprintf (stderr, "Total whitelisted barcodes %d\n", kh_size(hashes->filtered_hash));
     fprintf (stderr,"Total feature counts %d total_unmatched_reads %ld\n", total_raw_counts, stats->total_unmatched_features);
     fprintf (stderr, "Percentage reads assigned to barcode %.4f\n", 100.0*(total_raw_counts/(double) (total_raw_counts+stats->total_unmatched_features)));
     fprintf (statsfp, "Total feature counts %d\n", total_raw_counts);
     fprintf (statsfp, "Total deduped feature counts %d\n", total_deduped_counts);
     fprintf (statsfp, "Total barcodes %d\n", total_barcodes);
     fprintf (statsfp, "Total excluded barcodes %d\n", total_excluded_barcodes);
-    fprintf (statsfp, "Total unique barcode UMIs %d\n", g_hash_table_size(hashes->sequence_umi_hash));
-    fprintf (statsfp, "Total whitelisted barcodes %d\n", g_hash_table_size(hashes->filtered_hash));
+    fprintf (statsfp, "Total unique barcode UMIs %d\n", kh_size(hashes->sequence_umi_hash));
+    fprintf (statsfp, "Total whitelisted barcodes %d\n", kh_size(hashes->filtered_hash));
     fprintf (statsfp,"Total_unmatched_reads %ld\n", stats->total_unmatched_features);
     fprintf (statsfp, "Percentage reads assigned to barcode %.4f\n", 100.0*(total_raw_counts/(double) (total_raw_counts+stats->total_unmatched_features)));
     fclose(statsfp);
 
     if (feature_richness_hist) {
         plot_simple_histogram(output_directory, "feature_richness_histogram.html", "Feature Richness per Barcode", "Number of Distinct Features", "Frequency (Barcodes)", feature_richness_hist);
-        g_array_unref(feature_richness_hist);
+        vec_u32_destroy(feature_richness_hist);
     }
     if (feature_hist[0]) {
         plot_simple_histogram(output_directory, "feature_multiplicity_histogram.html", "Feature Multiplicity", "Deduplicated UMI Count", "Frequency", feature_hist[0]);
     }
         // After writing the text files, generate the heatmaps
     
-    // --- Convert feature_hist (GArray**) to a dense matrix for the heatmap ---
+    // --- Convert feature_hist (vec_u32_t**) to a dense matrix for the heatmap ---
     int max_len = 0;
     for (int i = 1; i <= features->number_of_features; i++) {
-        if (feature_hist[i] && feature_hist[i]->len > max_len) {
-            max_len = feature_hist[i]->len;
+        if (feature_hist[i] && vec_u32_size(feature_hist[i]) > max_len) {
+            max_len = vec_u32_size(feature_hist[i]);
         }
     }
     
@@ -1470,8 +1991,8 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
 
     for (int i = 1; i <= features->number_of_features; ++i) {
         if (feature_hist[i]) {
-            for (guint j = 0; j < feature_hist[i]->len; j++) {
-                deduped_histograms[i][j] = g_array_index(feature_hist[i], uint32_t, j);
+            for (size_t j = 0; j < vec_u32_size(feature_hist[i]); j++) {
+                deduped_histograms[i][j] = vec_u32_get(feature_hist[i], j);
             }
         }
     }
@@ -1502,24 +2023,25 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
         // A more direct approach to building the histograms.
 
         // Step 1: Find max richness and build an inverted index (feature -> barcodes).
-        GHashTable *feature_to_barcodes_hash =
-                            g_hash_table_new(g_direct_hash, g_direct_equal);
+        khash_t(u32ptr) *feature_to_barcodes_hash = kh_init(u32ptr);
         int global_max_richness = 0;
 
-        GHashTableIter iter;
-        gpointer       barcode_key, deduped_hash_value;
-
-        g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
-        while (g_hash_table_iter_next(&iter, &barcode_key, &deduped_hash_value)) {
+        for (k = kh_begin(barcode_to_deduped_hash); k != kh_end(barcode_to_deduped_hash); ++k) {
+            if (!kh_exist(barcode_to_deduped_hash, k)) continue;
+            uint32_t barcode_key = kh_key(barcode_to_deduped_hash, k);
+            void *deduped_hash_value = kh_val(barcode_to_deduped_hash, k);
+            
             char barcode[barcode_length + 1];
-            code2string((unsigned char *)barcode_key, barcode, barcode_code_length);    
+            code2string((unsigned char *)&barcode_key, barcode, barcode_code_length);    
             if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
-            if (filtered_barcodes_hash &&
-                g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL)
-                continue;
+            if (filtered_barcodes_hash) {
+                khint_t kf = kh_get(strptr, filtered_barcodes_hash, barcode);
+                if (kf == kh_end(filtered_barcodes_hash))
+                    continue;
+            }
 
-            GHashTable *features_in_barcode = (GHashTable *)deduped_hash_value;
-            guint       n_feats_in_bc       = g_hash_table_size(features_in_barcode);
+            khash_t(u32u32) *features_in_barcode = (khash_t(u32u32)*)deduped_hash_value;
+            size_t n_feats_in_bc = kh_size(features_in_barcode);
 
             if (n_feats_in_bc == 0) continue;
 
@@ -1527,18 +2049,24 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
                 global_max_richness = n_feats_in_bc;
             }
 
-            GList *feat_idxs = g_hash_table_get_keys(features_in_barcode);
-            for (GList *l = feat_idxs; l; l = l->next) {
-                int f_idx = GPOINTER_TO_INT(l->data);
+            khint_t kf;
+            for (kf = kh_begin(features_in_barcode); kf != kh_end(features_in_barcode); ++kf) {
+                if (!kh_exist(features_in_barcode, kf)) continue;
+                uint32_t f_idx = kh_key(features_in_barcode, kf);
                 if (f_idx <= 0) continue;
 
-                GList *barcodes_for_feature =
-                    g_hash_table_lookup(feature_to_barcodes_hash, l->data);
-                barcodes_for_feature = g_list_prepend(barcodes_for_feature, barcode_key);
-                g_hash_table_insert(feature_to_barcodes_hash, l->data,
-                                    barcodes_for_feature);
+                khint_t kfb = kh_get(u32ptr, feature_to_barcodes_hash, f_idx);
+                barcode_list_t *barcodes_for_feature;
+                if (kfb == kh_end(feature_to_barcodes_hash)) {
+                    barcodes_for_feature = barcode_list_init();
+                    int ret;
+                    khint_t kh = kh_put(u32ptr, feature_to_barcodes_hash, f_idx, &ret);
+                    kh_val(feature_to_barcodes_hash, kh) = barcodes_for_feature;
+                } else {
+                    barcodes_for_feature = (barcode_list_t*)kh_val(feature_to_barcodes_hash, kfb);
+                }
+                barcode_list_add(barcodes_for_feature, barcode_key);
             }
-            g_list_free(feat_idxs);
         }
 
         // Step 2: Allocate and zero the dense histogram matrix.
@@ -1550,24 +2078,23 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
         }
 
         // Step 3: Populate the histogram matrix using the inverted index.
-        GList *active_features = g_hash_table_get_keys(feature_to_barcodes_hash);
-        for (GList *l = active_features; l; l = l->next) {
-            int   f_idx    = GPOINTER_TO_INT(l->data);
-            GList *barcodes = g_hash_table_lookup(feature_to_barcodes_hash, l->data);
+        for (k = kh_begin(feature_to_barcodes_hash); k != kh_end(feature_to_barcodes_hash); ++k) {
+            if (!kh_exist(feature_to_barcodes_hash, k)) continue;
+            uint32_t f_idx = kh_key(feature_to_barcodes_hash, k);
+            barcode_list_t *barcodes = (barcode_list_t*)kh_val(feature_to_barcodes_hash, k);
 
-            for (GList *b_node = barcodes; b_node; b_node = b_node->next) {
-                char *      barcode_str = (char *)b_node->data;
-                GHashTable *deduped_hash =
-                    g_hash_table_lookup(barcode_to_deduped_hash, barcode_str);
-
-                int num_feats = g_hash_table_size(deduped_hash);
+            for (size_t i = 0; i < barcodes->n; ++i) {
+                uint32_t bcode_key = barcodes->keys[i];
+                khint_t kb = kh_get(u32ptr, barcode_to_deduped_hash, bcode_key);
+                if (kb == kh_end(barcode_to_deduped_hash)) continue;
+                khash_t(u32u32) *deduped_hash = (khash_t(u32u32)*)kh_val(barcode_to_deduped_hash, kb);
+                int num_feats = kh_size(deduped_hash);
 
                 if (num_feats > 0) {
                     richness_histograms[f_idx][num_feats]++;
                 }
             }
         }
-        g_list_free(active_features);
 
         // Step 4: Set column 0 to the max richness for each feature.
         for (int i = 1; i <= features->number_of_features; ++i) {
@@ -1582,14 +2109,12 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
         }
 
         // --- Clean up ---
-        // The barcode strings are owned by barcode_to_deduped_hash, so we only
-        // need to free the lists themselves.
-        GList *f2b_values = g_hash_table_get_values(feature_to_barcodes_hash);
-        for (GList *l = f2b_values; l; l = l->next) {
-            g_list_free(l->data);
+        for (k = kh_begin(feature_to_barcodes_hash); k != kh_end(feature_to_barcodes_hash); ++k) {
+            if (kh_exist(feature_to_barcodes_hash, k)) {
+                barcode_list_destroy((barcode_list_t*)kh_val(feature_to_barcodes_hash, k));
+            }
         }
-        g_list_free(f2b_values);
-        g_hash_table_destroy(feature_to_barcodes_hash);
+        kh_destroy(u32ptr, feature_to_barcodes_hash);
 
         generate_heatmap(output_directory, features, richness_histograms);
 
@@ -1623,50 +2148,54 @@ void printFeatureCounts(feature_arrays *features, int *deduped_counts, int *barc
     fprintf(fpcfp,
             "barcode,num_features,top_feature_index,total_deduped_umi\n");
 
-    g_hash_table_iter_init(&iter, barcode_to_deduped_hash);
-    while (g_hash_table_iter_next(&iter, &barcode_key, &deduped_hash_value)) {
+    for (k = kh_begin(barcode_to_deduped_hash); k != kh_end(barcode_to_deduped_hash); ++k) {
+        if (!kh_exist(barcode_to_deduped_hash, k)) continue;
+        uint32_t barcode_key = kh_key(barcode_to_deduped_hash, k);
+        void *deduped_hash_value = kh_val(barcode_to_deduped_hash, k);
+        
         char barcode[barcode_length + 1];
-        code2string((unsigned char *)barcode_key, barcode, barcode_code_length);
+        code2string((unsigned char *)&barcode_key, barcode, barcode_code_length);
         if (translate_NXT) translate_nxt_inplace(barcode, barcode_length);
 
-        if (filtered_barcodes_hash &&
-            g_hash_table_lookup(filtered_barcodes_hash, barcode) == NULL){
-            skipped_barcodes++;
-            continue;
+        if (filtered_barcodes_hash) {
+            khint_t kf = kh_get(strptr, filtered_barcodes_hash, barcode);
+            if (kf == kh_end(filtered_barcodes_hash)) {
+                skipped_barcodes++;
+                continue;
+            }
         }
         processed_barcodes++;
 
         /* ------------------------------------
          *  Data for feature_per_cell.csv
          * ------------------------------------*/
-        GHashTable *features_in_barcode = (GHashTable *)deduped_hash_value;
-        guint       n_feats_in_bc       = g_hash_table_size(features_in_barcode);
+        khash_t(u32u32) *features_in_barcode = (khash_t(u32u32)*)deduped_hash_value;
+        size_t n_feats_in_bc = kh_size(features_in_barcode);
 
-        guint32     total_umi  = 0;
-        guint32     top_count  = 0;
-        guint32     top_feat   = 0;
-        gboolean    tie        = FALSE;
+        uint32_t total_umi  = 0;
+        uint32_t top_count  = 0;
+        uint32_t top_feat   = 0;
+        int tie = 0;
 
-        GHashTableIter feat_iter;
-        gpointer      feat_k, feat_v;
-        g_hash_table_iter_init(&feat_iter, features_in_barcode);
-        while (g_hash_table_iter_next(&feat_iter, &feat_k, &feat_v)) {
-            guint32 feat_idx  = GPOINTER_TO_UINT(feat_k);
-            guint32 feat_cnt  = GPOINTER_TO_UINT(feat_v);
-            total_umi        += feat_cnt;
+        khint_t kfeat;
+        for (kfeat = kh_begin(features_in_barcode); kfeat != kh_end(features_in_barcode); ++kfeat) {
+            if (!kh_exist(features_in_barcode, kfeat)) continue;
+            uint32_t feat_idx = kh_key(features_in_barcode, kfeat);
+            uint32_t feat_cnt = kh_val(features_in_barcode, kfeat);
+            total_umi += feat_cnt;
 
             if (feat_cnt > top_count) {
                 top_count = feat_cnt;
                 top_feat  = feat_idx;
-                tie       = FALSE;
+                tie = 0;
             } else if (feat_cnt == top_count) {
-                tie = TRUE;
+                tie = 1;
             }
         }
         if (tie) top_feat = 0;
 
         /* write the CSV line */
-        fprintf(fpcfp, "%s,%u,%u,%u\n",
+        fprintf(fpcfp, "%s,%zu,%u,%u\n",
                 barcode, n_feats_in_bc, top_feat, total_umi);
 
         /* ------------------------------------ */
@@ -1709,7 +2238,9 @@ int find_variant_match(unsigned char *code, int sequence_index, unsigned char *c
     for (unsigned char i=1; i<4; i++){
         unsigned char mod = code[index] ^ (i << shift );
         mod_code[index]=mod;
-        if (g_hash_table_lookup(whitelist_hash, mod_code) != NULL){
+        uint32_t mod_key = *(uint32_t*)mod_code;
+        khint_t k = kh_get(u32ptr, whitelist_hash, mod_key);
+        if (k != kh_end(whitelist_hash)){
             corrected_bases[number_of_variants++]=mod;
         }
     }
@@ -1738,25 +2269,83 @@ unsigned char* find_best_posterior_match (unmatched_barcodes_features_block *ent
     }
     double priors[max_barcode_mismatches+1];
     double evidence[max_barcode_mismatches+1];
+    int total_counts_arr[max_barcode_mismatches+1];
     double total_evidence = 0.0;
+    int trace = 0;
+    char obs_barcode[4 * barcode_code_length + 1];
+    char umi_str[4 * umi_code_length + 1];
+    pf_trace_rescue_init_once();
+    if (pf_trace_rescue_enabled) {
+        code2string(entry->barcode, obs_barcode, barcode_code_length);
+        code2string(entry->umi, umi_str, umi_code_length);
+        if (!pf_trace_rescue_list) {
+            trace = 1;
+        } else if (pf_trace_list_contains(pf_trace_rescue_list, obs_barcode)) {
+            trace = 1;
+        } else {
+            for (int i = 0; i < entry->number_of_closest_barcodes; i++) {
+                char cand_barcode[4 * barcode_code_length + 1];
+                unsigned char *cand = (entry->closest_barcodes) + i * barcode_code_length;
+                code2string(cand, cand_barcode, barcode_code_length);
+                if (pf_trace_list_contains(pf_trace_rescue_list, cand_barcode)) {
+                    trace = 1;
+                    break;
+                }
+            }
+        }
+    }
     for (int i=0; i<entry->number_of_closest_barcodes; i++){
         //find counts for the barcode
         int total_counts=1;
         unsigned char* barcode =(entry->closest_barcodes) + i*barcode_code_length;
-        feature_counts *s=g_hash_table_lookup(hashes->filtered_hash, barcode);
-        if (s != NULL){
-            total_counts += GPOINTER_TO_UINT(g_hash_table_lookup(s->counts, GUINT_TO_POINTER(0)));
+        uint32_t bcode_key = *(uint32_t*)barcode;
+        khint_t k = kh_get(u32ptr, hashes->filtered_hash, bcode_key);
+        if (k != kh_end(hashes->filtered_hash)){
+            feature_counts *s = (feature_counts*)kh_val(hashes->filtered_hash, k);
+            khint_t k0 = kh_get(u32u32, s->counts, 0);
+            if (k0 != kh_end(s->counts)) {
+                total_counts += kh_val(s->counts, k0);
+            }
         }
+        total_counts_arr[i] = total_counts;
         priors[i]= pow(10,-0.1*(entry->Qscores[i]-33));
         evidence[i]=(double) total_counts * priors[i];
         total_evidence+=evidence[i];
+    }
+    if (trace) {
+        fprintf(pf_trace_rescue_fp,
+                "RESCUE obs=%s umi=%s feat=%u match_pos=%u nclose=%u min_post=%.6f\n",
+                obs_barcode, umi_str, entry->feature_index, entry->match_position,
+                entry->number_of_closest_barcodes, min_posterior);
+        for (int i = 0; i < entry->number_of_closest_barcodes; i++) {
+            char cand_barcode[4 * barcode_code_length + 1];
+            unsigned char *cand = (entry->closest_barcodes) + i * barcode_code_length;
+            code2string(cand, cand_barcode, barcode_code_length);
+            fprintf(pf_trace_rescue_fp,
+                    "  cand[%d]=%s q=%u phred=%d total=%d prior=%.6e evidence=%.6e posterior=%.6e\n",
+                    i, cand_barcode, (unsigned int)entry->Qscores[i],
+                    (int)entry->Qscores[i] - 33, total_counts_arr[i],
+                    priors[i], evidence[i],
+                    (total_evidence > 0.0) ? (evidence[i] / total_evidence) : 0.0);
+        }
     }
     for (int i = 0; i < entry->number_of_closest_barcodes; i++) {
         double posteriors = evidence[i] / total_evidence;
         if(posteriors > min_posterior){
             stats->pending_recovered++;
+            if (trace) {
+                char chosen_barcode[4 * barcode_code_length + 1];
+                unsigned char *chosen = (entry->closest_barcodes) + i * barcode_code_length;
+                code2string(chosen, chosen_barcode, barcode_code_length);
+                fprintf(pf_trace_rescue_fp,
+                        "  chosen=%s posterior=%.6e\n",
+                        chosen_barcode, posteriors);
+            }
             return (entry->closest_barcodes) + i*barcode_code_length;
         }   
+    }
+    if (trace) {
+        fprintf(pf_trace_rescue_fp, "  chosen=none\n");
     }
     return 0;
 }
@@ -1890,10 +2479,12 @@ int checkAndCorrectFeature(char *line, feature_arrays *features,int maxHammingDi
     }
 }
 size_t barcode_code2number(unsigned char *code){
-    unsigned char *key=(unsigned char*)g_hash_table_lookup(whitelist_hash, code);
-    if (key == NULL){
+    uint32_t key_val = *(uint32_t*)code;
+    khint_t k = kh_get(u32ptr, whitelist_hash, key_val);
+    if (k == kh_end(whitelist_hash)){
         return 0;
     }
+    unsigned char *key = (unsigned char*)kh_val(whitelist_hash, k);
     return (key-whitelist)/barcode_code_length+1;
 }
 int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint16_t match_position, data_structures *hashes, memory_pool_collection *pools, statistics *stats, int barcode_constant_offset){
@@ -1924,7 +2515,9 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
         //no Ns and the barcode is good in terms of ACGT 
         //check if the barcode is in the filtered whitelist 
         string2code(candidateBarcode, barcode_length, code); 
-        if (g_hash_table_lookup(whitelist_hash, code)){
+        uint32_t key = *(uint32_t*)code;
+        khint_t kw = kh_get(u32ptr, whitelist_hash, key);
+        if (kw != kh_end(whitelist_hash)){
             update_feature_counts_from_code(code, sequence+barcode_length, feature_index, hashes, pools);
             stats->valid++;            
             return 1;
@@ -1974,7 +2567,9 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
             string2code(corrected_seqs[i], barcode_length, code);
             char corrected_barcode[barcode_length+1];   
             code2string(code, corrected_barcode, barcode_code_length);
-            if (g_hash_table_lookup(whitelist_hash, code)){
+            uint32_t key = *(uint32_t*)code;
+            khint_t k = kh_get(u32ptr, whitelist_hash, key);
+            if (k != kh_end(whitelist_hash)){
                 if (number_of_matches){
                     return 0;
                 }
@@ -1998,22 +2593,23 @@ int checkAndCorrectBarcode(char **lines, int maxN, uint32_t feature_index, uint1
 }
 
 
-void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, GHashTable *filtered_barcodes_hash){
+void finalize_processing(feature_arrays *features, data_structures *hashes,  char *directory, memory_pool_collection *pools, statistics *stats, uint16_t stringency, uint16_t min_counts, double min_posterior, khash_t(strptr)* filtered_barcodes_hash){
     process_pending_barcodes(hashes, pools, stats,min_posterior);
     double elapsed_time = get_time_in_seconds() - stats->start_time;
     fprintf(stderr, "Finished processing %ld reads in %.2f seconds (%.1f thousand reads/second)\n", stats->number_of_reads, elapsed_time, stats->number_of_reads / (double)elapsed_time / 1000.0);
 
     //find size of whitelist_hash and non_whitelist_hash
-    int total_feature_counts[features->number_of_features];
-    int total_deduped_counts[features->number_of_features];
-    int total_barcoded_counts[features->number_of_features];
+    int total_feature_counts[features->number_of_features + 1];
+    int total_deduped_counts[features->number_of_features + 1];
+    int total_barcoded_counts[features->number_of_features + 1];
 
-    GArray **feature_hist = g_new0(GArray*, features->number_of_features + 1);
+    vec_u32_t **feature_hist = calloc(features->number_of_features + 1, sizeof(vec_u32_t*));
 
     
     // Create and populate the deduped counts hash table once.
-    GHashTable* barcode_to_deduped_hash = g_hash_table_new_full(hash_int32, equal_int32, NULL, (GDestroyNotify)g_hash_table_destroy);
+    khash_t(u32ptr)* barcode_to_deduped_hash = kh_init(u32ptr);
     find_deduped_counts(hashes, barcode_to_deduped_hash, stringency, min_counts);
+    pf_trace_validate_keys(hashes, barcode_to_deduped_hash);
 
     // Print the unfiltered results
     printFeatureCounts(features, total_deduped_counts, total_barcoded_counts, feature_hist, directory, hashes, stats, barcode_to_deduped_hash, NULL);
@@ -2023,7 +2619,7 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
         // Reset co-expression and histogram data before the second ru
         for (int i = 0; i < features->number_of_features + 1; i++) {
             if (feature_hist[i]) {
-                g_array_unref(feature_hist[i]);
+                vec_u32_destroy(feature_hist[i]);
                 feature_hist[i] = NULL;
             }
         }
@@ -2032,7 +2628,14 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     }
     
     // Clean up the hash table now that all printing is done.
-    g_hash_table_destroy(barcode_to_deduped_hash);
+    // Destroy nested hash tables first
+    khint_t k;
+    for (k = kh_begin(barcode_to_deduped_hash); k != kh_end(barcode_to_deduped_hash); ++k) {
+        if (kh_exist(barcode_to_deduped_hash, k)) {
+            kh_destroy(u32u32, (khash_t(u32u32)*)kh_val(barcode_to_deduped_hash, k));
+        }
+    }
+    kh_destroy(u32ptr, barcode_to_deduped_hash);
     
     //DEBUG_PRINT( "Number of reads matched to a feature %ld\n", valid);
     print_feature_sequences(features, total_feature_counts, directory, hashes);
@@ -2045,12 +2648,12 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
     }
     fprintf(deduped_hist_fp, "FeatureName\tDedupedCount\tFrequency\n");
     for (int i = 0; i < features->number_of_features; i++) {
-        GArray *h = feature_hist[i + 1]; // Histograms are 1-indexed
-        if (h && h->len > 0) {
-            for (unsigned int j = 0; j < h->len; j++) {
-                uint32_t frequency = g_array_index(h, uint32_t, j);
+        vec_u32_t *h = feature_hist[i + 1]; // Histograms are 1-indexed
+        if (h && vec_u32_size(h) > 0) {
+            for (size_t j = 0; j < vec_u32_size(h); j++) {
+                uint32_t frequency = vec_u32_get(h, j);
                 if (frequency > 0) {
-                    fprintf(deduped_hist_fp, "%s\t%d\t%u\n", features->feature_names[i], j, frequency);
+                    fprintf(deduped_hist_fp, "%s\t%zu\t%u\n", features->feature_names[i], j, frequency);
                 }
             }
         }
@@ -2086,8 +2689,8 @@ void finalize_processing(feature_arrays *features, data_structures *hashes,  cha
 
     // Free the feature histogram arrays
     for(int i=0; i < features->number_of_features + 1; ++i)
-        if(feature_hist[i]) g_array_unref(feature_hist[i]);
-    g_free(feature_hist);
+        if(feature_hist[i]) vec_u32_destroy(feature_hist[i]);
+    free(feature_hist);
 }
 
 void open_fastq_files(const char *barcode_fastq, const char *forward_fastq, const char *reverse_fastq, gzFile *barcode_fastqgz, gzFile *forward_fastqgz, gzFile *reverse_fastqgz) {
@@ -2505,6 +3108,7 @@ void *consume_reads(void *arg) {
     const int nThreads = sample_args->nThreads;
     int nreaders=(reader_sets[0]->forward_reader && reader_sets[0]->reverse_reader)?3:2;
     const int lines_per_block=2*nreaders;           /* NEW – 4 or 6 lines */
+    pf_trace_reads_init_once();
     for (int i=0; i<6; i++){
         lines[i]=lines_buffer+i*LINE_LENGTH;
     }
@@ -2576,6 +3180,7 @@ void *consume_reads(void *arg) {
             uint32_t feature_index = 0;
             uint16_t match_position = 0;
             int missing_flag=0;
+            int barcode_ok = 0;
             if (forward_lines && reverse_lines) {
                 char *sequences[2]={0,0};
                 int orientations[2]={0,0};
@@ -2595,10 +3200,40 @@ void *consume_reads(void *arg) {
                 // need to have feature_index -1 because the feature index is 1 based but array in struct is 0 based
                 matching_sequence[features->feature_lengths[feature_index - 1]] = '\0';
                 insert_feature_sequence(matching_sequence, feature_index, hamming_distance, match_position, hashes, pools);
-                checkAndCorrectBarcode(barcode_lines, max_barcode_n, feature_index, match_position, hashes, pools, stats, barcode_constant_offset);
+                barcode_ok = checkAndCorrectBarcode(barcode_lines, max_barcode_n, feature_index, match_position, hashes, pools, stats, barcode_constant_offset);
             }
             else{
                 missing_flag=1;
+            }
+            if (barcode_ok && pf_trace_reads_enabled) {
+                char *barcode_seq = barcode_lines[0] + barcode_constant_offset;
+                char barcode_str[barcode_length + 1];
+                memcpy(barcode_str, barcode_seq, barcode_length);
+                barcode_str[barcode_length] = '\0';
+                if (!pf_trace_reads_list ||
+                    pf_trace_list_contains(pf_trace_reads_list, barcode_str)) {
+                    char umi_str[umi_length + 1];
+                    char bc_read[LINE_LENGTH];
+                    char feat_read[LINE_LENGTH];
+                    memcpy(umi_str, barcode_seq + barcode_length, umi_length);
+                    umi_str[umi_length] = '\0';
+                    strncpy(bc_read, barcode_lines[0], LINE_LENGTH - 1);
+                    bc_read[LINE_LENGTH - 1] = '\0';
+                    pf_trace_trim_newline(bc_read);
+                    feat_read[0] = '\0';
+                    if (forward_lines) {
+                        strncpy(feat_read, forward_lines[0], LINE_LENGTH - 1);
+                        feat_read[LINE_LENGTH - 1] = '\0';
+                        pf_trace_trim_newline(feat_read);
+                    } else if (reverse_lines) {
+                        strncpy(feat_read, reverse_lines[0], LINE_LENGTH - 1);
+                        feat_read[LINE_LENGTH - 1] = '\0';
+                        pf_trace_trim_newline(feat_read);
+                    }
+                    fprintf(pf_trace_reads_fp,
+                            "READ bc=%s umi=%s feat=%u match_pos=%u bc_seq=%s feat_seq=%s\n",
+                            barcode_str, umi_str, feature_index, match_position, bc_read, feat_read);
+                }
             }
             stats->number_of_reads++;
             if (stats->number_of_reads % 1000000 == 0)
@@ -2668,75 +3303,111 @@ void merge_stats(statistics *merged_stats, statistics *thread_stats) {
 }
 
 typedef struct {
-    GHashTable *dst_hash;
+    void *dst_hash;
     memory_pool_collection *dst_pool;
 } merge_context;
 
-static void merge_uint_counters(gpointer key,gpointer value,gpointer user_data)
-{
-    GHashTable *dest = (GHashTable *)user_data;
-    uintptr_t current = GPOINTER_TO_UINT(g_hash_table_lookup(dest, key));
-    uintptr_t add     = GPOINTER_TO_UINT(value);
-    g_hash_table_replace(dest, key, GUINT_TO_POINTER(current + add));
-}
-
-static void copy_uint_entry(gpointer key, gpointer value, gpointer user_data) {
-    GHashTable *dest = (GHashTable *)user_data;
-    g_hash_table_insert(dest, key, value);
-}
-
-void merge_feature_counts(gpointer key, gpointer value, gpointer user_data)
+void merge_feature_counts(uint32_t key, void *value, void *user_data)
 {
     merge_context *ctx = (merge_context *)user_data;
-    GHashTable *dst = ctx->dst_hash;
+    khash_t(u32ptr) *dst = (khash_t(u32ptr)*)ctx->dst_hash;
     feature_counts *src_entry = (feature_counts *)value;
-    feature_counts *dst_entry = g_hash_table_lookup(dst, key);
+    khint_t k = kh_get(u32ptr, dst, key);
+    feature_counts *dst_entry = (k != kh_end(dst)) ? (feature_counts*)kh_val(dst, k) : NULL;
 
     if (dst_entry) {
         /* merge the per-barcode feature counters */
-        g_hash_table_foreach(src_entry->counts,
-                             merge_uint_counters,
-                             dst_entry->counts);
+        khint_t ksrc;
+        for (ksrc = kh_begin(src_entry->counts); ksrc != kh_end(src_entry->counts); ++ksrc) {
+            if (!kh_exist(src_entry->counts, ksrc)) continue;
+            uint32_t feat_key = kh_key(src_entry->counts, ksrc);
+            uint32_t add_val = kh_val(src_entry->counts, ksrc);
+            khint_t kdst = kh_get(u32u32, dst_entry->counts, feat_key);
+            if (kdst != kh_end(dst_entry->counts)) {
+                kh_val(dst_entry->counts, kdst) += add_val;
+            } else {
+                int ret;
+                khint_t kh = kh_put(u32u32, dst_entry->counts, feat_key, &ret);
+                kh_val(dst_entry->counts, kh) = add_val;
+            }
+        }
     } else {
         dst_entry = (feature_counts*) allocate_memory_from_pool(ctx->dst_pool->feature_counts_pool);
         memcpy(dst_entry->sequence_code, src_entry->sequence_code, barcode_code_length);
-        dst_entry->counts = g_hash_table_new(g_direct_hash, g_direct_equal);
-        g_hash_table_foreach(src_entry->counts, copy_uint_entry, dst_entry->counts);
-        g_hash_table_insert(dst, dst_entry->sequence_code, dst_entry);
+        dst_entry->counts = kh_init(u32u32);
+        khint_t ksrc;
+        for (ksrc = kh_begin(src_entry->counts); ksrc != kh_end(src_entry->counts); ++ksrc) {
+            if (!kh_exist(src_entry->counts, ksrc)) continue;
+            uint32_t feat_key = kh_key(src_entry->counts, ksrc);
+            uint32_t feat_val = kh_val(src_entry->counts, ksrc);
+            int ret;
+            khint_t kh = kh_put(u32u32, dst_entry->counts, feat_key, &ret);
+            kh_val(dst_entry->counts, kh) = feat_val;
+        }
+        int ret;
+        khint_t kh = kh_put(u32ptr, dst, key, &ret);
+        kh_val(dst, kh) = dst_entry;
     }
 }
 
-void merge_feature_umi_counts(gpointer key, gpointer value, gpointer user_data)
+void merge_feature_umi_counts(uint64_t key, void *value, void *user_data)
 {
-    merge_context *ctx        = (merge_context *)user_data;
-    GHashTable *dst           = ctx->dst_hash;
+    merge_context *ctx = (merge_context *)user_data;
+    khash_t(u64ptr) *dst = (khash_t(u64ptr)*)ctx->dst_hash;
     feature_umi_counts *src_ent = (feature_umi_counts *)value;
-    feature_umi_counts *dst_ent = g_hash_table_lookup(dst, key);
+    khint_t k = kh_get(u64ptr, dst, key);
+    feature_umi_counts *dst_ent = (k != kh_end(dst)) ? (feature_umi_counts*)kh_val(dst, k) : NULL;
 
     if (dst_ent) {
         /* Same barcode-UMI already present – add the counters */
-        g_hash_table_foreach(src_ent->counts,merge_uint_counters, dst_ent->counts);
+        khint_t ksrc;
+        for (ksrc = kh_begin(src_ent->counts); ksrc != kh_end(src_ent->counts); ++ksrc) {
+            if (!kh_exist(src_ent->counts, ksrc)) continue;
+            uint32_t feat_key = kh_key(src_ent->counts, ksrc);
+            uint32_t add_val = kh_val(src_ent->counts, ksrc);
+            khint_t kdst = kh_get(u32u32, dst_ent->counts, feat_key);
+            if (kdst != kh_end(dst_ent->counts)) {
+                kh_val(dst_ent->counts, kdst) += add_val;
+            } else {
+                int ret;
+                khint_t kh = kh_put(u32u32, dst_ent->counts, feat_key, &ret);
+                kh_val(dst_ent->counts, kh) = add_val;
+            }
+        }
     } else {
         /* Key not present – copy the whole struct into the dst pool and table  */
         dst_ent = (feature_umi_counts*) allocate_memory_from_pool(ctx->dst_pool->feature_umi_counts_pool);
         memcpy(dst_ent->sequence_umi_code, src_ent->sequence_umi_code, 8);
-        dst_ent->counts = g_hash_table_new(g_direct_hash, g_direct_equal);
-        g_hash_table_foreach(src_ent->counts, copy_uint_entry, dst_ent->counts);
-        g_hash_table_insert(dst, dst_ent->sequence_umi_code, dst_ent);
+        dst_ent->counts = kh_init(u32u32);
+        khint_t ksrc;
+        for (ksrc = kh_begin(src_ent->counts); ksrc != kh_end(src_ent->counts); ++ksrc) {
+            if (!kh_exist(src_ent->counts, ksrc)) continue;
+            uint32_t feat_key = kh_key(src_ent->counts, ksrc);
+            uint32_t feat_val = kh_val(src_ent->counts, ksrc);
+            int ret;
+            khint_t kh = kh_put(u32u32, dst_ent->counts, feat_key, &ret);
+            kh_val(dst_ent->counts, kh) = feat_val;
+        }
+        int ret;
+        khint_t kh = kh_put(u64ptr, dst, key, &ret);
+        kh_val(dst, kh) = dst_ent;
     }
 }
 
-void merge_feature_sequences(gpointer key, gpointer value, gpointer user_data) {
+void merge_feature_sequences(const char *key, void *value, void *user_data) {
     merge_context *ctx = (merge_context *)user_data;
-    GHashTable *merged_hash = ctx->dst_hash;
+    khash_t(strptr) *merged_hash = (khash_t(strptr)*)ctx->dst_hash;
     feature_sequences *thread_entry = (feature_sequences *)value;
-    feature_sequences *merged_entry = g_hash_table_lookup(merged_hash, key);
+    khint_t k = kh_get(strptr, merged_hash, key);
+    feature_sequences *merged_entry = (k != kh_end(merged_hash)) ? (feature_sequences*)kh_val(merged_hash, k) : NULL;
     if (merged_entry) {
         merged_entry->counts += thread_entry->counts;
     } else {
         merged_entry = (feature_sequences*) allocate_memory_from_pool(ctx->dst_pool->feature_sequences_pool);
         memcpy(merged_entry, thread_entry, dynamic_struct_sizes.feature_sequences);
-        g_hash_table_insert(merged_hash, merged_entry->sequence, merged_entry);
+        int ret;
+        khint_t kh = kh_put(strptr, merged_hash, merged_entry->sequence, &ret);
+        kh_val(merged_hash, kh) = merged_entry;
     }
 }
 
@@ -2791,7 +3462,7 @@ void process_files_in_sample(sample_args *args) {
         char filtered_path[FILENAME_LENGTH];
         snprintf(filtered_path, FILENAME_LENGTH, "%s/%s", args->directory, args->filtered_barcodes_name);
         if (file_exists(filtered_path)) {
-            args->filtered_barcodes_hash = g_hash_table_new(g_str_hash, g_str_equal);
+            args->filtered_barcodes_hash = kh_init(strptr);
             read_barcodes_into_hash(filtered_path, args->filtered_barcodes_hash);
         }
         else {
@@ -2880,13 +3551,23 @@ void process_files_in_sample(sample_args *args) {
         ctx.dst_pool = args->pools[0];
 
         ctx.dst_hash = args->hashes[0].filtered_hash;
-        g_hash_table_foreach(args->hashes[i].filtered_hash, merge_feature_counts, &ctx);
+        khint_t k;
+        for (k = kh_begin(args->hashes[i].filtered_hash); k != kh_end(args->hashes[i].filtered_hash); ++k) {
+            if (!kh_exist(args->hashes[i].filtered_hash, k)) continue;
+            merge_feature_counts(kh_key(args->hashes[i].filtered_hash, k), kh_val(args->hashes[i].filtered_hash, k), &ctx);
+        }
 
         ctx.dst_hash = args->hashes[0].sequence_umi_hash;
-        g_hash_table_foreach(args->hashes[i].sequence_umi_hash, merge_feature_umi_counts, &ctx);
+        for (k = kh_begin(args->hashes[i].sequence_umi_hash); k != kh_end(args->hashes[i].sequence_umi_hash); ++k) {
+            if (!kh_exist(args->hashes[i].sequence_umi_hash, k)) continue;
+            merge_feature_umi_counts(kh_key(args->hashes[i].sequence_umi_hash, k), kh_val(args->hashes[i].sequence_umi_hash, k), &ctx);
+        }
         
         ctx.dst_hash = args->hashes[0].unique_features_match;
-        g_hash_table_foreach(args->hashes[i].unique_features_match, merge_feature_sequences, &ctx);
+        for (k = kh_begin(args->hashes[i].unique_features_match); k != kh_end(args->hashes[i].unique_features_match); ++k) {
+            if (!kh_exist(args->hashes[i].unique_features_match, k)) continue;
+            merge_feature_sequences(kh_key(args->hashes[i].unique_features_match, k), kh_val(args->hashes[i].unique_features_match, k), &ctx);
+        }
 
         merge_unmatched_barcodes(&args->stats[0].unmatched_list, &args->stats[i].unmatched_list, args->pools[0]);
         merge_queues(args->hashes[0].neighbors_queue, args->hashes[i].neighbors_queue);
@@ -2922,10 +3603,9 @@ void process_files_in_sample(sample_args *args) {
 }
 
 void initialize_data_structures(data_structures *hashes){
-    hashes->filtered_hash = g_hash_table_new_full(hash_int32, equal_int32, NULL, destroy_feature_counts);
-    hashes->unique_features_match = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL); // Keys/Values are memory-pooled
-    // Use g_hash_table_new_full to provide our custom value destroyer function.
-    hashes->sequence_umi_hash = g_hash_table_new_full(hash_int64, equal_int64, NULL, destroy_feature_umi_counts);
+    hashes->filtered_hash = kh_init(u32ptr);
+    hashes->unique_features_match = kh_init(strptr); // Keys/Values are memory-pooled
+    hashes->sequence_umi_hash = kh_init(u64ptr);
     
     hashes->neighbors_queue=malloc(sizeof(Queue));
     //check if the memory allocation was successful
@@ -2940,9 +3620,27 @@ void destroy_data_structures(data_structures *hashes){
         if (hashes->neighbors_queue->data)free_queue(hashes->neighbors_queue);
         free(hashes->neighbors_queue);
     }
-    if (hashes->filtered_hash) g_hash_table_destroy(hashes->filtered_hash);
-    if (hashes->unique_features_match) g_hash_table_destroy(hashes->unique_features_match);
-    if (hashes->sequence_umi_hash) g_hash_table_destroy(hashes->sequence_umi_hash);
+    if (hashes->filtered_hash) {
+        // Destroy all feature_counts values
+        khint_t k;
+        for (k = kh_begin(hashes->filtered_hash); k != kh_end(hashes->filtered_hash); ++k) {
+            if (kh_exist(hashes->filtered_hash, k)) {
+                destroy_feature_counts(kh_val(hashes->filtered_hash, k));
+            }
+        }
+        kh_destroy(u32ptr, hashes->filtered_hash);
+    }
+    if (hashes->unique_features_match) kh_destroy(strptr, hashes->unique_features_match);
+    if (hashes->sequence_umi_hash) {
+        // Destroy all feature_umi_counts values
+        khint_t k;
+        for (k = kh_begin(hashes->sequence_umi_hash); k != kh_end(hashes->sequence_umi_hash); ++k) {
+            if (kh_exist(hashes->sequence_umi_hash, k)) {
+                destroy_feature_umi_counts(kh_val(hashes->sequence_umi_hash, k));
+            }
+        }
+        kh_destroy(u64ptr, hashes->sequence_umi_hash);
+    }
 }
 
 

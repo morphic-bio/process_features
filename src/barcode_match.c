@@ -120,10 +120,11 @@ void initialize_complement(){
 
 int feature_lookup_code(const unsigned char *code, int code_len) {
     // Hash look-up path (current behavior)
-    GBytes *key = g_bytes_new_static(code, code_len);
-    gpointer val = g_hash_table_lookup(feature_code_hash, key);
-    g_bytes_unref(key);
-    if (val) return GPOINTER_TO_UINT(val);
+    var_key_t key = {.ptr = (uint8_t*)code, .len = (uint16_t)code_len};
+    khint_t k = kh_get(codeu32, feature_code_hash, key);
+    if (k != kh_end(feature_code_hash)) {
+        return kh_val(feature_code_hash, k);
+    }
     return 0;
 }
 

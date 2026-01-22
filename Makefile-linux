@@ -7,9 +7,8 @@ ifdef DEBUG
 	#CFLAGS=-ggdb -Wunused-function -fsanitize=thread $(INCLUDES)
 	CFLAGS=-ggdb -Wunused-function -fsanitize=address $(INCLUDES)
 endif
-LDFLAGS=-lz -lglib-2.0 -fopenmp -lm
-INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include 
-#INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include 
+LDFLAGS=-lz -fopenmp -lm
+INCLUDES=
 
 default: clean assignBarcodes
 all: clean filterfastq assignBarcodes

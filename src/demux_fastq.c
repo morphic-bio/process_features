@@ -13,8 +13,8 @@ typedef struct {
 
 typedef struct {
   feature_arrays *features;        // loaded probe variants (names = BC ids)
-  GHashTable *libprobe_to_sample;  // key: "LIBID\tBCxxx"; val: sample name
-  GHashTable *sample_to_sink;      // key: sample name; val: demux_sink*
+  khash_t(strptr) *libprobe_to_sample;  // key: "LIBID\tBCxxx"; val: sample name
+  khash_t(strptr) *sample_to_sink;      // key: sample name; val: demux_sink*
   char outdir[FILENAME_LENGTH];
   char undetermined[64];
   char unspecified[64];
@@ -56,17 +56,17 @@ static inline int read_fastq_record(gzFile f, char *l1, char *l2, char *l3, char
   return 1;
 }
 
-static gboolean extract_kmer_at_offset(const char *seq, int offset, char out8[PROBE_LEN+1]) {
+static int extract_kmer_at_offset(const char *seq, int offset, char out8[PROBE_LEN+1]) {
   const size_t n = strlen(seq);
-  if ((int)n < offset + PROBE_LEN) return FALSE;
+  if ((int)n < offset + PROBE_LEN) return 0;
   for (int i = 0; i < PROBE_LEN; ++i) {
     char c = seq[offset + i];
     if (c >= 'a' && c <= 'z') c -= 32;
-    if (c != 'A' && c != 'C' && c != 'G' && c != 'T') return FALSE;
+    if (c != 'A' && c != 'C' && c != 'G' && c != 'T') return 0;
     out8[i] = c;
   }
   out8[PROBE_LEN] = 0;
-  return TRUE;
+  return 1;
 }
 
 static feature_arrays* load_probe_variants_to_features(const char *path) {
@@ -122,8 +122,10 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
     // Code and insert into feature_code_hash
     fa->feature_code_lengths[idx] = string2code(v, PROBE_LEN, fa->feature_codes[idx]);
     if (fa->feature_lengths[idx] == fa->common_length) {
-      GBytes *key = g_bytes_new_static(fa->feature_codes[idx], fa->feature_code_lengths[idx]);
-      g_hash_table_insert(feature_code_hash, key, GUINT_TO_POINTER(idx + 1));
+      var_key_t key = {.ptr = fa->feature_codes[idx], .len = fa->feature_code_lengths[idx]};
+      int ret;
+      khint_t k = kh_put(codeu32, feature_code_hash, key, &ret);
+      kh_val(feature_code_hash, k) = idx + 1;
     }
 
     if (idx + 1 < fa->number_of_features) {
@@ -137,23 +139,23 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
   return fa;
 }
 
-static gboolean parse_library_id(const char *basename, char *out, size_t outsz) {
+static int parse_library_id(const char *basename, char *out, size_t outsz) {
   const char *p = strstr(basename, "SC");
-  if (!p) return FALSE;
+  if (!p) return 0;
   size_t i = 2;
   while (isdigit((unsigned char)p[i])) i++;
-  if (i == 2) return FALSE;
+  if (i == 2) return 0;
   size_t len = i;
-  if (len >= outsz) return FALSE;
+  if (len >= outsz) return 0;
   memcpy(out, p, len);
   out[len] = 0;
-  return TRUE;
+  return 1;
 }
 
-static G_GNUC_UNUSED GHashTable* load_probe_variants(const char *path) {
+static __attribute__((unused)) khash_t(strptr)* load_probe_variants(const char *path) {
   FILE *fp = fopen(path, "r");
   if (!fp) { perror("probe_barcodes"); exit(EXIT_FAILURE); }
-  GHashTable *h = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+  khash_t(strptr) *h = kh_init(strptr);
   char line[LINE_LENGTH];
   while (fgets(line, sizeof(line), fp)) {
     chomp(line);
@@ -163,17 +165,21 @@ static G_GNUC_UNUSED GHashTable* load_probe_variants(const char *path) {
     char *c = strtok(NULL, "\t ");
     if (!a || !c) continue;
     if (strlen(a) != PROBE_LEN) continue;
-    g_hash_table_replace(h, g_strdup(a), g_strdup(c)); // variant -> BCxxx
+    char *a_copy = strdup(a);
+    char *c_copy = strdup(c);
+    int ret;
+    khint_t k = kh_put(strptr, h, a_copy, &ret);
+    kh_val(h, k) = c_copy; // variant -> BCxxx
   }
   fclose(fp);
-  fprintf(stderr, "Loaded %u probe variants\n", g_hash_table_size(h));
+  fprintf(stderr, "Loaded %u probe variants\n", kh_size(h));
   return h;
 }
 
-static GHashTable* load_sample_map(const char *path) {
+static khash_t(strptr)* load_sample_map(const char *path) {
   FILE *fp = fopen(path, "r");
   if (!fp) { perror("sample_map"); exit(EXIT_FAILURE); }
-  GHashTable *h = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+  khash_t(strptr) *h = kh_init(strptr);
   char line[LINE_LENGTH];
   int first = 1;
   while (fgets(line, sizeof(line), fp)) {
@@ -186,14 +192,18 @@ static GHashTable* load_sample_map(const char *path) {
     if (!lib || !bc || !sm) continue;
     char key[NAME_LENGTH*2];
     snprintf(key, sizeof(key), "%s\t%s", lib, bc);
-    g_hash_table_replace(h, g_strdup(key), g_strdup(sm));
+    char *key_copy = strdup(key);
+    char *sm_copy = strdup(sm);
+    int ret;
+    khint_t k = kh_put(strptr, h, key_copy, &ret);
+    kh_val(h, k) = sm_copy;
   }
   fclose(fp);
-  fprintf(stderr, "Loaded %u lib+probe → sample mappings\n", g_hash_table_size(h));
+  fprintf(stderr, "Loaded %u lib+probe → sample mappings\n", kh_size(h));
   return h;
 }
 
-static void free_sink(gpointer data) {
+static void free_sink(void *data) {
   demux_sink *s = (demux_sink*)data;
   if (!s) return;
   if (s->r1) gzclose(s->r1);
@@ -206,7 +216,8 @@ static void free_sink(gpointer data) {
 static demux_sink* get_or_open_sink(demux_cfg *cfg, const char *sample,
                                     const char *base_r1, const char *base_r2, const char *base_r3) {
   pthread_mutex_lock(&sinks_map_mutex);            // NEW: protect map
-  demux_sink *s = (demux_sink*)g_hash_table_lookup(cfg->sample_to_sink, sample);
+  khint_t k = kh_get(strptr, cfg->sample_to_sink, sample);
+  demux_sink *s = (k != kh_end(cfg->sample_to_sink)) ? (demux_sink*)kh_val(cfg->sample_to_sink, k) : NULL;
   if (s) { pthread_mutex_unlock(&sinks_map_mutex); return s; }
 
   char dir[FILENAME_LENGTH*2];
@@ -223,7 +234,10 @@ static demux_sink* get_or_open_sink(demux_cfg *cfg, const char *sample,
   if (base_r3) { char p[FILENAME_LENGTH*3]; snprintf(p, sizeof(p), "%s/%s", dir, base_r3);
                  s->r3 = gzopen(p, "wb"); if (!s->r3) { perror("gzopen r3"); exit(EXIT_FAILURE); } }
 
-  g_hash_table_replace(cfg->sample_to_sink, g_strdup(sample), s);
+  char *sample_copy = strdup(sample);
+  int ret;
+  khint_t kh = kh_put(strptr, cfg->sample_to_sink, sample_copy, &ret);
+  kh_val(cfg->sample_to_sink, kh) = s;
   pthread_mutex_unlock(&sinks_map_mutex);         // NEW
   return s;
 }
@@ -237,11 +251,12 @@ static void write_record(demux_sink *s,
   if (s->r3) { gzputs(s->r3, r3_1); gzputs(s->r3, r3_2); gzputs(s->r3, r3_3); gzputs(s->r3, r3_4); }
 }
 
-static G_GNUC_UNUSED const char* resolve_sample(demux_cfg *cfg, const char *libid, const char *probe_id) {
+static __attribute__((unused)) const char* resolve_sample(demux_cfg *cfg, const char *libid, const char *probe_id) {
   if (!probe_id || !libid) return cfg->undetermined;
   char key[NAME_LENGTH*2];
   snprintf(key, sizeof(key), "%s\t%s", libid, probe_id);
-  char *s = (char*)g_hash_table_lookup(cfg->libprobe_to_sample, key);
+  khint_t k = kh_get(strptr, cfg->libprobe_to_sample, key);
+  char *s = (k != kh_end(cfg->libprobe_to_sample)) ? (char*)kh_val(cfg->libprobe_to_sample, k) : NULL;
   return s ? s : cfg->undetermined;
 }
 
@@ -478,7 +493,8 @@ static void* dmx_consumer(void *arg) {
       char key[NAME_LENGTH*2];
       snprintf(key, sizeof(key), "%s\t%s", a->libid, probe_id);
       pthread_mutex_lock(&sample_map_mutex);
-      const char *mapped_sample = (const char*)g_hash_table_lookup(cfg->libprobe_to_sample, key);
+      khint_t k = kh_get(strptr, cfg->libprobe_to_sample, key);
+      const char *mapped_sample = (k != kh_end(cfg->libprobe_to_sample)) ? (const char*)kh_val(cfg->libprobe_to_sample, k) : NULL;
       pthread_mutex_unlock(&sample_map_mutex);
       if (mapped_sample) { snprintf(sample_group, sizeof(sample_group), "%s", mapped_sample); a->matched++; }
       else { snprintf(sample_group, sizeof(sample_group), "%s/%s_%s", cfg->unspecified, a->libid, probe_id); a->unspecified_cnt++; }
@@ -544,7 +560,10 @@ int main(int argc, char **argv) {
     switch (opt) {
       case 'p': probe_barcodes_path = optarg; break;
       case 's': sample_map_path = optarg; break;
-      case 'o': g_strlcpy(cfg.outdir, optarg, sizeof(cfg.outdir)); break;
+      case 'o':
+        strncpy(cfg.outdir, optarg, sizeof(cfg.outdir) - 1);
+        cfg.outdir[sizeof(cfg.outdir) - 1] = '\0';
+        break;
       case 'r':
         if      (!strcmp(optarg, "R1")) cfg.probe_read_idx = 0;
         else if (!strcmp(optarg, "R2")) cfg.probe_read_idx = 1;
@@ -558,9 +577,18 @@ int main(int argc, char **argv) {
       case 100: barcodeFastqFilesString = strdup(optarg); break;
       case 101: forwardFastqFilesString = strdup(optarg); break;
       case 102: reverseFastqFilesString = strdup(optarg); break;
-      case 200: g_strlcpy(barcode_pattern,  optarg, sizeof(barcode_pattern));  break;
-      case 201: g_strlcpy(forward_pattern,  optarg, sizeof(forward_pattern));  break;
-      case 202: g_strlcpy(reverse_pattern,  optarg, sizeof(reverse_pattern));  break;
+      case 200:
+        strncpy(barcode_pattern, optarg, sizeof(barcode_pattern) - 1);
+        barcode_pattern[sizeof(barcode_pattern) - 1] = '\0';
+        break;
+      case 201:
+        strncpy(forward_pattern, optarg, sizeof(forward_pattern) - 1);
+        forward_pattern[sizeof(forward_pattern) - 1] = '\0';
+        break;
+      case 202:
+        strncpy(reverse_pattern, optarg, sizeof(reverse_pattern) - 1);
+        reverse_pattern[sizeof(reverse_pattern) - 1] = '\0';
+        break;
       case 300: cfg.direct_search = 1; break;
       default: usage(argv[0]); return 1;
     }
@@ -574,11 +602,11 @@ int main(int argc, char **argv) {
   // Initialise core matching tables
   barcode_match_init();
   initialize_complement();
-  feature_code_hash = g_hash_table_new_full(g_bytes_hash, g_bytes_equal, (GDestroyNotify)g_bytes_unref, NULL);
+  feature_code_hash = kh_init(codeu32);
 
   cfg.features = load_probe_variants_to_features(probe_barcodes_path);
   cfg.libprobe_to_sample = load_sample_map(sample_map_path);
-  cfg.sample_to_sink = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, free_sink);
+  cfg.sample_to_sink = kh_init(strptr);
 
   fastq_files_collection fastq_files;
   memset(&fastq_files, 0, sizeof(fastq_files));
@@ -638,7 +666,8 @@ int main(int argc, char **argv) {
       cargs[i].base_r1 = base_r1;
       cargs[i].base_r2 = base_r2;
       cargs[i].base_r3 = base_r3;
-      g_strlcpy(cargs[i].libid, libid, sizeof(cargs[i].libid));
+      strncpy(cargs[i].libid, libid, sizeof(cargs[i].libid) - 1);
+      cargs[i].libid[sizeof(cargs[i].libid) - 1] = '\0';
       cargs[i].lpblock = lpblock;
       pthread_create(&cons[i], NULL, dmx_consumer, &cargs[i]);
     }
@@ -661,13 +690,36 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Set %d: lib=%s total=%lld matched=%lld unspecified=%lld undetermined=%lld\n",
             j, libid, total, matched, unspecified_cnt, undetermined_cnt);
 
-    g_hash_table_remove_all(cfg.sample_to_sink); // closes sinks for this set
+    // Close all sinks for this set
+    khint_t k;
+    for (k = kh_begin(cfg.sample_to_sink); k != kh_end(cfg.sample_to_sink); ++k) {
+        if (kh_exist(cfg.sample_to_sink, k)) {
+            free_sink(kh_val(cfg.sample_to_sink, k));
+            free((char*)kh_key(cfg.sample_to_sink, k));
+        }
+    }
+    kh_clear(strptr, cfg.sample_to_sink);
   }
 
-  g_hash_table_destroy(cfg.sample_to_sink);
+  // Destroy sample_to_sink (free keys and values)
+  khint_t k;
+  for (k = kh_begin(cfg.sample_to_sink); k != kh_end(cfg.sample_to_sink); ++k) {
+      if (kh_exist(cfg.sample_to_sink, k)) {
+          free_sink(kh_val(cfg.sample_to_sink, k));
+          free((char*)kh_key(cfg.sample_to_sink, k));
+      }
+  }
+  kh_destroy(strptr, cfg.sample_to_sink);
   free_feature_arrays(cfg.features);
-  g_hash_table_destroy(cfg.libprobe_to_sample);
-  g_hash_table_destroy(feature_code_hash);
+  // Destroy libprobe_to_sample (free keys and values)
+  for (k = kh_begin(cfg.libprobe_to_sample); k != kh_end(cfg.libprobe_to_sample); ++k) {
+      if (kh_exist(cfg.libprobe_to_sample, k)) {
+          free((char*)kh_key(cfg.libprobe_to_sample, k));
+          free((char*)kh_val(cfg.libprobe_to_sample, k));
+      }
+  }
+  kh_destroy(strptr, cfg.libprobe_to_sample);
+  kh_destroy(codeu32, feature_code_hash);
   free_fastq_files_collection(&fastq_files);
   if (barcodeFastqFilesString) free(barcodeFastqFilesString);
   if (forwardFastqFilesString) free(forwardFastqFilesString);

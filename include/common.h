@@ -3,7 +3,7 @@
 
 #include <ctype.h>
 #include <getopt.h>
-#include <glib.h>
+#include "khash_wrapper.h"
 #include <pthread.h>
 #include <limits.h>
 #include <math.h>
@@ -78,7 +78,7 @@ typedef struct feature_search_tables{
     struct feature_arrays *features;
     void *feature_code;
     unsigned char feature_code_length;
-    GHashTable *feature_code_hash;
+    khash_t(codeu32) *feature_code_hash;
 } feature_search_tables;
 
 typedef struct feature_arrays {
@@ -99,7 +99,7 @@ typedef struct feature_arrays {
 
 typedef struct feature_counts {
     unsigned char sequence_code[4];
-    GHashTable *counts;
+    khash_t(u32u32) *counts;
 } feature_counts;
 
 typedef struct feature_sequences {
@@ -112,7 +112,7 @@ typedef struct feature_sequences {
 
 typedef struct feature_umi_counts {
     unsigned char sequence_umi_code[8];
-    GHashTable *counts;
+    khash_t(u32u32) *counts;
 } feature_umi_counts;
 
 typedef struct unmatched_barcodes_features_block {
@@ -158,9 +158,9 @@ typedef struct statistics {
 
 
 typedef struct data_structures {
-    GHashTable *filtered_hash;
-    GHashTable *sequence_umi_hash;
-    GHashTable *unique_features_match;
+    khash_t(u32ptr) *filtered_hash;
+    khash_t(u64ptr) *sequence_umi_hash;
+    khash_t(strptr) *unique_features_match;
     Queue *neighbors_queue;
 } data_structures;
 
@@ -219,7 +219,7 @@ typedef struct sample_args {
     int parallel_by_file;
     double min_posterior;
     int consumer_threads_per_set;
-    GHashTable *filtered_barcodes_hash;
+    khash_t(strptr) *filtered_barcodes_hash;
     int heatmap_minimum_counts;
     int min_prediction;
     int min_heatmap;

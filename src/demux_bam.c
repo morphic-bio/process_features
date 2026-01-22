@@ -11,11 +11,12 @@
 
 static memory_pool_collection *global_pools = NULL;
 
-#if GLIB_CHECK_VERSION(2,68,0)
-#define MEMDUP g_memdup2
-#else
-#define MEMDUP g_memdup
-#endif
+// Memory duplication helper (replaces g_memdup/g_memdup2)
+#define MEMDUP(ptr, size) ({ \
+    void *_dst = malloc(size); \
+    if (_dst) memcpy(_dst, ptr, size); \
+    _dst; \
+})
 
 #define PROBE_LEN 8
 
@@ -32,27 +33,30 @@ static memory_pool_collection *global_pools = NULL;
 /* ---------------- Intern tables ---------------- */
 
 typedef struct {
-    GHashTable *str_to_id;   /* char*  -> guint32 */
-    GPtrArray  *id_to_str;   /* index -> char*   */
+    khash_t(strptr) *str_to_id;   /* char*  -> uint32_t */
+    vec_ptr_t  *id_to_str;   /* index -> char*   */
 } intern_table;
 
-static inline guint32 intern_get(intern_table *t, const char *s) {
-    gpointer val = g_hash_table_lookup(t->str_to_id, s);
-    if (val) return GPOINTER_TO_UINT(val);
-    guint32 new_id = t->id_to_str->len;
-    g_hash_table_insert(t->str_to_id, g_strdup(s), GUINT_TO_POINTER(new_id));
-    g_ptr_array_add(t->id_to_str, g_strdup(s));
+static inline uint32_t intern_get(intern_table *t, const char *s) {
+    khint_t k = kh_get(strptr, t->str_to_id, s);
+    if (k != kh_end(t->str_to_id)) return (uint32_t)(uintptr_t)kh_val(t->str_to_id, k);
+    uint32_t new_id = vec_ptr_size(t->id_to_str);
+    char *s_copy = strdup(s);
+    int ret;
+    khint_t kh = kh_put(strptr, t->str_to_id, s_copy, &ret);
+    kh_val(t->str_to_id, kh) = (void*)(uintptr_t)new_id;
+    vec_ptr_add(t->id_to_str, s_copy);
     return new_id;
 }
 
-static inline const char* id_to_str(intern_table *t, guint32 id) {
-    return (const char*)g_ptr_array_index(t->id_to_str, id);
+static inline const char* id_to_str(intern_table *t, uint32_t id) {
+    return (const char*)vec_ptr_get(t->id_to_str, id);
 }
 
 static intern_table* intern_table_new(void) {
-    intern_table *t = g_new0(intern_table,1);
-    t->str_to_id = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    t->id_to_str = g_ptr_array_new_with_free_func(g_free);
+    intern_table *t = calloc(1, sizeof(intern_table));
+    t->str_to_id = kh_init(strptr);
+    t->id_to_str = vec_ptr_init(free);
     return t;
 }
 
@@ -82,36 +86,36 @@ static inline char complement_base(char b)
     }
 }
 
-static gboolean extract_kmer_from_bam(const bam1_t *b, int offset,
+static int extract_kmer_from_bam(const bam1_t *b, int offset,
                                       char out8[PROBE_LEN + 1])
 {
     int n = b->core.l_qseq;
-    if (offset < 0 || offset + PROBE_LEN > n) return FALSE;
+    if (offset < 0 || offset + PROBE_LEN > n) return 0;
 
     const uint8_t *seq = bam_get_seq(b);
 
     if (b->core.flag & BAM_FREVERSE) {              /* reverse-strand read */
         int start = n - offset - PROBE_LEN;         /* 5′ on reference   */
-        if (start < 0) return FALSE;
+        if (start < 0) return 0;
         for (int i = 0; i < PROBE_LEN; ++i) {
             /* walk right→left through the read, left→right into out8 */
             char base = bam_code_to_base(bam_seqi(seq,
                                                   start + PROBE_LEN - 1 - i));
             if (base != 'A' && base != 'C' && base != 'G' && base != 'T')
-                return FALSE;
+                return 0;
             out8[i] = complement_base(base);
         }
     } else {                                        /* forward-strand read */
         for (int i = 0; i < PROBE_LEN; ++i) {
             char base = bam_code_to_base(bam_seqi(seq, offset + i));
             if (base != 'A' && base != 'C' && base != 'G' && base != 'T')
-                return FALSE;
+                return 0;
             out8[i] = base;
         }
     }
 
     out8[PROBE_LEN] = '\0';
-    return TRUE;
+    return 1;
 }
 
 
@@ -120,16 +124,16 @@ static gboolean extract_kmer_from_bam(const bam1_t *b, int offset,
 /* ---------------- Shard data ---------------- */
 
 typedef struct {
-    GHashTable *cb_counts;     /* key: cb_id (direct)  val: uint16_t[nprobes] */
-    guint64     total_reads;
-    guint64     usable_reads;
-    guint64    *probe_tot;     /* per-probe total usable reads */
+    khash_t(u32ptr) *cb_counts;     /* key: cb_id (uint32_t)  val: uint16_t[nprobes] */
+    uint64_t     total_reads;
+    uint64_t     usable_reads;
+    uint64_t    *probe_tot;     /* per-probe total usable reads */
 } shard_data;
 
 static shard_data* shard_data_new(int nprobes){
-    shard_data *s = g_new0(shard_data,1);
-    s->cb_counts = g_hash_table_new(g_direct_hash, g_direct_equal);
-    s->probe_tot = g_new0(guint64, nprobes);
+    shard_data *s = calloc(1, sizeof(shard_data));
+    s->cb_counts = kh_init(u32ptr);
+    s->probe_tot = calloc(nprobes, sizeof(uint64_t));
     return s;
 }
 
@@ -201,7 +205,7 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
     if (!fp) { perror("sample_probes"); exit(EXIT_FAILURE); }
 
     /* first pass – collect unique barcode IDs and their canonical sequence */
-    GHashTable *bc2canon = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    khash_t(strptr) *bc2canon = kh_init(strptr);
     char line[LINE_LENGTH];
     int uniq_cnt = 0, name_size = 0, seq_size = 0, code_size = 0, variant_cnt = 0;
     while (fgets(line, sizeof(line), fp)) {
@@ -214,8 +218,13 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
         if (!check_sequence(variant, PROBE_LEN)) continue;
         if (!canonical || strlen(canonical)!=PROBE_LEN || !check_sequence(canonical, PROBE_LEN))
             canonical = variant; /* fallback */
-        if (!g_hash_table_contains(bc2canon, bc_id)) {
-            g_hash_table_insert(bc2canon, g_strdup(bc_id), g_strdup(canonical));
+        khint_t k = kh_get(strptr, bc2canon, bc_id);
+        if (k == kh_end(bc2canon)) {
+            char *bc_id_copy = strdup(bc_id);
+            char *canon_copy = strdup(canonical);
+            int ret;
+            khint_t kh = kh_put(strptr, bc2canon, bc_id_copy, &ret);
+            kh_val(bc2canon, kh) = canon_copy;
             uniq_cnt++;
             name_size += (int)strlen(bc_id) + 1;
             seq_size  += PROBE_LEN + 1;
@@ -231,28 +240,29 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
     memset(variant_codes, 0, variant_cnt * (PROBE_LEN+3)/4);
 
     /* ---------- collect & sort unique BC-IDs ---------- */
-    char **bc_list = g_new(char*, uniq_cnt);
+    char **bc_list = malloc(uniq_cnt * sizeof(char*));
     {
-        GHashTableIter it;
-        gpointer key, value;
-        g_hash_table_iter_init (&it, bc2canon);
-        guint i = 0;
-        while (g_hash_table_iter_next (&it, &key, &value))
-            bc_list[i++] = (char*)key;          /* key already dup’ed */
+        khint_t k;
+        int i = 0;
+        for (k = kh_begin(bc2canon); k != kh_end(bc2canon); ++k) {
+            if (kh_exist(bc2canon, k))
+                bc_list[i++] = (char*)kh_key(bc2canon, k);          /* key already dup'ed */
+        }
     }
 
     /* alphabetic sort */
     qsort (bc_list, uniq_cnt, sizeof(char*), cmp_str);
 
     /* second pass – build arrays */
-    GHashTable *bc2idx = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL);
+    khash_t(strptr) *bc2idx = kh_init(strptr);
     int idx = 0;
     fa->feature_names[0]     = fa->feature_names_storage;
     fa->feature_sequences[0] = fa->feature_sequences_storage;
     fa->feature_codes[0]     = fa->feature_codes_storage;
     for (idx = 0; idx < uniq_cnt; idx++) {
         const char *bc_id = bc_list[idx];
-        const char *canon = g_hash_table_lookup (bc2canon, bc_id);
+        khint_t kcanon = kh_get(strptr, bc2canon, bc_id);
+        const char *canon = (kcanon != kh_end(bc2canon)) ? (const char*)kh_val(bc2canon, kcanon) : NULL;
         /* store name */
         strcpy(fa->feature_names[idx], bc_id);
         if (idx+1 < uniq_cnt)
@@ -269,12 +279,16 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
         }
         /* insert canonical code into lookup */
         if (fa->feature_lengths[idx] == PROBE_LEN) {
-            GBytes *k = g_bytes_new_static(fa->feature_codes[idx], fa->feature_code_lengths[idx]);
-            g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(idx+1));
+            var_key_t k = {.ptr = fa->feature_codes[idx], .len = fa->feature_code_lengths[idx]};
+            int ret;
+            khint_t kh = kh_put(codeu32, feature_code_hash, k, &ret);
+            kh_val(feature_code_hash, kh) = idx+1;
         }
-        g_hash_table_insert(bc2idx, (gpointer)bc_id, GUINT_TO_POINTER(idx + 1));
+        int ret;
+        khint_t kh = kh_put(strptr, bc2idx, bc_id, &ret);
+        kh_val(bc2idx, kh) = (void*)(uintptr_t)(idx + 1);
     }
-    g_free(bc_list);
+    free(bc_list);
 
     /* third pass – map every variant 8-mer to the same index */
     fseek(fp, 0, SEEK_SET);
@@ -289,21 +303,31 @@ static feature_arrays* load_probe_variants_to_features(const char *path) {
         if ((int)strlen(variant) != PROBE_LEN) continue;
         if (!check_sequence(variant, PROBE_LEN)) continue;
 
-        gpointer iptr = g_hash_table_lookup(bc2idx, bc_id);
-        if (!iptr) continue;              /* should not happen */
-        guint bc_index = GPOINTER_TO_UINT(iptr) - 1;   /* back to 0-based */
+        khint_t kbc = kh_get(strptr, bc2idx, bc_id);
+        if (kbc == kh_end(bc2idx)) continue;              /* should not happen */
+        uint32_t bc_index = (uint32_t)(uintptr_t)kh_val(bc2idx, kbc) - 1;   /* back to 0-based */
         uint8_t *codebuf = variant_codes + variant_idx * (PROBE_LEN+3)/4;
         int codelen = string2code(variant, PROBE_LEN, codebuf);
-        GBytes *k = g_bytes_new_static(codebuf, codelen);
-        g_hash_table_insert(feature_code_hash, k, GUINT_TO_POINTER(bc_index+1));
+        var_key_t k = {.ptr = codebuf, .len = (uint16_t)codelen};
+        int ret;
+        khint_t kh = kh_put(codeu32, feature_code_hash, k, &ret);
+        kh_val(feature_code_hash, kh) = bc_index+1;
         variant_idx++;
     }
     //print the size of the feature_code_hash
     fprintf(stderr, "DEBUG: variant_idx=%d\n", variant_idx);
-    fprintf(stderr, "DEBUG: feature_code_hash size=%u\n", g_hash_table_size(feature_code_hash));   
+    fprintf(stderr, "DEBUG: feature_code_hash size=%u\n", kh_size(feature_code_hash));   
     fclose(fp);
-    g_hash_table_destroy(bc2canon);
-    g_hash_table_destroy(bc2idx);
+    // Free bc2canon keys and values (both are strings)
+    khint_t k;
+    for (k = kh_begin(bc2canon); k != kh_end(bc2canon); ++k) {
+        if (kh_exist(bc2canon, k)) {
+            free((char*)kh_key(bc2canon, k));
+            free((char*)kh_val(bc2canon, k));
+        }
+    }
+    kh_destroy(strptr, bc2canon);
+    kh_destroy(strptr, bc2idx);
 
     fprintf(stderr, "Loaded %d unique sample barcode IDs (len=%d)\n", uniq_cnt, PROBE_LEN);
     return fa;
@@ -410,10 +434,10 @@ static whitelist_t* load_whitelist(const char *path) {
         exit(EXIT_FAILURE);
     }
     
-    whitelist_t *wl = g_malloc0(sizeof(whitelist_t));
+    whitelist_t *wl = calloc(1, sizeof(whitelist_t));
     char line[256];
     size_t capacity = 1000000; /* Start with 1M capacity */
-    wl->barcodes = g_malloc(capacity * sizeof(char*));
+    wl->barcodes = malloc(capacity * sizeof(char*));
     
     while (fgets(line, sizeof(line), fp)) {
         /* Remove newline */
@@ -426,10 +450,10 @@ static whitelist_t* load_whitelist(const char *path) {
         /* Expand capacity if needed */
         if (wl->count >= capacity) {
             capacity *= 2;
-            wl->barcodes = g_realloc(wl->barcodes, capacity * sizeof(char*));
+            wl->barcodes = realloc(wl->barcodes, capacity * sizeof(char*));
         }
         
-        wl->barcodes[wl->count] = g_strdup(line);
+        wl->barcodes[wl->count] = strdup(line);
         wl->count++;
     }
     
@@ -441,10 +465,10 @@ static whitelist_t* load_whitelist(const char *path) {
 static void free_whitelist(whitelist_t *wl) {
     if (wl) {
         for (size_t i = 0; i < wl->count; i++) {
-            g_free(wl->barcodes[i]);
+            free(wl->barcodes[i]);
         }
-        g_free(wl->barcodes);
-        g_free(wl);
+        free(wl->barcodes);
+        free(wl);
     }
 }
 
@@ -452,11 +476,11 @@ static void free_whitelist(whitelist_t *wl) {
 
 typedef struct {
     FILE *fp;
-    guint64 status_bits;
-    guint64 cb_bits;
-    guint64 umi_bits;
-    guint64 record_count;
-    guint64 record_idx;
+    uint64_t status_bits;
+    uint64_t cb_bits;
+    uint64_t umi_bits;
+    uint64_t record_count;
+    uint64_t record_idx;
     size_t record_bytes;
     unsigned char *raw;
     size_t raw_cap;
@@ -470,7 +494,7 @@ static cbub_reader* cbub_reader_open(const char *path) {
         exit(EXIT_FAILURE);
     }
     
-    cbub_reader *r = g_malloc0(sizeof(cbub_reader));
+    cbub_reader *r = calloc(1, sizeof(cbub_reader));
     r->fp = fp;
     
     /* Read header: 4 uint64_t values */
@@ -513,7 +537,7 @@ static cbub_reader* cbub_reader_open(const char *path) {
     
     /* Allocate raw buffer */
     r->raw_cap = r->record_bytes;
-    r->raw = g_malloc(r->raw_cap);
+    r->raw = malloc(r->raw_cap);
     
     /* Optional: sanity-check file length */
     long current_pos = ftell(fp);
@@ -529,38 +553,38 @@ static cbub_reader* cbub_reader_open(const char *path) {
     return r;
 }
 
-static gboolean cbub_reader_next(cbub_reader *r, gboolean *has_tags, guint32 *cb_idx, char *umi_out) {
+static int cbub_reader_next(cbub_reader *r, int *has_tags, uint32_t *cb_idx, char *umi_out) {
     if (fread(r->raw, 1, r->record_bytes, r->fp) != r->record_bytes) {
-        return FALSE; /* EOF or error */
+        return 0; /* EOF or error */
     }
     
     /* Decode bitstream LSB-first */
-    guint64 accumulator = 0;
+    uint64_t accumulator = 0;
     int bits_available = 0;
     int byte_idx = 0;
     
     /* Helper function to get next N bits */
     #define get_bits(n) ({ \
         while (bits_available < (n) && byte_idx < (int)r->record_bytes) { \
-            accumulator |= ((guint64)r->raw[byte_idx]) << bits_available; \
+            accumulator |= ((uint64_t)r->raw[byte_idx]) << bits_available; \
             bits_available += 8; \
             byte_idx++; \
         } \
-        guint64 result = accumulator & ((1ULL << (n)) - 1); \
+        uint64_t result = accumulator & ((1ULL << (n)) - 1); \
         accumulator >>= (n); \
         bits_available -= (n); \
         result; \
     })
     
     /* Extract status (1 bit) */
-    guint64 status = get_bits(1);
+    uint64_t status = get_bits(1);
     
     /* Extract CB index (cb_bits) */
-    guint64 cb_index = get_bits(r->cb_bits);
+    uint64_t cb_index = get_bits(r->cb_bits);
     
     /* Extract UMI (umi_bits, decode 2 bits per base) - read in reverse order */
     for (int i = r->umi_len - 1; i >= 0; i--) {
-        guint64 code = get_bits(2);
+        uint64_t code = get_bits(2);
         switch (code) {
             case 0: umi_out[i] = 'A'; break;
             case 1: umi_out[i] = 'C'; break;
@@ -572,10 +596,10 @@ static gboolean cbub_reader_next(cbub_reader *r, gboolean *has_tags, guint32 *cb
     
     /* Set outputs */
     *has_tags = (status != 0 && cb_index != 0);
-    *cb_idx = (guint32)cb_index;
+    *cb_idx = (uint32_t)cb_index;
     
     r->record_idx++;
-    return TRUE;
+    return 1;
     
     #undef get_bits
 }
@@ -583,9 +607,32 @@ static gboolean cbub_reader_next(cbub_reader *r, gboolean *has_tags, guint32 *cb
 static void cbub_reader_close(cbub_reader *r) {
     if (r) {
         if (r->fp) fclose(r->fp);
-        if (r->raw) g_free(r->raw);
-        g_free(r);
+        if (r->raw) free(r->raw);
+        free(r);
     }
+}
+
+/* Helper function to escape JSON string (simple: escape quotes and backslashes) */
+static void json_escape_qname(const char *qname, char *out, size_t out_size) {
+    if (!qname) {
+        out[0] = '\0';
+        return;
+    }
+    size_t i = 0;
+    size_t j = 0;
+    while (qname[i] != '\0' && j < out_size - 1) {
+        if (qname[i] == '"' || qname[i] == '\\') {
+            if (j < out_size - 2) {
+                out[j++] = '\\';
+                out[j++] = qname[i++];
+            } else {
+                break;
+            }
+        } else {
+            out[j++] = qname[i++];
+        }
+    }
+    out[j] = '\0';
 }
 
 /* ---------------- Worker function (single-thread) ---------------- */
@@ -606,21 +653,67 @@ static void process_bam_single(cfg_t *cfg,
         whitelist = load_whitelist(cfg->whitelist_path);
     }
 
+    /* Debug log setup for NH instrumentation */
+    FILE *nh_staging_fp = NULL;
+    FILE *nh_tap_fp = NULL;
+    long long nh_staging_count = 0;
+    const char *nh_staging_path = getenv("STAR_DEBUG_NH_STAGING");
+    const char *nh_tap_path = getenv("STAR_DEBUG_NH_TAP");
+    const long long NH_STAGING_MAX = 1000;
+    
+    if (nh_staging_path && nh_staging_path[0] != '\0') {
+        char *path_copy = strdup(nh_staging_path);
+        char *parent_dir = dirname(path_copy);
+        if (strcmp(parent_dir, ".") != 0 && strcmp(parent_dir, "/") != 0) {
+            if (mkdir_p(parent_dir)) {
+                fprintf(stderr, "Failed to create parent directory for nh_staging: %s\n", parent_dir);
+                free(path_copy);
+                exit(EXIT_FAILURE);
+            }
+        }
+        free(path_copy);
+        
+        nh_staging_fp = fopen(nh_staging_path, "w");
+        if (!nh_staging_fp) {
+            perror("STAR_DEBUG_NH_STAGING");
+            exit(EXIT_FAILURE);
+        }
+    }
+    
+    if (nh_tap_path && nh_tap_path[0] != '\0') {
+        char *path_copy = strdup(nh_tap_path);
+        char *parent_dir = dirname(path_copy);
+        if (strcmp(parent_dir, ".") != 0 && strcmp(parent_dir, "/") != 0) {
+            if (mkdir_p(parent_dir)) {
+                fprintf(stderr, "Failed to create parent directory for nh_tap: %s\n", parent_dir);
+                free(path_copy);
+                exit(EXIT_FAILURE);
+            }
+        }
+        free(path_copy);
+        
+        nh_tap_fp = fopen(nh_tap_path, "w");
+        if (!nh_tap_fp) {
+            perror("STAR_DEBUG_NH_TAP");
+            exit(EXIT_FAILURE);
+        }
+    }
+
     /* Binary output setup */
     FILE *bin_fp = NULL;
     uint64_t bytes_written = 0;
     if (cfg->use_bin_out) {
         /* Create parent directories for bin_out_path */
-        char *path_copy = g_strdup(cfg->bin_out_path);
+        char *path_copy = strdup(cfg->bin_out_path);
         char *parent_dir = dirname(path_copy);
         if (strcmp(parent_dir, ".") != 0 && strcmp(parent_dir, "/") != 0) {
             if (mkdir_p(parent_dir)) {
                 fprintf(stderr, "Failed to create parent directory for bin_out: %s\n", parent_dir);
-                g_free(path_copy);
+                free(path_copy);
                 exit(EXIT_FAILURE);
             }
         }
-        g_free(path_copy);
+        free(path_copy);
         
         bin_fp = fopen(cfg->bin_out_path, "wb");
         if (!bin_fp) {
@@ -642,9 +735,9 @@ static void process_bam_single(cfg_t *cfg,
     shard_data *shd = shard_data_new(nprobes);
     /* seen_reads guard removed: we rely on primary-only filter and TripKey dedup */
     /* (no separate hash table for read IDs anymore) */
-    GHashTable *read_map = NULL;
+    khash_t(strptr) *read_map = NULL;
     if (cfg->save_read_to_cb)
-        read_map = g_hash_table_new_full(g_str_hash, g_str_equal, free, free);
+        read_map = kh_init(strptr);
 
     bam1_t *b = bam_init1();
     long long recs=0;
@@ -655,14 +748,14 @@ static void process_bam_single(cfg_t *cfg,
         /* Read CBUB data for this record FIRST to keep streams synchronized */
         const char *cb = NULL;
         const char *ub = NULL;
-        gboolean has_tags = TRUE;
+        int has_tags = 1;
         char umi_buf[65]; /* enough for umi_len<=64, overwritten each read */
-        guint32 cb_idx = 0;
+        uint32_t cb_idx = 0;
         const char *gene = NULL;
         
         if (cfg->use_cbub) {
             if (!cbub_reader_next(cbub, &has_tags, &cb_idx, umi_buf)) {
-                fprintf(stderr, "CBUB stream ended early at record %" G_GUINT64_FORMAT "\n", cbub->record_idx);
+                fprintf(stderr, "CBUB stream ended early at record %llu\n", (unsigned long long)cbub->record_idx);
                 exit(EXIT_FAILURE);
             }
         }
@@ -680,10 +773,19 @@ static void process_bam_single(cfg_t *cfg,
             continue; 
         }
 
+        /* Read NH tag (number of hits) */
+        int32_t meta_nh = 1;  /* Default to 1 if NH tag missing */
+        const uint8_t *nh_tag = bam_aux_get(b, "NH");
+        if (nh_tag) {
+            meta_nh = bam_aux2i(nh_tag);
+            if (meta_nh < 1) meta_nh = 1;  /* Sanity check */
+        }
+
         /* Binary output: write byte for each record that passes BAM-level filters */
         uint8_t output_byte = 0;
 
         /* Tag acquisition - branch on CBUB vs BAM tags */
+        int valid_cb = 1;  /* Track if CB is in whitelist for later filtering */
         if (cfg->use_cbub) {
             if (!has_tags) {
                 if (cfg->use_bin_out) {
@@ -694,17 +796,17 @@ static void process_bam_single(cfg_t *cfg,
                 }
                 continue; /* mirror skip for missing tags */
             }
+            /* Check if CB index is valid, but don't skip yet - still do probe lookup */
             if (cb_idx == 0 || cb_idx > whitelist->count) {
-                if (cfg->use_bin_out) {
-                    if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
-                        perror("bin_out write"); exit(EXIT_FAILURE);
-                    }
-                    bytes_written++;
-                }
-                continue; /* invalid CB index */
+                valid_cb = 0;
             }
             /* Convert CB index to actual barcode string (1-based indexing) */
-            cb = whitelist->barcodes[cb_idx - 1];
+            if (valid_cb) {
+                cb = whitelist->barcodes[cb_idx - 1];
+            } else {
+                /* Use a placeholder for out-of-whitelist CBs - won't be counted */
+                cb = "-";
+            }
             ub = umi_buf;
             
             /* Still need gene tag from BAM */
@@ -757,24 +859,18 @@ static void process_bam_single(cfg_t *cfg,
                 continue;
             }
             if (strcmp(cb, "-") == 0 || strcmp(ub, "-") == 0) {
-                if (cfg->use_bin_out) {
-                    if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
-                        perror("bin_out write"); exit(EXIT_FAILURE);
-                    }
-                    bytes_written++;
-                }
-                continue; /* skip invalid CB/UB */
+                valid_cb = 0; /* Mark as invalid for counting, but continue to probe lookup */
             }
         }
         
+        /* Check intergenic - if not counting, mark invalid but still do probe lookup */
+        int count_this_record = 1;
         if (gene[0] == '-' && !cfg->count_intergene) {
-            if (cfg->use_bin_out) {
-                if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
-                    perror("bin_out write"); exit(EXIT_FAILURE);
-                }
-                bytes_written++;
-            }
-            continue;                   /* skip inter-genic unless flag set */
+            count_this_record = 0;
+        }
+        /* Also don't count if CB is invalid (out of whitelist or "-") */
+        if (!valid_cb) {
+            count_this_record = 0;
         }
 
         /* packed UMI stored in 'out' but no longer used for dedup */
@@ -805,7 +901,17 @@ static void process_bam_single(cfg_t *cfg,
             }
         }
 
-        /* Write binary output byte */
+        /* Staging log: log meta-level info right after tag extraction and probe lookup (where meta.nh is set) */
+        if (nh_staging_fp && nh_staging_count < NH_STAGING_MAX) {
+            char qname_escaped[512];
+            json_escape_qname(qname, qname_escaped, sizeof(qname_escaped));
+            uint32_t cb_idx_plus1 = (cfg->use_cbub && valid_cb && cb_idx > 0) ? cb_idx : 0;
+            fprintf(nh_staging_fp, "{\"event\":\"nh_staging\",\"index\":%lld,\"qname\":\"%s\",\"meta_nh\":%d,\"sampleIdx\":%d,\"cbIdxPlus1\":%u}\n",
+                    nh_staging_count, qname_escaped, meta_nh, sample_idx, cb_idx_plus1);
+            nh_staging_count++;
+        }
+
+        /* Write binary output byte - always write for all reads that reach here */
         if (cfg->use_bin_out) {
             output_byte = (sample_idx > 0) ? (uint8_t)sample_idx : 0;
             if (fwrite(&output_byte, 1, 1, bin_fp) != 1) {
@@ -815,36 +921,54 @@ static void process_bam_single(cfg_t *cfg,
             bytes_written++;
         }
 
-        guint32 cb_id = intern_get(cb_tab, cb);
-
-        if (sample_idx>0){
+        /* Only count records with valid CB in whitelist and valid tags */
+        if (count_this_record && sample_idx > 0) {
+            uint32_t cb_id = intern_get(cb_tab, cb);
+            
+            /* Tap log: log final cand.nh value in CRKeyAggregator::onRecord equivalent */
+            if (nh_tap_fp) {
+                char qname_escaped[512];
+                json_escape_qname(qname, qname_escaped, sizeof(qname_escaped));
+                uint32_t cb_idx_plus1 = (cfg->use_cbub && valid_cb && cb_idx > 0) ? cb_idx : 0;
+                fprintf(nh_tap_fp, "{\"event\":\"nh_tap\",\"qname\":\"%s\",\"nh\":%d,\"sampleIdx\":%d,\"cbIdxPlus1\":%u}\n",
+                        qname_escaped, meta_nh, sample_idx, cb_idx_plus1);
+            }
+            
             /* get / create per-CB counts array */
-            gpointer pv = g_hash_table_lookup(shd->cb_counts, GUINT_TO_POINTER(cb_id));
+            khint_t kcb = kh_get(u32ptr, shd->cb_counts, cb_id);
             uint32_t *arr;
-            if (!pv){
-                /* allocate from global pools if available, else g_malloc */
+            if (kcb == kh_end(shd->cb_counts)){
+                /* allocate from global pools if available, else calloc */
                 #ifdef CB_COUNTS_BLOCK_SIZE
                 if (global_pools && global_pools->cb_counts_pool){
                     arr = allocate_memory_from_pool(global_pools->cb_counts_pool);
                 } else {
-                    arr = g_malloc0(nprobes * sizeof(uint32_t));
+                    arr = calloc(nprobes, sizeof(uint32_t));
                 }
                 #else
-                arr = g_malloc0(nprobes * sizeof(uint32_t));
+                arr = calloc(nprobes, sizeof(uint32_t));
                 #endif
-                g_hash_table_insert(shd->cb_counts, GUINT_TO_POINTER(cb_id), arr);
+                int ret;
+                khint_t kh = kh_put(u32ptr, shd->cb_counts, cb_id, &ret);
+                kh_val(shd->cb_counts, kh) = arr;
             } else {
-                arr = (uint32_t*)pv;
+                arr = (uint32_t*)kh_val(shd->cb_counts, kcb);
             }
             if (arr[sample_idx-1] < UINT32_MAX)
                 arr[sample_idx-1]++;
 
             shd->usable_reads++;
             shd->probe_tot[sample_idx-1]++;
-        }
-        if (sample_idx>0 && cfg->save_read_to_cb){
-            char *val = g_strdup_printf("%s\t%s\t%s", cb, ub, gene);
-            g_hash_table_replace(read_map, g_strdup(qname), val);
+            
+            if (cfg->save_read_to_cb){
+                char val_buf[512];
+                snprintf(val_buf, sizeof(val_buf), "%s\t%s\t%s", cb, ub, gene);
+                char *qname_copy = strdup(qname);
+                char *val_copy = strdup(val_buf);
+                int ret;
+                khint_t k = kh_put(strptr, read_map, qname_copy, &ret);
+                kh_val(read_map, k) = val_copy;
+            }
         }
         shd->total_reads++;
     }
@@ -856,11 +980,21 @@ static void process_bam_single(cfg_t *cfg,
 
     if (cfg->use_cbub) {
         if (cbub->record_idx != cbub->record_count) {
-            fprintf(stderr, "Warning: CBUB stream has %" G_GUINT64_FORMAT " leftover records\n",
-                    cbub->record_count - cbub->record_idx);
+            fprintf(stderr, "Warning: CBUB stream has %llu leftover records\n",
+                    (unsigned long long)(cbub->record_count - cbub->record_idx));
         }
         cbub_reader_close(cbub);
         free_whitelist(whitelist);
+    }
+
+    /* Close debug log files */
+    if (nh_staging_fp) {
+        fclose(nh_staging_fp);
+        fprintf(stderr, "NH staging log: wrote %lld entries to %s\n", nh_staging_count, nh_staging_path);
+    }
+    if (nh_tap_fp) {
+        fclose(nh_tap_fp);
+        fprintf(stderr, "NH tap log: wrote entries to %s\n", nh_tap_path);
     }
 
     /* Finalize binary output header */
@@ -893,16 +1027,18 @@ static void process_bam_single(cfg_t *cfg,
         char path[FILENAME_LENGTH];
 
         /* ---- Write barcodes.tsv & build CB→column map ---- */
-        GHashTableIter bit; gpointer bk,bv;
-        GHashTable *cb_to_col = g_hash_table_new(g_direct_hash, g_direct_equal);
+        khash_t(u32u32) *cb_to_col = kh_init(u32u32);
         snprintf(path,sizeof(path), "%s/barcodes.tsv", cfg->outdir);
         FILE *fbc = fopen(path,"w");
-        guint32 col=0;
-        g_hash_table_iter_init(&bit, shd->cb_counts);
-        while (g_hash_table_iter_next(&bit, &bk, &bv)){
-            guint32 cb_id = GPOINTER_TO_UINT(bk);
+        uint32_t col=0;
+        khint_t k;
+        for (k = kh_begin(shd->cb_counts); k != kh_end(shd->cb_counts); ++k) {
+            if (!kh_exist(shd->cb_counts, k)) continue;
+            uint32_t cb_id = kh_key(shd->cb_counts, k);
             fprintf(fbc, "%s\n", id_to_str(cb_tab, cb_id));
-            g_hash_table_insert(cb_to_col, bk, GUINT_TO_POINTER(++col));
+            int ret;
+            khint_t kh = kh_put(u32u32, cb_to_col, cb_id, &ret);
+            kh_val(cb_to_col, kh) = ++col;
         }
         fclose(fbc);
 
@@ -913,10 +1049,10 @@ static void process_bam_single(cfg_t *cfg,
         fclose(ffe);
 
         /* ---- Compute NNZ ---- */
-        guint64 nnz=0;
-        g_hash_table_iter_init(&bit, shd->cb_counts);
-        while (g_hash_table_iter_next(&bit, &bk, &bv)){
-            uint32_t *arr = (uint32_t*)bv;
+        uint64_t nnz=0;
+        for (k = kh_begin(shd->cb_counts); k != kh_end(shd->cb_counts); ++k) {
+            if (!kh_exist(shd->cb_counts, k)) continue;
+            uint32_t *arr = (uint32_t*)kh_val(shd->cb_counts, k);
             for (int p=0;p<nprobes;p++) if (arr[p]) nnz++;
         }
 
@@ -926,14 +1062,17 @@ static void process_bam_single(cfg_t *cfg,
         fprintf(fmtx, "%%MatrixMarket matrix coordinate integer general\n");
         fprintf(fmtx, "%d %u %llu\n", nprobes, col, (unsigned long long)nnz);
 
-        g_hash_table_iter_init(&bit, shd->cb_counts);
-        while (g_hash_table_iter_next(&bit, &bk, &bv)){
-            uint32_t col_idx = GPOINTER_TO_UINT(g_hash_table_lookup(cb_to_col, bk));
-            uint32_t *arr = (uint32_t*)bv;
+        for (k = kh_begin(shd->cb_counts); k != kh_end(shd->cb_counts); ++k) {
+            if (!kh_exist(shd->cb_counts, k)) continue;
+            uint32_t cb_id = kh_key(shd->cb_counts, k);
+            khint_t kcol = kh_get(u32u32, cb_to_col, cb_id);
+            uint32_t col_idx = (kcol != kh_end(cb_to_col)) ? kh_val(cb_to_col, kcol) : 0;
+            uint32_t *arr = (uint32_t*)kh_val(shd->cb_counts, k);
             for (int p=0;p<nprobes;p++)
                 if (arr[p]) fprintf(fmtx, "%d %u %u\n", p+1, col_idx, arr[p]);
         }
         fclose(fmtx);
+        kh_destroy(u32u32, cb_to_col);
 
         /* stats.txt */
         snprintf(path,sizeof(path), "%s/stats.txt", cfg->outdir);
@@ -962,10 +1101,20 @@ static void process_bam_single(cfg_t *cfg,
         snprintf(path, sizeof(path), "%s/read_to_cb_umi_gene.txt", cfg->outdir);
         FILE *fp = fopen(path, "w");
         if (!fp) { perror("read_to_cb"); exit(EXIT_FAILURE);} 
-        GHashTableIter iter; gpointer k,v; g_hash_table_iter_init(&iter, read_map);
-        while (g_hash_table_iter_next(&iter, &k, &v)) fprintf(fp, "%s\t%s\n", (char*)k, (char*)v);
+        khint_t k;
+        for (k = kh_begin(read_map); k != kh_end(read_map); ++k) {
+            if (kh_exist(read_map, k))
+                fprintf(fp, "%s\t%s\n", (char*)kh_key(read_map, k), (char*)kh_val(read_map, k));
+        }
         fclose(fp);
-        g_hash_table_destroy(read_map);
+        // Free keys and values
+        for (k = kh_begin(read_map); k != kh_end(read_map); ++k) {
+            if (kh_exist(read_map, k)) {
+                free((char*)kh_key(read_map, k));
+                free((char*)kh_val(read_map, k));
+            }
+        }
+        kh_destroy(strptr, read_map);
     }
 }
 
@@ -977,10 +1126,7 @@ int main(int argc, char **argv) {
 
     /* init matching tables */
     barcode_match_init();
-    feature_code_hash = g_hash_table_new_full(g_bytes_hash,
-                                              g_bytes_equal,
-                                              (GDestroyNotify) g_bytes_unref,
-                                              NULL);
+    feature_code_hash = kh_init(codeu32);
 
     if (cfg.sample_probes) {
         probe_fa     = load_probe_variants_to_features(cfg.sample_probes);

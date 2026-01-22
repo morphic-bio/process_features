@@ -2,7 +2,6 @@
 #define PLOT_HISTOGRAM_H
 
 #include "common.h"
-#include <glib.h>
 // EMfit.h removed - EM functionality no longer needed
 
 // EM histogram plotting functions removed - no longer needed
@@ -12,6 +11,6 @@ void plot_simple_histogram(const char *directory,
                            const char *title,
                            const char *xtitle,
                            const char *ytitle,
-                           GArray *hist_data);
+                           vec_u32_t *hist_data);
 
 #endif // PLOT_HISTOGRAM_H

@@ -22,7 +22,8 @@ void organize_fastq_files_by_type(int positional_arg_count, int argc, char *argv
 void sort_samples_by_size(fastq_files_collection *fastq_files, int *sample_order);
 size_t get_file_size(char *filepath);
 int file_exists(const char *filename);
-void read_barcodes_into_hash(char *filename, GHashTable *hash);
+void read_barcodes_into_hash(char *filename, khash_t(strptr)* hash);
+void free_strptr_hash(khash_t(strptr)* hash);
 const char* get_basename(const char *path);
 
 #endif // IO_H
