@@ -24,3 +24,5 @@ feature_lists
 docs
 flex_test_out
 demux_bam
+!tests/
+!tests/test_max_hamming_inclusive.sh

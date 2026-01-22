@@ -752,7 +752,14 @@ int find_feature_match_single(feature_arrays *features, char *lineR2, int maxHam
                 ambiguous=0;
             }
             else if (hammingDistance == bestHammingDistance){
-                ambiguous=1;
+                if (best_feature){
+                    ambiguous=1;
+                }
+                else{
+                    best_feature=j+1;
+                    best_sequence_offset=i+4*code_offset;
+                    ambiguous=0;
+                }
             }
         }
     }
@@ -833,6 +840,9 @@ int find_feature_match_parallel(feature_arrays *features, char *lineR2, int maxH
     int best_code_offset=0;
     int best_i=0;
     for (int i=0; i<nThreads; i++){
+        if (!best_match[i]){
+            continue;
+        }
         if (bestHammingDistances[i] < bestFeatureDistance){
             bestFeatureDistance=bestHammingDistances[i];
             best_feature=best_match[i];
@@ -2453,7 +2463,7 @@ void process_feature_sequence(char *sequence, feature_arrays *features, int maxH
         uint16_t new_match_position;
         int variableHammingDistance=maxHammingDistance;
         int newFeatureIndex = checkAndCorrectFeature(sequence, features, variableMaxHammingDistance, nThreads, &variableHammingDistance, new_matching_sequence, max_feature_n, &ambiguous, &new_match_position);
-        if (!ambiguous && newFeatureIndex && variableHammingDistance < maxHammingDistance) {
+        if (!ambiguous && newFeatureIndex && variableHammingDistance <= maxHammingDistance) {
             bestHammingDistance=variableHammingDistance;
             strcpy(matching_sequence, new_matching_sequence);
             myFeatureIndex = newFeatureIndex;
