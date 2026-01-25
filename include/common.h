@@ -95,6 +95,8 @@ typedef struct feature_arrays {
     unsigned char *feature_codes_storage;
     int number_of_mismatched_features;
     int *mismatched_feature_indices;
+    /* Pattern-derived offsets (position of (BC) marker) */
+    int *feature_offsets;
 } feature_arrays;
 
 typedef struct feature_counts {

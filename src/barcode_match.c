@@ -107,6 +107,7 @@ void free_feature_arrays(feature_arrays *features) {
     free(features->feature_sequences);
     free(features->feature_codes);
     free(features->mismatched_feature_indices);
+    free(features->feature_offsets);
     free(features);
 }
 
@@ -176,5 +177,4 @@ int feature_lookup_kmer(const char *seq, int len, const struct feature_arrays *f
     int clen = string2code((char*)seq, len, code);
     return feature_lookup_code(code, clen);
 }
-
 

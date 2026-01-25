@@ -61,9 +61,10 @@ The tool can accept input FASTQ files in two ways:
 | :--- | :--- | :--- | :--- |
 | `-b`, `--barcode_length`| `[int]` | Length of the sequence barcode. | `16` |
 | `-u`, `--umi_length` | `[int]` | Length of the Unique Molecular Identifier (UMI). | `12` |
-| `-o`, `--feature_constant_offset`| `[int]` | Expected starting position of the feature sequence in the read. Used for an initial directed search. | `0` |
+| `-o`, `--feature_constant_offset`| `[int]` | Global feature offset. If not provided, auto-detected from pattern column. | auto |
 | `-B`, `--barcode_constant_offset`| `[int]` | Starting position of the barcode and UMI in the read. | `0` |
 | `--limit_search` | `[int]` | Limit the search for the feature sequence to `N` bases around `feature_constant_offset`. Set to `-1` to search the entire read. | `-1` |
+| `--force-individual-offsets` | | Use per-feature offsets from pattern column (slower for large feature sets). | `false` |
 | `-r`, `--reverse_complement_whitelist` | | Reverse complement the whitelist barcodes before use. | `false` |
 | `-a`, `--as_named` | | Treat all input files as part of a single sample. | `false` |
 
@@ -102,6 +103,47 @@ The tool can accept input FASTQ files in two ways:
 | `-v`, `--debug` | | Enable verbose debug output. | `false` |
 | `--translate_NXT` | | Complement positions 8 and 9 of cell barcodes at output/filter stages. | `false` |
 
+---
+
+## Feature Offset Detection
+
+By default, `assignBarcodes` automatically detects the optimal feature offset from the pattern column in your feature reference CSV. This provides the best balance of speed and accuracy for most datasets.
+
+### How It Works
+
+1. **Pattern Column**: If your feature CSV contains a `pattern` column with `(BC)` markers (e.g., `ACGTACGT(BC)TGCA`), the offset is extracted as the position of `(BC)`.
+
+2. **Auto-Detection**: At startup, `assignBarcodes` scans all feature offsets:
+   - If all features share the same offset → uses it as global offset (fast path)
+   - If multiple offsets detected (>5% heterogeneity) → stops with a clear message
+
+3. **User Override**: You can explicitly control offset behavior:
+   ```bash
+   # Use specific global offset (skip auto-detection)
+   --feature_constant_offset 26
+   
+   # Force per-feature offsets (slower for large feature sets)
+   --force-individual-offsets
+   ```
+
+### When to Use `--force-individual-offsets`
+
+Use this flag when your feature reference contains features with genuinely different offsets (e.g., mixed assay types). This enables per-feature offset matching but is slower for large feature sets (10k+ features).
+
+### Example Error Message
+
+```
+ERROR: Multiple feature offsets detected in pattern column.
+       Dominant offset: 26 (used by 9500 features)
+       Other offsets detected (threshold: 5% of dominant):
+         offset 30: 500 features (5.3%)
+
+To proceed, choose one of:
+  1. --force-individual-offsets   Use per-feature offsets (slower for large feature sets)
+  2. --feature_constant_offset 26  Use dominant offset globally (faster)
+```
+
+---
 
 ## Example Usage
 

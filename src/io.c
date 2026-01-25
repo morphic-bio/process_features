@@ -1,6 +1,18 @@
 #include "../include/io.h"
 #include <sys/stat.h>
 
+/* Forward declarations */
+static int extract_feature_offset(const char *pattern);
+void find_name_and_sequence_fields_ext(char *line, int *nameIndex, int *seqIndex, int *patternIndex);
+void process_feature_line_ext(char *line, int nameIndex, int seqIndex, int patternIndex, feature_arrays *myfeatures, int count);
+
+static int extract_feature_offset(const char *pattern) {
+    if (!pattern) return -1;
+    const char *marker = strstr(pattern, "(BC)");
+    if (!marker) return -1;
+    return (int)(marker - pattern);
+}
+
 feature_arrays* read_features_file(const char* filename) {
     //expext a comma separated file with column names at least one with name and sequence fields
     int seq_size=0;
@@ -18,11 +30,12 @@ feature_arrays* read_features_file(const char* filename) {
     int maxFeatureLength=0;
     int seqIndex=-1;
     int nameIndex=-1;
+    int patternIndex=-1;
     if (!fgets(line, LINE_LENGTH, file)) {
         perror("Failed to read tags header");
         exit(EXIT_FAILURE);
     }
-    find_name_and_sequence_fields(line, &nameIndex, &seqIndex);
+    find_name_and_sequence_fields_ext(line, &nameIndex, &seqIndex, &patternIndex);
     
     khash_t(u32u32)* length_counts = kh_init(u32u32);
 
@@ -68,7 +81,7 @@ feature_arrays* read_features_file(const char* filename) {
     }
     count=0;
     while (fgets(line, LINE_LENGTH, file) != NULL) {
-        process_feature_line(line, nameIndex, seqIndex, myfeatures, count);
+        process_feature_line_ext(line, nameIndex, seqIndex, patternIndex, myfeatures, count);
         count++;
     }
     fprintf(stderr, "Read %d tags\n", count);
@@ -111,7 +124,7 @@ int get_feature_line_sizes(char *line, int nameIndex, int seqIndex, int *name_si
     *name_size += strlen(fields[nameIndex]) + 1;
     return string_length;
 }
-void process_feature_line(char *line, int nameIndex, int seqIndex, feature_arrays *myfeatures, int count) {
+void process_feature_line_ext(char *line, int nameIndex, int seqIndex, int patternIndex, feature_arrays *myfeatures, int count) {
     // Split the line by spaces and read the 3rd and 6th columns
     char *fields[LINE_LENGTH];
     line[strcspn(line, "\r\n")] = 0;
@@ -140,6 +153,18 @@ void process_feature_line(char *line, int nameIndex, int seqIndex, feature_array
         myfeatures->feature_sequences[count + 1] = myfeatures->feature_sequences[count] + strlen(tmpSeq) + 1;
         myfeatures->feature_codes[count + 1] = myfeatures->feature_codes[count] + myfeatures->feature_code_lengths[count];
     }
+    /* Extract offset from pattern column if present */
+    if (myfeatures->feature_offsets) {
+        int offset = -1;
+        if (patternIndex >= 0 && patternIndex < nFields) {
+            offset = extract_feature_offset(fields[patternIndex]);
+        }
+        myfeatures->feature_offsets[count] = offset;
+    }
+}
+
+void process_feature_line(char *line, int nameIndex, int seqIndex, feature_arrays *myfeatures, int count) {
+    process_feature_line_ext(line, nameIndex, seqIndex, -1, myfeatures, count);
 }
 feature_arrays* allocate_feature_arrays(int name_size, int seq_size, int code_size, int count, int maxFeatureLength) {
         feature_arrays *myfeatures = malloc(sizeof(feature_arrays));
@@ -159,26 +184,32 @@ feature_arrays* allocate_feature_arrays(int name_size, int seq_size, int code_si
         myfeatures->feature_sequences = malloc(count * sizeof(char*));
         myfeatures->number_of_features = count;
         myfeatures->mismatched_feature_indices = malloc(count * sizeof(int));
+        myfeatures->feature_offsets = malloc(count * sizeof(int));
 
         // Check if any of the mallocs failed by checking for NULL pointers
-        if (myfeatures->feature_names_storage == NULL || myfeatures->feature_sequences_storage == NULL || myfeatures->feature_codes_storage == NULL || myfeatures->feature_names == NULL || myfeatures->feature_lengths == NULL || myfeatures->feature_code_lengths == NULL || myfeatures->feature_codes == NULL || myfeatures->mismatched_feature_indices == NULL) {
+        if (myfeatures->feature_names_storage == NULL || myfeatures->feature_sequences_storage == NULL || myfeatures->feature_codes_storage == NULL || myfeatures->feature_names == NULL || myfeatures->feature_lengths == NULL || myfeatures->feature_code_lengths == NULL || myfeatures->feature_codes == NULL || myfeatures->mismatched_feature_indices == NULL || myfeatures->feature_offsets == NULL) {
             fprintf(stderr, "Failed to allocate memory for feature arrays\n");
             exit(EXIT_FAILURE);
         }
         memset(myfeatures->feature_names_storage, 0, name_size);
         memset(myfeatures->feature_sequences_storage, 0, seq_size);
         memset(myfeatures->feature_codes_storage, 0, code_size);
+        /* Initialize all offsets to -1 (no pattern) */
+        for (int i = 0; i < count; i++) {
+            myfeatures->feature_offsets[i] = -1;
+        }
         myfeatures->feature_names[0] = myfeatures->feature_names_storage;
         myfeatures->feature_sequences[0] = myfeatures->feature_sequences_storage;
         myfeatures->feature_codes[0] = myfeatures->feature_codes_storage;
 
         return myfeatures;
     }
-void find_name_and_sequence_fields(char *line, int *nameIndex, int *seqIndex) {
+void find_name_and_sequence_fields_ext(char *line, int *nameIndex, int *seqIndex, int *patternIndex) {
     char *fields[LINE_LENGTH];
     //make sure that the line does not have a line feed
     line[strcspn(line, "\r\n")] = 0;
     int nFields = split_line(line, fields, ",");
+    *patternIndex = -1;  /* optional */
     if (nFields < 2) {
         fprintf(stderr, "Error: Invalid header in tags file - there must be at least a name and sequence field \n");
         exit(EXIT_FAILURE);
@@ -188,9 +219,8 @@ void find_name_and_sequence_fields(char *line, int *nameIndex, int *seqIndex) {
                 *seqIndex = i;
             } else if (strcmp(fields[i], "name") == 0) {
                 *nameIndex = i;
-            }
-            if (*seqIndex >= 0 && *nameIndex >= 0) {
-                break;
+            } else if (strcmp(fields[i], "pattern") == 0) {
+                *patternIndex = i;
             }
         }
     }
@@ -198,6 +228,11 @@ void find_name_and_sequence_fields(char *line, int *nameIndex, int *seqIndex) {
         fprintf(stderr, "Error: Invalid header in tags file - there must be at least a name and sequence field \n");
         exit(EXIT_FAILURE);
     }
+}
+
+void find_name_and_sequence_fields(char *line, int *nameIndex, int *seqIndex) {
+    int patternIndex;
+    find_name_and_sequence_fields_ext(line, nameIndex, seqIndex, &patternIndex);
 }
 int put_fastq_files_string_into_collection(char *fastqFilesString, char **fastq_files, int *nFiles, char *concatenated_fastq) {
     if (!fastqFilesString) {
